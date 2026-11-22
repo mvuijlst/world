@@ -38,8 +38,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Calculation engine against the workbook
-        run: node --test tests/calc.test.js
+      - name: Calculation engine (workbook) and sky colours (Panoptes)
+        run: node --test tests/calc.test.js tests/sky.test.js
       - name: Scripts parse
         run: for f in js/*.js js/steps/*.js; do node --check "$f"; done
       - name: Django API

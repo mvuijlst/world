@@ -508,3 +508,14 @@ textarea.notes:focus { outline: none; border-color: var(--teal); }
 .dialog::backdrop { background: rgba(0, 0, 0, .6); }
 .dialog .field .txt { width: 100%; }
 .dialog form { gap: 0; }
+
+/* ── scenes (orrery, vista) ───────────────────────────────────────── */
+.scene-host { position: relative; width: 100%; background: #000; }
+.scene-canvas { display: block; width: 100%; touch-action: none; user-select: none; -webkit-user-select: none; }
+.scene-status { min-height: 1.2em; }
+.scene-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.scene-tools .sel { width: auto; min-height: 32px; font-size: 17px; }
+.swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 6px 0; }
+.swatch { display: block; height: 34px; border: 1px solid var(--line-faint); }
+.plant-frame:not(:empty) { margin-top: 12px; aspect-ratio: 4 / 3; border: 1px solid var(--line); background: #050506; }
+.plant-frame iframe { width: 100%; height: 100%; border: 0; display: block; }

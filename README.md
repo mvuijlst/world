@@ -31,11 +31,13 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 04 | Planet | `PLANET` — density, gravity, temperature, orbit, atmosphere and gas retention, circulation cells, a daylight-hours map |
 | 05 | Moon | `MOON` — moon zone, periods, tides, tidal locking |
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |
-| 07 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
-| 08 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
-| 09 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
-| 10 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 11 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
+| 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
+| 09 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
+| 10 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
+| 11 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
+| 12 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 13 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -43,6 +45,33 @@ here each value has one owner step and the others show it as a linked
 
 Each step runs a self-test (the lamps in the sidebar) built from the guidance in the
 workbook's cell notes: habitable-zone checks, gas partial pressures, moon-zone limits, etc.
+
+## Skies and plants
+
+The Vista step's colours follow Panoptes V, *Colors of Alien Worlds*:
+[Alien Skies](https://panoptesv.com/SciFi/ColorsOfAlienWorlds/AlienSkies.php) and
+[Alien Plants](https://panoptesv.com/SciFi/ColorsOfAlienWorlds/AlienFields.php). Those pages give
+their method in words and their results as images, so:
+
+- `js/spectra.js` is a spectral sky model in the same spirit: the star's light (a blackbody at a
+  colour temperature fitted per class), Rayleigh scattering of Earth's air with the column scaled
+  by pressure / gravity, Chappuis-band ozone proportional to the star's UV below 240 nm, a 30 %
+  grey ground, single plus two-stream multiple scattering, the CIE 1931 observer, and exposure
+  set by a 50 % grey card facing the star. Colours are shown as an eye used to Earth's daylight
+  sees them (as on the pages), or white-balanced to the local light if you choose.
+- `js/panoptes.js` holds colours sampled from the pages' renders (10 star classes × 4 pressures ×
+  high/low star for the sky; 23 classes × 3 pressures × 6 pigment densities for leaves, plus the
+  twilight-adapted set). The sky model is anchored to them: at every rendered point it reproduces
+  the page's zenith, horizon and grey-card colours (`tests/sky.test.js`: ΔE < 4, mean ≈ 1), and in
+  between the model's own structure (gradients, glow, twilight, other gases) carries the colour.
+- Leaf colours are the pages' own, interpolated between classes and pressures.
+- **Grow plants here** opens [cloud.yusupov.cloud/plants](https://cloud.yusupov.cloud/plants/), the
+  nodarium plant grower, with the world's star class, gravity class and the habitat at the chosen
+  latitude (`?star=K&gravity=earth&habitat=forest&seed=…`).
+
+`js/orbits.js` places every body on its Kepler orbit (t = 0 at the home world's vernal equinox) and
+turns positions into altitude and azimuth for an observer on any world, using its axial tilt and
+rotation (other worlds get a stable made-up tilt and day unless set).
 
 ## Data
 
@@ -96,7 +125,7 @@ repository secrets. The server's `.env`, venv and database are never overwritten
 `.xlsx` for its default inputs, sheet by sheet:
 
 ```powershell
-node --test tests/calc.test.js
+npm test
 ```
 
 A few workbook quirks are kept on purpose so results match, and are marked

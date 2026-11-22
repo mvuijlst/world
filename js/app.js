@@ -9,7 +9,13 @@
 
   // ── step registry ────────────────────────────────────────────────────
   WS.steps = [];
-  WS.defineStep = (def) => { WS.steps.push(def); };
+  // steps are numbered in the order they are defined; a code's leading number follows
+  WS.defineStep = (def) => {
+    const n = String(WS.steps.length).padStart(2, '0');
+    def.num = n;
+    if (def.code) def.code = def.code.replace(/^\d{2}_/, `${n}_`);
+    WS.steps.push(def);
+  };
   const stepById = (id) => WS.steps.find((x) => x.id === id);
 
   // ── state ────────────────────────────────────────────────────────────
@@ -41,7 +47,7 @@
   }
 
   function refresh() {
-    if (app.view && app.view.update) app.view.update(ctx);
+    if (app.view && app.view.update) { try { app.view.update(ctx); } catch (err) { console.error(err); } }
     if (app.diagEl) replace(app.diagEl, diagnostics(app.step.checks ? app.step.checks(app.world, app.d) : []));
     updateLamps();
   }
@@ -368,7 +374,11 @@
     const main = document.getElementById('stage');
     const scrollY = window.scrollY;
     if (app.view && app.view.destroy) app.view.destroy();
-    app.view = step.build(ctx);
+    try { app.view = step.build(ctx); }
+    catch (err) {
+      console.error(err);
+      app.view = { el: panel('Fault', { tag: 'ERROR' }, h('p', null, `This step could not be drawn: ${err.message}`)), update() {} };
+    }
     const idx = WS.steps.indexOf(step);
     const prev = WS.steps[idx - 1], next = WS.steps[idx + 1];
     app.diagEl = h('div');

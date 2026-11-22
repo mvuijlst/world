@@ -65,6 +65,9 @@
         linked: false, yearDays: 365.2422, monthDays: 29.5306, dayHours: 24,
         solarWeeks: 4, lunarWeeks: 4, lunisolarWeeks: 4, system: 'solar',
       },
+      // where you stand on the Vista step: a body ('home' or a body id), latitude, the time of
+      // year and of day (fractions), how you look
+      vista: { body: 'home', lat: 40, day: 0.3, hour: 0.62, az: 240, mode: 'panorama', exposure: 0, haze: 0, eye: 'earth', habitat: 'auto', labels: true },
       notes: {},
     };
   }
