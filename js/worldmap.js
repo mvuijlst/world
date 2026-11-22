@@ -322,12 +322,16 @@
     };
     // three scales (the noise's spread is about 0.35): peninsulas and gulfs shifting the coast by some
     // 450 km, bays and headlands by 140 km, coves by 45 km
+    // a mountain belt stands on crust thickened beneath it, and stays high long after it is worn down
+    // (the Appalachians, the Urals): the ground under any belt, however old, is lifted
+    const beltS = blur(gr, Float32Array.from(inBelt, (b) => (b >= 0 ? 1 : 0)), Math.max(1, Math.round(km(90) / gr.dx)), 2);
     const reachK = km(3000), Pot = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       const sd = cont[k] ? dIn[k] : -dOut[k];
       Pot[k] = Math.abs(sd) > reachK ? sd : sd + km(1290) * warped(k, 2.2, 6, 0.4) + km(400) * warped(k, 7.5, 4, 0.2) + km(130) * fbm(k, 22, 3);
       // mountains and plateaus near the crust stand above the sea: ranges join the land they rise on
       if (sd > -km(400) && (oroS[k] > H(300) || platS[k] > H(300))) Pot[k] += km(500) * clamp(Math.max(oroS[k], platS[k]) / H(1500), 0, 1);
+      if (sd > -km(100) && beltS[k] > 0.02) Pot[k] += km(650) * smooth(beltS[k] * 1.6) * smooth((sd + km(100)) / km(200));
     }
     // 5. sea level: the coast is where that field crosses the level that leaves the share asked for dry
     const crustShare = shareAbove(gr, Float32Array.from(cont, (c) => (c ? 1 : 0)), 0.5);
