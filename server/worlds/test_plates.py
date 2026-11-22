@@ -68,3 +68,61 @@ class PlatesTests(TestCase):
         self.assertEqual(c.post('/api/plates/import', {'file': bad}).status_code, 400)
         txt = SimpleUploadedFile('x.txt', b'hello', content_type='text/plain')
         self.assertEqual(c.post('/api/plates/import', {'file': txt}).status_code, 400)
+
+
+DRIFT = {
+    'name': 'Drift',
+    'start': 1000, 'step': 10,
+    # plate 2 turns 20 degrees about the north pole by 900 Ma; plate 1 stays put (as in tests/rotation.test.js)
+    'plates': [{'id': 1, 'name': 'West', 'fixed': 0, 'rotations': []},
+               {'id': 2, 'name': 'East', 'fixed': 0, 'rotations': [{'age': 900, 'lat': 90, 'lon': 0, 'angle': 20},
+                                                                  {'age': 2000, 'lat': 0, 'lon': 0, 'angle': 5},   # older than start: dropped
+                                                                  {'age': 950, 'lat': 'x', 'lon': 0, 'angle': 5}]}],  # junk: dropped
+    'features': [
+        {'kind': 'crust', 'plateId': 1, 'name': 'West crust', 'coords': [[-30, -20], [30, -20], [30, 0], [-30, 0]]},
+        {'kind': 'crust', 'plateId': 2, 'name': 'East crust', 'coords': [[-30, 0], [30, 0], [30, 20], [-30, 20]]},
+        {'kind': 'rift', 'plateId': 1, 'name': 'Rift', 'coords': [[-30, 0], [0, 0], [30, 0]], 'left': 1, 'right': 2},
+    ],
+}
+
+
+class DriftTests(TestCase):
+    @skipUnless(HAVE, 'pyGPlates not installed')
+    def test_rotations_and_flowlines_match_the_app(self):
+        pg = pygplates()
+        r = Client().post('/api/plates/export', json.dumps(DRIFT), content_type='application/json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            z.extractall(tmp)
+            rot = pg.FeatureCollection(os.path.join(tmp, 'Drift.rot'))
+            gpml = pg.FeatureCollection(os.path.join(tmp, 'Drift.gpml'))
+        model = pg.RotationModel(rot)
+        # plate 2: at rest at 1000, turned 20 degrees by 900 and held there to the present
+        p = pg.PointOnSphere(0, 0)
+        self.assertAlmostEqual((model.get_rotation(1000, 2) * p).to_lat_lon()[1], 0, places=6)
+        self.assertAlmostEqual((model.get_rotation(950, 2) * p).to_lat_lon()[1], 10, places=6)
+        self.assertAlmostEqual((model.get_rotation(900, 2) * p).to_lat_lon()[1], 20, places=6)
+        self.assertAlmostEqual((model.get_rotation(0, 2) * p).to_lat_lon()[1], 20, places=6)
+        flows = [f for f in gpml if f.get_feature_type() == pg.FeatureType.gpml_flowline]
+        self.assertEqual(len(flows), 1)
+        self.assertEqual((flows[0].get_left_plate(), flows[0].get_right_plate()), (1, 2))
+        # the ridge sits halfway at 900 Ma, as the app draws it (rotation.spreading)
+        rec = []
+        pg.reconstruct(flows, model, rec, 900, reconstruct_type=pg.ReconstructType.flowline)
+        seeds = sorted(fl.get_reconstructed_seed_point().to_lat_lon() for fl in rec)
+        self.assertEqual(len(seeds), 3)
+        self.assertAlmostEqual(seeds[1][0], 0, places=5)
+        self.assertAlmostEqual(seeds[1][1], 10, places=5)
+        # its left arm runs from the ridge back to the left plate's rift edge, 1 degree per 10 Myr, as in the app
+        # (pyGPlates draws the right arm offset by the right plate's own rotation, so that one is not compared)
+        mid = next(fl for fl in rec if abs(fl.get_reconstructed_seed_point().to_lat_lon()[0]) < 1e-6)
+        left = [round(q.to_lat_lon()[1], 4) for q in mid.get_left_flowline()]
+        self.assertEqual(left, [10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0])
+
+    @skipUnless(HAVE, 'pyGPlates not installed')
+    def test_bad_start_age(self):
+        r = Client().post('/api/plates/export', json.dumps({**DRIFT, 'start': -5}), content_type='application/json')
+        self.assertEqual(r.status_code, 400)

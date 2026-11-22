@@ -68,7 +68,7 @@
       // where you stand on the Vista step: a body ('home' or a body id), latitude, the time of
       // year and of day (fractions), how you look
       // the supercontinent: plates, and shapes on them (cratons, crust, rifts, failed rifts) as [lat, lon] rings/lines
-      plates: { plates: [], features: [], nextPlate: 101 },
+      plates: { plates: [], features: [], nextPlate: 101, start: 1000, step: 10 },
       vista: { body: 'home', lat: 40, day: 0.3, hour: 0.62, az: 240, mode: 'panorama', exposure: 0, haze: 0, eye: 'earth', habitat: 'auto', labels: true },
       notes: {},
     };

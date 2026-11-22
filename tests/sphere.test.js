@@ -51,3 +51,21 @@ test('orthographic projection round-trips', () => {
   assert.equal(P.invert(200 + 101, 150), null);
   assert.deepEqual(P.project([30, 20]).slice(0, 2).map(Math.round), [200, 150]);
 });
+
+test('splitting a polygon along a line', () => {
+  const box = [[0, 0], [0, 40], [40, 40], [40, 0]];
+  const parts = S.splitPolygon(box, [[20, -10], [20, 50]]);
+  assert.ok(parts, 'cut');
+  const [a, b] = parts;
+  const total = S.areaFraction(box);
+  near(S.areaFraction(a) + S.areaFraction(b), total, total * 1e-6, 'areas add up');
+  // one half holds the south, the other the north
+  const south = [10, 20], north = [30, 20];
+  assert.ok((S.contains(a, south) && S.contains(b, north)) || (S.contains(b, south) && S.contains(a, north)));
+  // a bent cut through three line vertices
+  const bent = S.splitPolygon(box, [[-5, 10], [20, 15], [20, 25], [45, 30]]);
+  assert.ok(bent);
+  near(S.areaFraction(bent[0]) + S.areaFraction(bent[1]), total, total * 1e-6, 'bent areas add up');
+  // a line that misses
+  assert.equal(S.splitPolygon(box, [[50, 50], [60, 60]]), null);
+});

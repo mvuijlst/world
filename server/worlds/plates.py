@@ -1,19 +1,25 @@
 """GPlates files for the Plates step, made and read with pyGPlates.
 
   GET  /api/plates/status   → {"available": bool, "version": str}
-  POST /api/plates/export   {"name", "plates": [{id, name}], "features": [{kind, plateId, name, coords}]}
-                            → a .zip with <name>.gpml (the features) and <name>.rot (rotations)
+  POST /api/plates/export   {"name", "start", "step",
+                             "plates": [{id, name, fixed, rotations: [{age, lat, lon, angle}]}],
+                             "features": [{kind, plateId, name, coords, left, right}]}
+                            → a .zip with <name>.gpml (the features and flowlines) and <name>.rot
   POST /api/plates/import   multipart "file": a .gpml or .gpmlz feature collection
                             → {"features": [...], "plates": [...], "skipped": n}
 
 Shapes are [lat, lon] lists. kind is craton | crust | rift | failed, written as the GPlates feature
 types Craton, ContinentalCrust and ContinentalRift (a failed rift is a ContinentalRift whose
-description says so). The rotation file holds one fixed rotation per plate, relative to plate 0,
-from the present back to 4000 Ma: plates that have not moved yet, ready for rotation poles to be
-added in GPlates. These views keep no state and need no account.
+description says so). Shapes are stored as they were at the start age (the supercontinent as drawn),
+where every rotation is the identity. The rotation file holds each plate's total rotations relative
+to its fixed plate: the identity at the start age (and back to 4000 Ma), the poles set in WorldSmith,
+and the youngest pole again at 0 Ma, so the plate holds still after its last move. A rift with a
+plate on each side also gets a Flowline (seeded on the rift at the start age, reverse-reconstructed
+with pyGPlates), so GPlates draws the spreading. These views keep no state and need no account.
 """
 import io
 import json
+import math
 import os
 import re
 import tempfile
@@ -64,6 +70,29 @@ def _clean_coords(coords, closed):
     return pts if len(pts) >= (3 if closed else 2) else None
 
 
+def _number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _plate_id(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 < v < 100000 else None
+
+
+def _samples(rotations, start):
+    """Valid poles younger than the start age, one per age: [(age, lat, lon, angle)], youngest first."""
+    out = {}
+    for r in rotations if isinstance(rotations, list) else []:
+        if not isinstance(r, dict):
+            continue
+        vals = [r.get(k) for k in ('age', 'lat', 'lon', 'angle')]
+        if not all(_number(v) for v in vals):
+            continue
+        age, lat, lon, angle = (float(v) for v in vals)
+        if 0 <= age < start and -90 <= lat <= 90 and -360 <= lon <= 360 and -360 <= angle <= 360:
+            out[age] = (age, lat, lon, angle)
+    return sorted(out.values())[:500]
+
+
 def _safe(name):
     return re.sub(r'[^\w-]+', '_', str(name or 'world'))[:60] or 'world'
 
@@ -83,12 +112,17 @@ def export(request):
     feats = data.get('features')
     if not isinstance(feats, list) or not feats or len(feats) > MAX_FEATURES:
         return error('Nothing to export.')
-    plate_names = {}
+    start, step = data.get('start', 1000), data.get('step', 10)
+    if not _number(start) or not 1 <= start <= OLDEST or not _number(step) or not 1 <= step <= start:
+        return error('Bad start age or step.')
+    start, step = float(start), float(step)
+    plate_names, plate_motion = {}, {}
     for p in data.get('plates') or []:
-        if isinstance(p, dict) and isinstance(p.get('id'), int):
+        if isinstance(p, dict) and _plate_id(p.get('id')):
             plate_names[p['id']] = str(p.get('name') or '')[:80]
+            plate_motion[p['id']] = (_plate_id(p.get('fixed')) or 0, _samples(p.get('rotations'), start))
 
-    out, points, plate_ids = [], 0, set()
+    out, points, plate_ids, rifts = [], 0, set(), []
     for f in feats:
         if not isinstance(f, dict) or f.get('kind') not in KINDS:
             continue
@@ -99,28 +133,50 @@ def export(request):
         points += len(coords)
         if points > MAX_POINTS:
             return error('Too many points.', 413)
-        plate_id = f.get('plateId') if isinstance(f.get('plateId'), int) and 0 <= f.get('plateId') < 100000 else 0
+        plate_id = _plate_id(f.get('plateId')) or 0
         plate_ids.add(plate_id)
         geometry = pg.PolygonOnSphere(coords) if closed else pg.PolylineOnSphere(coords)
         feature = pg.Feature.create_reconstructable_feature(
             pg.FeatureType.create_gpml(KINDS[f['kind']]), geometry,
-            name=str(f.get('name') or '')[:120], valid_time=(OLDEST, pg.GeoTimeInstant.create_distant_future()),
+            name=str(f.get('name') or '')[:120], valid_time=(start, pg.GeoTimeInstant.create_distant_future()),
             reconstruction_plate_id=plate_id)
         if f['kind'] == 'failed':
             feature.set_description(FAILED)
         out.append(feature)
+        left, right = _plate_id(f.get('left')), _plate_id(f.get('right'))
+        if f['kind'] == 'rift' and left and right and left != right:
+            rifts.append((str(f.get('name') or 'Rift')[:120], coords, left, right))
+            plate_ids.update((left, right))
     if not out:
         return error('No valid shapes to export.')
 
-    # one fixed (identity) rotation per plate relative to 000, at 0 and 4000 Ma
+    # each plate: the identity at the start age (and before), its poles, its youngest pole held to 0 Ma
     ident = pg.FiniteRotation.create_identity_rotation()
     rotations = []
-    for pid in sorted(plate_ids - {0}):
-        seq = pg.Feature.create_total_reconstruction_sequence(0, pid, pg.GpmlIrregularSampling([
-            pg.GpmlTimeSample(pg.GpmlFiniteRotation(ident), 0.0, plate_names.get(pid) or f'Plate {pid}'),
-            pg.GpmlTimeSample(pg.GpmlFiniteRotation(ident), OLDEST, plate_names.get(pid) or f'Plate {pid}'),
-        ]))
-        rotations.append(seq)
+    for pid in sorted((plate_ids | set(plate_motion)) - {0}):
+        fixed, samples = plate_motion.get(pid, (0, []))
+        label = plate_names.get(pid) or f'Plate {pid}'
+        seq = [(start, ident)] + [(age, pg.FiniteRotation((lat, lon), math.radians(angle))) for age, lat, lon, angle in samples]
+        if start < OLDEST:
+            seq.append((OLDEST, ident))
+        youngest = min(seq, key=lambda s: s[0])
+        if youngest[0] > 0:
+            seq.append((0.0, youngest[1]))
+        seq.sort(key=lambda s: s[0])                                # pyGPlates reads them youngest first
+        rotations.append(pg.Feature.create_total_reconstruction_sequence(fixed, pid, pg.GpmlIrregularSampling(
+            [pg.GpmlTimeSample(pg.GpmlFiniteRotation(r), age, label) for age, r in seq])))
+
+    # flowlines: seeded on each opening rift at the start age, where its two plates still touch
+    if rifts:
+        model = pg.RotationModel(rotations)
+        times = [0.0]
+        while times[-1] + step < start:
+            times.append(times[-1] + step)
+        times.append(start)
+        for rift_name, coords, left, right in rifts:
+            out.append(pg.Feature.create_flowline(
+                pg.MultiPointOnSphere(coords), times, name=f'{rift_name} flowline', valid_time=(start, 0.0),
+                left_plate=left, right_plate=right, reverse_reconstruct=(model, start)))
 
     name = _safe(data.get('name'))
     buf = io.BytesIO()
@@ -133,9 +189,11 @@ def export(request):
             z.write(rot, f'{name}.rot')
             z.writestr('README.txt', (
                 f'{name} - supercontinent exported from WorldSmith\n\n'
-                f'{name}.gpml  cratons, continental crust and rifts (failed rifts: ContinentalRift, description "{FAILED}")\n'
-                f'{name}.rot   one fixed rotation per plate (relative to plate 0, 0-{OLDEST:.0f} Ma): add your poles here\n\n'
-                'In GPlates: File > Open Feature Collection, and open both files.\n'))
+                f'{name}.gpml  cratons, continental crust and rifts (failed rifts: ContinentalRift, description "{FAILED}"),\n'
+                '              and a Flowline for each rift that opens between two plates\n'
+                f'{name}.rot   every plate\'s rotation poles, relative to its fixed plate\n\n'
+                f'The shapes are the supercontinent as drawn at {start:.0f} Ma, where every rotation is zero.\n'
+                'In GPlates: File > Open Feature Collection, open both files, then move the time slider.\n'))
     resp = HttpResponse(buf.getvalue(), content_type='application/zip')
     resp['Content-Disposition'] = f'attachment; filename="{name}-gplates.zip"'
     return resp

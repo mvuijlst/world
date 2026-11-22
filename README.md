@@ -33,7 +33,7 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
-| 09 | Plates | the supercontinent as in Worldbuilder's Log 10: cratons, continental crust, rifts and failed rifts drawn on a globe, plates, a land estimate for Population, GPlates export/import |
+| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10 and 11: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, a land estimate for Population, GPlates export/import |
 | 10 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
 | 11 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
 | 12 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
@@ -82,12 +82,24 @@ starts a plate; crust and rifts join the plate of the craton they start on. Area
 measured on the sphere (`js/sphere.js`), and the crust's share gives a land estimate for the
 Population step (crust × 29/41, Earth's ratio).
 
+Then, as in Log 11 ("GPlates: the First 100 Million Years"), the supercontinent comes apart.
+**Split the crust along** a rift cuts the crust in two, each half on the plate of the craton it
+holds, and notes the plates on either side of the rift. A time bar runs from the start age (1000 Ma
+by default) to the present, with play. With **Move plate**, at any age, drag a plate to where it
+should be: that writes a total rotation pole for the plate at that age, as GPlates would. Poles can
+be edited by hand, and each plate can move relative to another (its fixed plate). Between poles the
+rotation is interpolated as GPlates does it (`js/rotation.js`, tested against pyGPlates'
+reconstructions). Plate speeds are checked against Earth's (1–10 cm/yr, never above 20). Behind
+the parting plates the new ocean floor is drawn by age, with the mid-ocean ridge (half-stage
+rotation) and, optionally, flowlines.
+
 The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
 (`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection
-(Craton, ContinentalCrust and ContinentalRift features on their plate IDs) and a `.rot` rotation file
-holding one fixed rotation per plate, ready for poles to be added in GPlates. **Import** reads a
-`.gpml`/`.gpmlz` back. GeoJSON export/import works without the server. pyGPlates needs the system
-library libGL (`apt install libgl1`); it is GPL-2 and runs only on the server.
+(Craton, ContinentalCrust and ContinentalRift features on their plate IDs, and a Flowline for each
+opening rift) and a `.rot` rotation file with every plate's poles. The shapes are stored as drawn
+at the start age, where every rotation is zero. **Import** reads a `.gpml`/`.gpmlz` back through the
+server, and a `.rot` file or GeoJSON in the browser. pyGPlates needs the system library libGL
+(`apt install libgl1`); it is GPL-2 and runs only on the server.
 
 ## Data
 

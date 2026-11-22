@@ -557,3 +557,16 @@ textarea.notes:focus { outline: none; border-color: var(--teal); }
   .feature-row { grid-template-columns: minmax(0, 1fr) 62px auto auto; padding-left: 0; }
   .feature-row > .btn:first-child { grid-column: 1 / -1; justify-self: start; }
 }
+.time-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line-faint); flex-wrap: wrap; }
+.time-slider { flex: 1; min-width: 180px; display: grid; }
+.time-scale { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); }
+.time-start { display: flex; align-items: center; gap: 6px; }
+.time-start .txt { min-height: 32px; font-size: 17px; }
+.rift-sides { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 4px 0 6px 22px; }
+.rift-side { display: grid; gap: 2px; }
+.rift-side .sel { min-height: 30px; font-size: 16px; width: auto; }
+.age-key { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; }
+.age-key i { display: block; flex: 1; max-width: 260px; height: 10px; border: 1px solid var(--line-faint); }
+table.data.poles th, table.data.poles td { padding: 4px 4px; }
+table.data.poles input.txt.num { width: 100%; min-width: 0; max-width: 84px; padding: 2px 4px; min-height: 30px; font-size: 16px; }
+table.data.poles td:first-child input.txt.num { max-width: 64px; }

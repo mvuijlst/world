@@ -132,6 +132,51 @@
   }
 
   /*
+   * Cut a polygon in two along a line that crosses its edge at least twice. Works on the gnomonic
+   * projection centred on the polygon, where great circles are straight. The cut runs from where the
+   * line first enters the polygon to where it last leaves it. Returns [a, b] as [lat, lon] rings,
+   * or null when the line does not cut it.
+   */
+  function splitPolygon(poly, line) {
+    if (poly.length < 3 || line.length < 2) return null;
+    const c = centroid(poly), proj = gnomonic(c);
+    const east = norm(Math.abs(c[2]) > 0.999 ? cross([0, 1, 0], c) : cross([0, 0, 1], c)), north = cross(c, east);
+    const back = (q) => latLon(norm([c[0] + q[0] * east[0] + q[1] * north[0], c[1] + q[0] * east[1] + q[1] * north[1], c[2] + q[0] * east[2] + q[1] * north[2]]));
+    const P = poly.map((p) => proj(vec(p))), L = line.map((p) => proj(vec(p)));
+    if (P.some((q) => !q) || L.some((q) => !q)) return null;
+    const n = P.length, hits = [];
+    for (let j = 0; j < L.length - 1; j++) {
+      const a = L[j], b = L[j + 1];
+      for (let i = 0; i < n; i++) {
+        const p = P[i], q = P[(i + 1) % n];
+        const d = (b[0] - a[0]) * (q[1] - p[1]) - (b[1] - a[1]) * (q[0] - p[0]);
+        if (Math.abs(d) < 1e-15) continue;
+        const t = ((p[0] - a[0]) * (q[1] - p[1]) - (p[1] - a[1]) * (q[0] - p[0])) / d;
+        const u = ((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) / d;
+        if (t >= 0 && t <= 1 && u >= 0 && u < 1) hits.push({ along: j + t, edge: i, u, pt: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] });
+      }
+    }
+    if (hits.length < 2) return null;
+    hits.sort((x, y) => x.along - y.along);
+    const h1 = hits[0], h2 = hits[hits.length - 1];
+    // the cut: h1, the line's vertices strictly between, h2
+    const inner = [];
+    for (let j = Math.floor(h1.along) + 1; j <= Math.floor(h2.along) && j < L.length; j++) if (j > h1.along && j < h2.along) inner.push(L[j]);
+    const cut = [h1.pt, ...inner, h2.pt];
+    const walk = (from, to) => { // polygon vertices after edge `from` up to and including the start of edge `to`
+      const out = [];
+      if (from.edge === to.edge && from.u < to.u) return out;
+      let k = (from.edge + 1) % n;
+      for (let guard = 0; guard <= n; guard++) { out.push(P[k]); if (k === to.edge) break; k = (k + 1) % n; }
+      return out;
+    };
+    const ringA = [...cut, ...walk(h2, h1)];                    // h1 → … → h2, then round the edge back to h1
+    const ringB = [...cut.slice().reverse(), ...walk(h1, h2)];  // h2 → … → h1, then round the other way to h2
+    if (ringA.length < 3 || ringB.length < 3) return null;
+    return [ringA.map(back), ringB.map(back)];
+  }
+
+  /*
    * Orthographic projection of the globe, centred on [lat0, lon0], radius R pixels, centre cx, cy.
    * project(p) → [x, y, front] ; invert(x, y) → [lat, lon] or null off the globe.
    */
@@ -154,7 +199,7 @@
     };
   }
 
-  const api = { vec, latLon, distance, arc, densify, areaFraction, centroid, contains, coverage, fibonacci, distanceToLine, orthographic };
+  const api = { vec, latLon, distance, arc, densify, areaFraction, centroid, contains, coverage, fibonacci, distanceToLine, splitPolygon, orthographic };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.sphere = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
