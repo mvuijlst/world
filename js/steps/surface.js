@@ -54,7 +54,7 @@
           k.f({ path: `${base}.age`, label: 'Inactive for', unit: 'Myr', min: 0, slider: [0, 500], step: 1, help: 'How long the range has been tectonically inactive. 0 = still active.' })),
         h('div', { class: 'btn-row', style: { marginTop: '12px' } },
           h('button', { class: 'btn small', type: 'button', onclick: () => ctx.mutate((w) => { const s = suggested(r.type, ctx.d.planet.gravity, w.tectonics.scaling); Object.assign(w.tectonics.ranges[idx], s); }, { structural: true }) }, icon('reset'), 'Fill suggested midpoints'),
-          T.ranges.length > 1 ? h('button', { class: 'btn small danger', type: 'button', onclick: () => { if (confirm(`Remove ${r.name}?`)) ctx.mutate((w) => { w.tectonics.ranges.splice(idx, 1); w.tectonics.active = 0; }, { structural: true }); } }, icon('x'), 'Remove range') : null));
+          T.ranges.length > 1 ? h('button', { class: 'btn small danger', type: 'button', onclick: async () => { if (await WS.ui.ask(`Remove ${r.name} and everything set for it?`, { title: 'Remove range', ok: 'Remove', danger: true })) ctx.mutate((w) => { w.tectonics.ranges.splice(idx, 1); w.tectonics.active = 0; }, { structural: true }); } }, icon('x'), 'Remove range') : null));
       const featTable = h('div', { class: 'table-wrap' });
       const roTop = k.ro([
         { label: 'Max peak height', value: (c) => fmt.int(c.d.tectonics.maxPeak), unit: 'm', help: 'The absolute highest a single peak can stand under this gravity.' },

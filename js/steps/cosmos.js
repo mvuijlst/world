@@ -33,15 +33,15 @@
       const seq = h('ol', { class: 'seq' }, WS.steps.filter((s) => s.id !== 'briefing').map((s) =>
         h('li', null, h('div', null, h('a', { href: `#/${s.id}`, class: 't-amber', style: { textDecoration: 'none' } }, h('b', null, s.title)),
           h('div', { class: 'muted', style: { fontSize: '14px' } }, s.blurb || '')))));
-      const roll = () => {
-        if (!confirm('Replace this world’s parameters with a randomly rolled habitable system? (Notes and the world name are kept.)')) return;
+      const roll = async () => {
+        if (!await WS.ui.ask('Replace this world’s parameters with a randomly rolled habitable system? The notes and the world’s name are kept.', { title: 'Roll a world', ok: 'Roll it' })) return;
         const keep = { id: ctx.world.id, name: ctx.world.name, notes: ctx.world.notes, created: ctx.world.created };
         const w = WS.generate.randomWorld();
         ctx.mutate((cur) => { Object.keys(cur).forEach((key) => delete cur[key]); Object.assign(cur, w, keep); }, { structural: true });
         toast(`Rolled a ${WS.calc.star(ctx.world.star).spectral.code} star with ${ctx.world.system.bodies.length + 1} worlds`);
       };
-      const reset = () => {
-        if (!confirm('Reset every parameter to the Sol/Earth template? (Notes and the world name are kept.)')) return;
+      const reset = async () => {
+        if (!await WS.ui.ask('Reset every parameter to the Sol/Earth template? The notes and the world’s name are kept.', { title: 'Reset to Sol/Earth', ok: 'Reset', danger: true })) return;
         const keep = { id: ctx.world.id, name: ctx.world.name, notes: ctx.world.notes, created: ctx.world.created };
         const w = WS.data.defaultWorld();
         ctx.mutate((cur) => { Object.keys(cur).forEach((key) => delete cur[key]); Object.assign(cur, w, keep); }, { structural: true });

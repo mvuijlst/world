@@ -578,9 +578,9 @@
         }
         return [...seqs.values()];
       }
-      function takeIn(features, plates, how) {
+      async function takeIn(features, plates, how) {
         if (!features.length) { toast(`${how}: no cratons, crust or rifts found`); return; }
-        if (P().features.length && !confirm(`Add ${features.length} shapes from ${how} to the ones already drawn?`)) return;
+        if (P().features.length && !await WS.ui.ask(`Add ${features.length} shapes from ${how} to the ones already drawn?`, { title: 'Import', ok: 'Add them' })) return;
         ctx.mutate((w) => {
           const Pw = w.plates;
           const ensure = (id, name) => { if (!Pw.plates.some((q) => q.id === id)) Pw.plates.push({ id, name: name || `Plate ${id}`, colour: PALETTE[Pw.plates.length % PALETTE.length], fixed: 0, rotations: [] }); };
@@ -625,14 +625,14 @@
               const ring = geom.type === 'Polygon' ? geom.coordinates[0].slice(0, -1) : geom.type === 'LineString' ? geom.coordinates : null;
               return ring ? { kind, plateId: Number(p.PLATEID1 ?? p.plateId ?? 0), name: p.name || p.NAME, coords: ring.map(([lo, la]) => [la, lo]), left: p.left, right: p.right } : null;
             }).filter(Boolean);
-            takeIn(feats, [], file.name);
+            await takeIn(feats, [], file.name);
             return;
           }
           const fd = new FormData(); fd.append('file', file);
           const r = await fetch('api/plates/import', { method: 'POST', body: fd });
           const j = await r.json();
           if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-          takeIn(j.features, j.plates, file.name);
+          await takeIn(j.features, j.plates, file.name);
           if (j.skipped) toast(`${j.skipped} other GPlates features were left out`);
         } catch (err) { toast(`Import failed: ${err.message}`); }
       }
@@ -682,9 +682,9 @@
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             h('button', { class: 'btn small primary', type: 'button', disabled: !has, onclick: simulate }, moving ? 'Simulate again' : 'Simulate the breakup')));
       }
-      function generate() {
+      async function generate() {
         const a = u.auto;
-        if (P().features.length && !confirm('Replace everything drawn on this globe with a new supercontinent?')) return;
+        if (P().features.length && !await WS.ui.ask('Replace everything drawn on this globe with a new supercontinent? The plates, shapes and poles there now are lost.', { title: 'New supercontinent', ok: 'Replace', danger: true })) return;
         const g = WS.supercontinent.generate({ seed: a.seed, plates: a.plates, crust: a.crust / 100 });
         ctx.mutate((w) => {
           w.plates.plates = g.plates.map((p, i) => ({ ...p, colour: PALETTE[i % PALETTE.length] }));
@@ -699,9 +699,9 @@
         else toast(`Supercontinent ${a.seed}: ${g.plates.length} plates, ${g.features.filter((f) => f.kind === 'craton').length} cratons`);
         renderAuto(); renderTime(); renderSide(); draw();
       }
-      function simulate() {
+      async function simulate() {
         const a = u.auto, Pw = P();
-        if (Pw.plates.some((p) => (p.rotations || []).length) && !confirm('Replace every plate’s rotation poles with a new simulation?')) return;
+        if (Pw.plates.some((p) => (p.rotations || []).length) && !await WS.ui.ask('Replace every plate’s rotation poles with a new simulation?', { title: 'Simulate again', ok: 'Replace the poles', danger: true })) return;
         const duration = Math.min(a.duration, Pw.start);
         const plates = WS.supercontinent.simulate(Pw, { seed: a.seed, duration, interval: Math.min(a.every, duration), minSpeed: Math.min(1.5, a.speed), maxSpeed: a.speed, radiusKm: ctx.d.planet.radiusKm });
         ctx.mutate((w) => {

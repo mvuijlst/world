@@ -280,9 +280,10 @@
         fileIn,
         h('hr'),
         h('button', {
-          type: 'button', role: 'menuitem', onclick: () => {
+          type: 'button', role: 'menuitem', onclick: async () => {
             const synced = WS.sync.state.user;
-            if (!confirm(`Delete “${app.world.name}”${synced ? ' from this browser and the server' : ' from this browser'}? This cannot be undone (export it first if you want a copy).`)) return;
+            open(false);
+            if (!await WS.ui.ask(`Delete “${app.world.name}”${synced ? ' from this browser and the server' : ' from this browser'}? This cannot be undone: export it first if you want a copy.`, { title: 'Delete this world', ok: 'Delete', danger: true })) return;
             const gone = app.world.id;
             WS.store.remove(gone);
             WS.sync.remove(gone);

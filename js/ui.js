@@ -297,6 +297,30 @@
     toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
   }
 
+  /*
+   * A question in the console's own dialog (never the browser's bare confirm): resolves true when
+   * the action button is pressed, false on Cancel, Escape or a click outside.
+   * opts: {title, ok (button text), danger (a destructive action), tag}
+   */
+  function ask(message, opts = {}) {
+    return new Promise((resolve) => {
+      let answer = false;
+      const dlg = h('dialog', { class: 'dialog ask', 'aria-labelledby': 'ask-title', 'aria-describedby': 'ask-text' });
+      const okBtn = h('button', { class: ['btn', opts.danger ? 'danger' : 'primary'], type: 'button', onclick: () => { answer = true; dlg.close(); } }, opts.ok || 'OK');
+      const cancel = h('button', { class: 'btn', type: 'button', onclick: () => dlg.close() }, 'Cancel');
+      dlg.appendChild(h('div', { class: 'stack-gap', style: { gap: 0 } },
+        h('header', { class: 'panel-head' }, h('span', { id: 'ask-title' }, opts.title || 'Confirm'), h('span', { class: 'tag' }, opts.tag || (opts.danger ? 'CAUTION' : 'CONFIRM'))),
+        h('div', { class: 'panel-body stack-gap', style: { gap: '14px' } },
+          h('p', { id: 'ask-text', style: { fontSize: '15px' } }, message),
+          h('div', { class: 'btn-row' }, okBtn, cancel))));
+      dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });     // the backdrop
+      dlg.addEventListener('close', () => { dlg.remove(); resolve(answer); });
+      document.body.appendChild(dlg);
+      dlg.showModal();
+      (opts.danger ? cancel : okBtn).focus();
+    });
+  }
+
   /* Glyphs, drawn in the same thin-vector style as the console. */
   const ICONS = {
     menu: 'M3 6h18M3 12h18M3 18h18',
@@ -320,6 +344,6 @@
 
   WS.ui = {
     h, s, clear, replace, fmt, info, get, set, panel, field, textField, selectField, linked,
-    readouts, diagnostics, worst, gauge, leds, tabs, toast, icon, cardify, fold,
+    readouts, diagnostics, worst, gauge, leds, tabs, toast, ask, icon, cardify, fold,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
