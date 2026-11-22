@@ -33,7 +33,7 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
-| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10 and 11: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, a land estimate for Population, GPlates export/import |
+| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–12: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event, a land estimate for Population, GPlates export/import |
 | 10 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
 | 11 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
 | 12 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
@@ -108,6 +108,18 @@ another motion. Continents that meet weld (a collision) and move on as one block
 as subduction zones (teeth on the overriding plate), and ocean floor older than 200 Myr is taken to
 have been subducted. Where three rifts meet, the ocean between them is filled and the ridges joined.
 All of it stays editable.
+
+Log 12 ("GPlates: Subduction Zones & Island Arcs") adds the trenches. **Subduction zones** are
+lines on the overriding plate, with teeth towards it (GPlates' subduction polarity), and **island
+arcs** are belts of volcanic islands a little behind a trench; both can be drawn at any age, and
+then exist from that age (a subduction zone until it ends). **Mark subduction zones & island arcs**
+walks through the simulation every 25 Myr or more, starts a zone off each coast that leads its
+plate into the ocean, ends it when that coast stops leading, and puts an island arc behind about
+half of them (the trench further out, as Japan; the rest are Andean margins). **Leading coasts**
+shows where they belong at any age. A **second rifting event** is a rift drawn at a later age:
+splitting its plate along it makes a new plate that moves with the old one until then; the console
+can also cut the largest plate across, clear of its cratons, and simulate the parts breaking apart
+from that age.
 
 The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
 (`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection

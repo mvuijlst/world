@@ -90,3 +90,47 @@ test('a Wilson cycle runs to the present: apart, wander, together, and round aga
   assert.ok(run.welds.length >= 2, 'continents collided');
   for (const p of run.plates) assert.equal(Math.min(...p.rotations.map((r) => r.age)), 0, `plate ${p.id} has poles to the present`);
 });
+
+test('Log 12: subduction zones on leading coasts, island arcs behind them', () => {
+  const w = G.generate({ seed: 2026, plates: 4 });
+  const P = { ...w, start: 1000 };
+  P.plates = G.simulate(P, { seed: 2026, mode: 'apart', duration: 200, interval: 20, maxSpeed: 4 }).plates;
+  const marks = G.markSubduction(P, { seed: 2026, every: 25 });
+  const zones = marks.filter((f) => f.kind === 'subduction'), arcs = marks.filter((f) => f.kind === 'arc');
+  assert.ok(zones.length >= 2, `${zones.length} subduction zones`);
+  const m = R.model(P.plates, 1000);
+  for (const z of zones) {
+    assert.ok(P.plates.some((p) => p.id === z.plateId), 'on a plate');
+    assert.ok(z.begin < 1000 && z.begin >= 800 && (z.end === undefined || z.end < z.begin), `${z.name} ${z.begin}-${z.end}`);
+    // the overriding side (the teeth) faces the zone's own plate's crust
+    const crust = w.features.filter((f) => f.kind === 'crust' && f.plateId === z.plateId);
+    const i = Math.floor((z.coords.length - 2) / 2), a = S.vec(z.coords[i]), b = S.vec(z.coords[i + 1]);
+    const n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], l = Math.hypot(...n);
+    const at = (sg) => S.latLon(a.map((x, k) => x + (sg * 0.03 * n[k]) / l));
+    const dist = (p) => Math.min(...crust.map((c) => (S.contains(c.coords, p) ? 0 : S.distanceToLine(p, [...c.coords, c.coords[0]]))));
+    const over = z.side === 'left' ? 1 : -1;
+    assert.ok(dist(at(over)) < dist(at(-over)), `${z.name}: teeth towards its plate`);
+    void m;
+  }
+  for (const a of arcs) assert.ok(zones.some((z) => z.plateId === a.plateId && z.begin === a.begin && S.distanceToLine(S.latLon(S.centroid(a.coords)), z.coords) < 3), `${a.name} behind its trench`);
+});
+
+test('Log 12: a second rifting event splits a plate that moves as one until then', () => {
+  const w = G.generate({ seed: 2026, plates: 4 });
+  let P = { ...w, start: 1000 };
+  P.plates = G.simulate(P, { seed: 2026, mode: 'apart', duration: 200, interval: 20, maxSpeed: 4 }).plates;
+  const sr = G.secondRift(P, 900, { seed: 3 });
+  assert.ok(sr, 'a rift was found');
+  const pid = sr.rift.plateId, nid = sr.nextPlate - 1;
+  assert.deepEqual([sr.rift.left, sr.rift.right].sort(), [pid, nid].sort());
+  assert.equal(sr.rift.begin, 900);
+  const cratons = sr.features.filter((f) => f.kind === 'craton');
+  assert.ok(!cratons.some((c) => sr.rift.coords.some((p) => S.contains(c.coords, p))), 'clear of the cratons');
+  P = { ...P, ...sr };
+  const run = G.simulate(P, { seed: 4, mode: 'apart', from: 900, duration: 100, interval: 20 });
+  const m = R.model(run.plates, 1000);
+  const c = S.latLon(S.centroid(sr.features.find((f) => f.plateId === nid && f.kind === 'crust').coords));
+  const gap = (a) => S.distance(m.reconstruct(nid, [c], a)[0], m.reconstruct(pid, [c], a)[0]);
+  for (const a of [1000, 960, 920, 900]) assert.ok(gap(a) < 1e-6, `together at ${a} Ma`);
+  assert.ok(gap(800) > 5, `apart by 800 Ma: ${gap(800)}`);
+});

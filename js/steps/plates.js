@@ -20,7 +20,10 @@
     crust: { label: 'Continental crust', closed: true, gplates: 'ContinentalCrust', help: 'Younger continental crust welded round the cratons. Together it makes the supercontinent.' },
     rift: { label: 'Rift', closed: false, gplates: 'ContinentalRift', help: 'A line along which the supercontinent will split. Rifts tend to run between cratons, not through them.' },
     failed: { label: 'Failed rift', closed: false, gplates: 'ContinentalRift', help: 'A rift arm that stops opening (an aulacogen), usually the third arm at a triple junction on a rift.' },
+    subduction: { label: 'Subduction zone', closed: false, gplates: 'SubductionZone', help: 'A trench, where ocean floor dives under another plate. It belongs to the overriding plate and its teeth point at it; usually just off a continent’s leading coast, or further out with an island arc behind. Drawn at an age, it begins then.' },
+    arc: { label: 'Island arc', closed: true, gplates: 'IslandArc', help: 'Volcanic islands on the overriding plate, a little behind a subduction zone’s trench (Japan, the Aleutians). Drawn at an age, they rise then.' },
   };
+  const LATER = new Set(['rift', 'subduction', 'arc']);              // kinds that can begin after the start
   const PALETTE = ['#d9822b', '#2a9d8f', '#c0392b', '#7d5ba6', '#6a994e', '#3a86c8', '#b5838d', '#c9a227', '#4f7c7a', '#9c6644'];
   const colourOf = (plates, id) => { const i = plates.findIndex((p) => p.id === id); return i < 0 ? '#888888' : plates[i].colour || PALETTE[i % PALETTE.length]; };
   const hexA = (hx, a) => { const n = parseInt(hx.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
@@ -58,10 +61,10 @@
 
   function stats(P, radiusKm) {
     const of = (k) => P.features.filter((f) => f.kind === k);
-    const crust = S.coverage([...of('crust'), ...of('craton')].map((f) => f.coords));
+    const crust = S.coverage([...of('crust'), ...of('craton')].filter((f) => (f.begin ?? P.start) >= P.start).map((f) => f.coords));
     const cratons = S.coverage(of('craton').map((f) => f.coords));
     const length = (k) => of(k).reduce((s, f) => s + f.coords.slice(1).reduce((t, p, i) => t + S.distance(f.coords[i], p), 0), 0) * Math.PI / 180 * radiusKm;
-    return { crust, cratons, land: crust * (29 / 41), rift: length('rift'), failed: length('failed'), counts: { craton: of('craton').length, crust: of('crust').length, rift: of('rift').length, failed: of('failed').length } };
+    return { crust, cratons, land: crust * (29 / 41), rift: length('rift'), failed: length('failed'), subduction: length('subduction'), counts: { craton: of('craton').length, crust: of('crust').length, rift: of('rift').length, failed: of('failed').length, subduction: of('subduction').length, arc: of('arc').length } };
   }
 
   /* The plates on either side of a rift, from the cratons and crust just beside its middle. */
@@ -84,10 +87,11 @@
 
   WS.defineStep({
     id: 'plates', title: 'Plates', code: '00_LITHOSPHERE/PLATES', strip: 'Supercontinent & drift',
-    blurb: 'Draw the supercontinent, split it along its rifts, and set the plates drifting.',
+    blurb: 'Draw the supercontinent, split it along its rifts, set the plates drifting, and mark where they subduct.',
     lede: [
       'Following Artifexian’s Worldbuilder’s Log 10 and 11 (GPlates: the Supercontinent, the First 100 Million Years). Begin with one supercontinent: its cratons, the ancient stable cores, and the younger continental crust that welds them together (Earth’s covers about 40 % of the planet). Draw the rifts where it will tear apart, and a few failed rifts branching off them.',
       'Then split the crust along the rifts, so each side rides its own plate, and move the plates through time: at an age, drag a plate to where it should be, and the console writes the rotation pole GPlates would. Keep them to believable speeds (most plates 1–10 cm a year). New ocean floor opens behind them, coloured by age, with the mid-ocean ridge and flowlines. Everything goes to and from GPlates desktop.',
+      'Then Log 12 (GPlates: Subduction Zones & Island Arcs). Ocean floor is consumed where a plate overrides it: mark subduction zones off the coasts that lead their plate’s motion, each on its overriding plate, with chains of island arcs behind some of them. And set up a second rifting event: a new rift, at a later age, that splits a plate in two.',
     ],
     build(ctx) {
       const P = () => ctx.world.plates;
@@ -98,12 +102,13 @@
       const host = h('div', { class: 'scene-host globe-host' });
       const hint = h('div', { class: 'scene-status mono' });
       const timeHost = h('div', { class: 'time-bar' });
-      const autoHost = h('div'), toolsHost = h('div'), listHost = h('div'), statsHost = h('div'), gplatesHost = h('div'), motionHost = h('div');
+      const autoHost = h('div'), log12Host = h('div'), toolsHost = h('div'), listHost = h('div'), statsHost = h('div'), gplatesHost = h('div'), motionHost = h('div');
       let server = null;
 
       const el = h('div', { class: 'grid two' },
         h('div', { class: 'stack-gap' },
           panel('Make & simulate', { ticks: true, tag: 'AUTOMATIC' }, autoHost),
+          panel('Subduction & a second rift', { tag: 'LOG 12' }, log12Host),
           panel('Draw & move', { tag: 'TOOLS' }, toolsHost),
           panel('Plate motion', { tag: 'ROTATION POLES' }, motionHost),
           panel('Plates & features', { tag: 'INVENTORY' }, listHost),
@@ -127,6 +132,8 @@
 
       /* Where a feature is at the age on view. */
       function placed(m, f) { return atStart() ? f.coords : m.reconstruct(f.plateId, f.coords, u.age); }
+      /* Whether it exists at the age on view: from its begin age (the start, by default) to its end. */
+      const shown = (f) => (f.begin ?? P().start) >= u.age && (f.end == null || f.end < u.age);
 
       function pathOf(pr, coords, closed) {
         g.beginPath();
@@ -136,8 +143,8 @@
       /* Rift ends that meet (within 0.05°), three or more of them: triple junctions. */
       function junctions(spreads) {
         const ends = spreads.flatMap(({ f, sp }) => [
-          { key: f.coords[0], sp, at: () => 0 },
-          { key: f.coords[f.coords.length - 1], sp, at: (line) => line.length - 1 },
+          { key: f.coords[0], f, sp, at: () => 0 },
+          { key: f.coords[f.coords.length - 1], f, sp, at: (line) => line.length - 1 },
         ]);
         const groups = [];
         for (const e of ends) {
@@ -154,66 +161,27 @@
         return points.slice().sort((a, b) => ang(a) - ang(b));
       }
       /*
-       * Subduction zones: stretches of a continent's coast that lead its motion, where it overrides
-       * the ocean floor in front of it (an Andean margin). Teeth point at the overriding plate.
+       * Leading coasts: where each continent's coast leads its plate's motion and so overrides the
+       * ocean floor, a hint of where subduction zones belong (dashed). Marked zones are drawn solid.
        */
-      const margins = new Map();
-      function marginOf(f) {
-        const key = `${f.id}:${f.coords.length}:${f.coords[0]}:${f.coords[f.coords.length - 1]}`;
-        if (margins.has(key)) return margins.get(key);
-        const ring = S.densify(f.coords, true, 1.5), inside = S.within(f.coords), vs = ring.map(S.vec);
-        const out = vs.map((v, i) => {
-          const a = vs[(i - 1 + vs.length) % vs.length], b = vs[(i + 1) % vs.length];
-          const t = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-          let n = [v[1] * t[2] - v[2] * t[1], v[2] * t[0] - v[0] * t[2], v[0] * t[1] - v[1] * t[0]];
-          const l = Math.hypot(...n) || 1; n = n.map((x) => x / l);
-          if (inside(v.map((x, q) => x + 0.01 * n[q]))) n = n.map((x) => -x);
-          return { v, n };
-        });
-        margins.set(key, out);
-        if (margins.size > 400) margins.delete(margins.keys().next().value);
-        return out;
-      }
       function drawSubduction(pr, m, dpr, col) {
-        const Pw = P(), R = ctx.d.planet.radiusKm, dt = 5;
-        const a1 = u.age - dt >= 0 ? u.age - dt : u.age, a0 = a1 + dt;
-        const crusts = Pw.features.filter((f) => f.kind === 'crust' && f.coords.length >= 3);
-        const others = crusts.map((f) => ({ plateId: f.plateId, inside: S.within(placed(m, f)) }));
-        g.strokeStyle = col.text; g.fillStyle = col.text; g.lineWidth = 1.6 * dpr;
-        for (const f of crusts) {
-          const A = m.absolute(f.plateId, u.age), A0 = m.absolute(f.plateId, a0), A1 = m.absolute(f.plateId, a1);
-          const pts = marginOf(f).map(({ v, n }) => {
-            const cur = Q.rotate(A, v), nn = Q.rotate(A, n), p0 = Q.rotate(A0, v), p1 = Q.rotate(A1, v);
-            const d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]], len = Math.hypot(...d);
-            const cm = (len * R / dt) * 0.1;
-            const lead = cm > 0.8 && (d[0] * nn[0] + d[1] * nn[1] + d[2] * nn[2]) / len > 0.35;
-            const coast = lead && !others.some((o) => o.plateId !== f.plateId && o.inside(cur.map((x, q) => x + 0.02 * nn[q])));
-            return { cur, nn, on: coast };
-          });
-          if (!pts.some((q) => q.on)) continue;
-          // runs of flagged points, round the ring (starting from an unflagged one)
-          const n = pts.length, startAt = pts.findIndex((q) => !q.on), runs = [];
-          if (startAt < 0) runs.push(pts.concat([pts[0]]));
-          else {
-            let run = [];
-            for (let i = 1; i <= n; i++) {
-              const q = pts[(startAt + i) % n];
-              if (q.on) run.push(q); else { if (run.length >= 3) runs.push(run); run = []; }
-            }
-          }
-          for (const r of runs) {
-            const ll = r.map((q) => S.latLon(q.cur));
-            g.beginPath(); pr.trace(g, ll, false); g.stroke();
-            for (let i = 1; i < r.length - 1; i += 3) {
-              const q = r[i], a = r[i - 1].cur, b = r[i + 1].cur;
-              const t = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], tl = Math.hypot(...t) || 1;
-              const side = (sg) => S.latLon(q.cur.map((x, k) => x + sg * 0.009 * t[k] / tl));
-              const tip = S.latLon(q.cur.map((x, k) => x - 0.016 * q.nn[k]));
-              const tri = [side(1), side(-1), tip].map((p) => pr.project(p));
-              if (!tri.every((x) => x[2])) continue;
-              g.beginPath(); g.moveTo(tri[0][0], tri[0][1]); g.lineTo(tri[1][0], tri[1][1]); g.lineTo(tri[2][0], tri[2][1]); g.closePath(); g.fill();
-            }
-          }
+        const runs = WS.supercontinent.leadingCoasts(P(), m, u.age, ctx.d.planet.radiusKm);
+        g.save(); g.globalAlpha = 0.6; g.strokeStyle = col.text; g.lineWidth = 1.3 * dpr; g.setLineDash([5 * dpr, 4 * dpr]);
+        for (const rn of runs) { const A = m.absolute(rn.plateId, u.age); g.beginPath(); pr.trace(g, rn.points.map((q) => S.latLon(Q.rotate(A, q.v))), false); g.stroke(); }
+        g.restore();
+      }
+      /* The teeth of a subduction zone, every 3° or so, pointing at the overriding plate. */
+      function teeth(pr, coords, side, dpr, colour) {
+        const line = S.densify(coords, false, 1).map(S.vec), sg = side === 'right' ? -1 : 1;
+        g.fillStyle = colour;
+        for (let i = 1; i < line.length - 1; i += 3) {
+          const p = line[i], a = line[i - 1], b = line[i + 1];
+          const t = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], tl = Math.hypot(...t) || 1;
+          const n = [p[1] * t[2] - p[2] * t[1], p[2] * t[0] - p[0] * t[2], p[0] * t[1] - p[1] * t[0]], nl = Math.hypot(...n) || 1;
+          const at = (dx, dn) => S.latLon(p.map((x, k) => x + (dx * t[k]) / tl + (sg * dn * n[k]) / nl));
+          const tri = [at(0.008, 0), at(-0.008, 0), at(0, 0.014)].map((q) => pr.project(q));
+          if (!tri.every((x) => x[2])) continue;
+          g.beginPath(); g.moveTo(tri[0][0], tri[0][1]); g.lineTo(tri[1][0], tri[1][1]); g.lineTo(tri[2][0], tri[2][1]); g.closePath(); g.fill();
         }
       }
 
@@ -238,8 +206,8 @@
         if (!atStart() && u.spread) {
           const span = Math.max(1, Math.min(OCEAN_LIFE, Pw.start - u.age)), spreads = [];
           const alive = (age) => age - u.age <= OCEAN_LIFE;
-          for (const f of Pw.features.filter((x) => x.kind === 'rift' && x.left && x.right && x.left !== x.right && x.coords.length >= 2)) {
-            const sp = Q.spreading(m, f.coords, f.left, f.right, Pw.start, u.age, Pw.step || 10);
+          for (const f of Pw.features.filter((x) => x.kind === 'rift' && x.left && x.right && x.left !== x.right && x.coords.length >= 2 && shown(x))) {
+            const sp = Q.spreading(m, f.coords, f.left, f.right, f.begin ?? Pw.start, u.age, Pw.step || 10);
             if (!sp.isochrons.length || !alive(sp.isochrons[sp.isochrons.length - 1].age)) continue;   // an extinct ridge, long subducted
             spreadRifts.add(f.id);
             spreads.push({ f, sp });
@@ -257,12 +225,12 @@
             // scatter round the globe and there is no single opening left to fill
             const compact = (rg) => { const c = S.latLon(S.centroid(rg)); return rg.every((q) => S.distance(c, q) < 30); };
             const paint = (rg, f) => { if (stale || !compact(rg)) return; pathOf(pr, rg, true); g.fillStyle = ageColour(f, 0.8); g.fill(); };
-            if (alive(Pw.start)) paint(ring(null), 1);
+            if (alive(Math.max(...ends.map((e) => e.f.begin ?? Pw.start)))) paint(ring(null), 1);
             for (const a of ages) { stale = false; const rg = ring(a); if (alive(a)) paint(rg, Math.min(1, (a - u.age) / span)); }
           }
-          for (const { sp } of spreads) {
+          for (const { f, sp } of spreads) {
             for (const [edge, flank] of [[sp.edgeL, 'left'], [sp.edgeR, 'right']]) {
-              let prev = edge, prevAge = Pw.start;
+              let prev = edge, prevAge = f.begin ?? Pw.start;
               for (const iso of sp.isochrons) {
                 const line = iso[flank];
                 // a band of floor made in one go: older bands have been subducted, and the first band
@@ -287,13 +255,18 @@
           }
         }
         const plates = Pw.plates;
-        const order = { crust: 0, craton: 1, rift: 2, failed: 3 };
-        for (const f of Pw.features.slice().sort((a, b) => order[a.kind] - order[b.kind])) {
+        const order = { crust: 0, craton: 1, arc: 2, rift: 3, failed: 4, subduction: 5 };
+        for (const f of Pw.features.filter(shown).sort((a, b) => order[a.kind] - order[b.kind])) {
           const c = colourOf(plates, f.plateId), kind = KINDS[f.kind], at = placed(m, f);
-          if (kind.closed && at.length >= 3) {
+          if (f.kind === 'subduction' && at.length >= 2) {
+            pathOf(pr, at, false); g.strokeStyle = col.text; g.lineWidth = 2.2 * dpr; g.stroke();
+            teeth(pr, at, f.side, dpr, col.text);
+          } else if (kind.closed && at.length >= 3) {
             pathOf(pr, at, true);
-            g.fillStyle = hexA(c, f.kind === 'craton' ? 0.8 : 0.5); g.fill();
-            g.strokeStyle = c; g.lineWidth = (f.kind === 'craton' ? 1.6 : 1.2) * dpr; g.stroke();
+            g.fillStyle = hexA(c, f.kind === 'craton' ? 0.8 : f.kind === 'arc' ? 0.9 : 0.5); g.fill();
+            g.strokeStyle = f.kind === 'arc' ? col.amber : c; g.lineWidth = (f.kind === 'craton' ? 1.6 : f.kind === 'arc' ? 2 : 1.2) * dpr;
+            if (f.kind === 'arc') g.setLineDash([3 * dpr, 2 * dpr]);                // a chain of islands
+            g.stroke(); g.setLineDash([]);
             if (f.kind === 'craton') {
               g.save(); pathOf(pr, at, true); g.clip();
               g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = dpr;
@@ -321,7 +294,7 @@
         g.strokeStyle = col.line; g.lineWidth = 1.5 * dpr; g.beginPath(); g.arc(W / 2, H / 2, R, 0, 2 * Math.PI); g.stroke();
         g.font = `${12 * dpr}px ${css('--font-mono') || 'monospace'}`;
         for (const f of Pw.features) {
-          if (!f.name || f.coords.length < 2) continue;
+          if (!f.name || f.coords.length < 2 || !shown(f) || f.kind === 'arc') continue;
           const at = placed(m, f);
           const pos = KINDS[f.kind].closed ? S.latLon(S.centroid(at)) : at[Math.floor(at.length / 2)];
           const q = pr.project(pos); if (!q[2]) continue;
@@ -356,6 +329,8 @@
             Pw.plates.push({ id: plateId, name: `Plate ${plateId}`, colour: PALETTE[Pw.plates.length % PALETTE.length], fixed: 0, rotations: [] });
             const mid = S.latLon(S.centroid(pts));
             for (const f of Pw.features) if (f.kind === 'crust' && !Pw.plates.some((q) => q.id === f.plateId) && S.contains(where(f), mid)) f.plateId = plateId;
+          } else if (tool === 'subduction' || tool === 'arc') {
+            plateId = u.plate ?? overriding(Pw, m, pts, tool);
           } else {
             const host2 = Pw.features.find((f) => f.kind === 'craton' && S.contains(where(f), pts[0])) || Pw.features.find((f) => f.kind === 'crust' && S.contains(where(f), pts[0]));
             plateId = host2 ? host2.plateId : (u.plate ?? (Pw.plates[0] ? Pw.plates[0].id : 0));
@@ -364,11 +339,31 @@
           const ref = atStart() ? pts : modelOf(Pw).unreconstruct(plateId, pts, u.age);
           const n = Pw.features.filter((f) => f.kind === tool).length + 1;
           const f = { id: newId(), kind: tool, plateId, name: `${k.label} ${n}`, coords: ref.map(([a, b]) => [+a.toFixed(4), +b.toFixed(4)]) };
+          if (LATER.has(tool) && !atStart()) f.begin = Math.round(u.age);
           if (tool === 'rift') Object.assign(f, sidesOf(Pw, f));
+          if (tool === 'subduction') f.side = sideToward(Pw, m, pts, plateId);
           Pw.features.push(f);
           u.selected = f.id;
         });
         renderSide(); draw();
+      }
+      /* The plate a new subduction zone or arc belongs to: the nearest crust (an arc: the nearest zone's plate). */
+      function overriding(Pw, m, pts, tool) {
+        const mid = pts[Math.floor(pts.length / 2)];
+        if (tool === 'arc') {
+          const z = Pw.features.filter((f) => f.kind === 'subduction' && shown(f)).map((f) => [S.distanceToLine(mid, placed(m, f)), f]).sort((a, b) => a[0] - b[0])[0];
+          if (z && z[0] < 8) return z[1].plateId;
+        }
+        const near = Pw.features.filter((f) => f.kind === 'crust' && shown(f)).map((f) => { const at = placed(m, f); return [S.contains(at, mid) ? 0 : S.distanceToLine(mid, [...at, at[0]]), f]; }).sort((a, b) => a[0] - b[0])[0];
+        return near ? near[1].plateId : (Pw.plates[0] ? Pw.plates[0].id : 0);
+      }
+      /* The side of a line (as drawn) its plate's crust lies on: where the teeth point. */
+      function sideToward(Pw, m, pts, plateId) {
+        const i = Math.max(0, Math.floor((pts.length - 2) / 2)), a = S.vec(pts[i]), b = S.vec(pts[i + 1]);
+        const n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], l = Math.hypot(...n) || 1;
+        const crust = Pw.features.filter((f) => f.kind === 'crust' && f.plateId === plateId && shown(f)).map((f) => placed(m, f));
+        const dist = (sg) => { const p = S.latLon(a.map((x, k) => x + (sg * 0.03 * n[k]) / l)); return Math.min(Infinity, ...crust.map((c) => (S.contains(c, p) ? 0 : S.distanceToLine(p, [...c, c[0]])))); };
+        return dist(1) <= dist(-1) ? 'left' : 'right';
       }
       function removeSelected() {
         if (!u.selected) return;
@@ -384,13 +379,14 @@
         if (!at) return null;
         const m = modelOf(P()), dpr = cv.width / cv.clientWidth, R = Math.min(cv.width, cv.height) * 0.44 * u.zoom;
         const tol = (10 * dpr / R) * 180 / Math.PI;
-        const lines = P().features.filter((f) => !KINDS[f.kind].closed && f.coords.length >= 2).map((f) => [S.distanceToLine(at, placed(m, f)), f]).filter(([d]) => d < tol).sort((a, b) => a[0] - b[0]);
+        const lines = P().features.filter((f) => !KINDS[f.kind].closed && f.coords.length >= 2 && shown(f)).map((f) => [S.distanceToLine(at, placed(m, f)), f]).filter(([d]) => d < tol).sort((a, b) => a[0] - b[0]);
         if (lines.length && u.tool !== 'move') return lines[0][1];
-        const polys = P().features.filter((f) => KINDS[f.kind].closed && S.contains(placed(m, f), at)).sort((a, b) => S.areaFraction(a.coords) - S.areaFraction(b.coords));
+        const polys = P().features.filter((f) => KINDS[f.kind].closed && shown(f) && S.contains(placed(m, f), at)).sort((a, b) => S.areaFraction(a.coords) - S.areaFraction(b.coords));
         return polys[0] || null;
       }
       /* Split every crust polygon a rift crosses into two, each on the plate of the craton it holds. */
       function splitAlong(rift) {
+        if ((rift.begin ?? P().start) < P().start) { splitLater(rift); return; }
         let cuts = 0;
         ctx.mutate((w) => {
           const Pw = w.plates, out = [];
@@ -409,6 +405,37 @@
           if (r) Object.assign(r, sidesOf(Pw, r));
         });
         toast(cuts ? `Split ${cuts} crust shape${cuts > 1 ? 's' : ''} along ${rift.name}` : `${rift.name} doesn’t cross any crust from edge to edge`);
+        renderSide(); draw();
+      }
+
+      /*
+       * A second rifting event: the rift begins after the start, so it splits only the crust of its own
+       * plate; the smaller part becomes a new plate riding on the old one (fixed to it, no rotation of
+       * its own) until the two are moved apart, by hand or by simulating from the rift's age.
+       */
+      function splitLater(rift) {
+        let made = [];
+        ctx.mutate((w) => {
+          const Pw = w.plates, out = [];
+          for (const f of Pw.features) {
+            const parts = f.kind === 'crust' && f.plateId === rift.plateId ? S.splitPolygon(f.coords, rift.coords) : null;
+            if (!parts) { out.push(f); continue; }
+            const sizes = parts.map((q) => S.areaFraction(q)), small = sizes[0] < sizes[1] ? 0 : 1, id = Pw.nextPlate++;
+            Pw.plates.push({ id, name: `Plate ${id}`, colour: PALETTE[Pw.plates.length % PALETTE.length], fixed: rift.plateId, rotations: [] });
+            made.push(id);
+            const inSmall = S.within(parts[small]);
+            for (const x of Pw.features) {
+              if (x.plateId !== rift.plateId || x === f || x.kind === 'crust' || x === rift || !x.coords.length) continue;
+              const at = KINDS[x.kind].closed ? S.latLon(S.centroid(x.coords)) : x.coords[Math.floor(x.coords.length / 2)];
+              if (inSmall(S.vec(at))) x.plateId = id;
+            }
+            parts.forEach((ring, i) => out.push({ id: newId(), kind: 'crust', plateId: i === small ? id : f.plateId, name: `${f.name} ${i === small ? 'B' : 'A'}`, coords: ring.map(([a, b]) => [+a.toFixed(4), +b.toFixed(4)]) }));
+          }
+          Pw.features = out;
+          const r = Pw.features.find((x) => x.id === rift.id);
+          if (r) Object.assign(r, sidesOf(Pw, r));
+        }, { structural: false });
+        toast(made.length ? `${rift.name} splits off plate ${made.join(', ')}, moving with plate ${rift.plateId} until ${fmt.int(rift.begin)} Ma: simulate from then, or move it by hand` : `${rift.name} doesn’t cross its plate’s crust from edge to edge`);
         renderSide(); draw();
       }
 
@@ -553,7 +580,7 @@
         const plates = P().plates;
         const sel = P().features.find((f) => f.id === u.selected);
         const plateSel = h('select', { class: 'sel', id: 'plate-for-new', 'aria-label': 'Plate for new crust and rifts' },
-          h('option', { value: '' }, 'automatic (the craton underneath)'),
+          h('option', { value: '' }, 'automatic (the craton underneath; for a trench, the nearest crust)'),
           plates.map((p) => h('option', { value: p.id, selected: u.plate === p.id }, `${p.id} · ${p.name}`)));
         plateSel.addEventListener('change', () => { u.plate = plateSel.value === '' ? null : Number(plateSel.value); });
         const toggle = (key, label) => { const b = h('input', { type: 'checkbox', checked: u[key] }); b.addEventListener('change', () => { u[key] = b.checked; draw(); }); return h('label', { class: 'check' }, b, label); };
@@ -564,6 +591,8 @@
             btn('crust', 'Crust', sw({ background: hexA(PALETTE[0], 0.4), border: `1px solid ${PALETTE[0]}` })),
             btn('rift', 'Rift', sw({ background: 'var(--red)', height: '3px' })),
             btn('failed', 'Failed rift', sw({ background: 'repeating-linear-gradient(90deg, var(--red) 0 5px, transparent 5px 8px)', height: '3px' })),
+            btn('subduction', 'Subduction', sw({ background: 'linear-gradient(var(--text), var(--text)) bottom / 100% 2px no-repeat, linear-gradient(135deg, transparent 50%, var(--text) 50%) 3px 0 / 6px 6px no-repeat', height: '8px' })),
+            btn('arc', 'Island arc', sw({ background: 'var(--amber)', borderRadius: '40%', width: '12px', height: '6px' })),
             btn('move', 'Move plate', sw({ background: 'var(--teal)', borderRadius: '50%', width: '10px' }))),
           h('p', { class: 'muted', style: { fontSize: '13.5px', margin: '10px 0' } },
             u.tool === 'look' ? 'Choose a tool, then tap points on the globe. Each craton starts a plate of its own; crust and rifts join the plate of the craton they start on.'
@@ -574,9 +603,10 @@
             h('button', { class: 'btn small', type: 'button', onclick: () => { u.draft.pop(); draw(); } }, 'Undo point'),
             h('button', { class: 'btn small', type: 'button', onclick: () => { u.draft = []; cursor = null; draw(); } }, 'Cancel')) : null,
           sel && sel.kind === 'rift' ? h('div', { class: 'btn-row', style: { marginTop: '10px' } },
-            h('button', { class: 'btn small primary', type: 'button', onclick: () => splitAlong(sel) }, `Split the crust along ${sel.name}`)) : null,
-          plates.length ? h('div', { class: 'field', style: { marginTop: '12px' } }, h('label', { class: 'field-label', for: 'plate-for-new' }, 'Plate for new crust & rifts'), plateSel) : null,
-          h('div', { class: 'btn-row', style: { marginTop: '12px' } }, toggle('spread', 'New ocean floor & ridges'), toggle('flow', 'Flowlines'), toggle('subduction', 'Subduction zones')));
+            h('button', { class: 'btn small primary', type: 'button', onclick: () => splitAlong(sel) }, (sel.begin ?? P().start) < P().start ? `Split its plate along ${sel.name} (from ${fmt.int(sel.begin)} Ma)` : `Split the crust along ${sel.name}`)) : null,
+          plates.length ? h('div', { class: 'field', style: { marginTop: '12px' } }, h('label', { class: 'field-label', for: 'plate-for-new' }, 'Plate for new shapes'), plateSel) : null,
+          !atStart() && LATER.has(u.tool) ? h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, `Drawn now, it begins at ${fmt.int(u.age)} Ma.`) : null,
+          h('div', { class: 'btn-row', style: { marginTop: '12px' } }, toggle('spread', 'New ocean floor & ridges'), toggle('flow', 'Flowlines'), toggle('subduction', 'Leading coasts')));
       }
 
       function renderMotion() {
@@ -643,7 +673,21 @@
           h('button', { type: 'button', class: 'btn small', title: 'Show on the globe', 'aria-label': `Select ${f.name}`, onclick: () => { u.selected = f.id; if (u.tool !== 'move') u.tool = 'look'; const c = S.latLon(S.centroid(placed(modelOf(Pw), f))); u.lat = clamp(c[0], -89, 89); u.lon = c[1]; renderSide(); draw(); } }, KINDS[f.kind].label),
           name, f.kind === 'craton' ? h('span', { class: 'muted mono' }, String(f.plateId)) : sel, h('span', { class: 'mono t-amber' }, area),
           h('button', { type: 'button', class: 'btn small danger', 'aria-label': `Delete ${f.name}`, onclick: () => { u.selected = f.id; removeSelected(); } }, icon('x')));
-        if (f.kind !== 'rift') return row;
+        // when it exists: from its begin age (the start by default) to its end (the present by default)
+        const when = LATER.has(f.kind) ? (() => {
+          const age = (key, label, blank) => {
+            const i = h('input', { class: 'txt num', type: 'number', min: 0, max: Pw.start, step: 1, value: f[key] ?? '', placeholder: blank, 'aria-label': `${label} of ${f.name}` });
+            i.addEventListener('change', () => {
+              const v = i.value === '' ? null : clamp(Math.round(Number(i.value)), 0, Pw.start);
+              if (v === null || v === (key === 'begin' ? Pw.start : 0)) delete f[key]; else f[key] = v;
+              ctx.set('plates.features', Pw.features); renderList(); draw();
+            });
+            return h('label', { class: 'rift-side' }, h('span', { class: 'field-label' }, label), i);
+          };
+          const flip = f.kind === 'subduction' ? h('button', { type: 'button', class: 'btn small', title: 'Point the teeth at the other side', onclick: () => { f.side = f.side === 'right' ? 'left' : 'right'; ctx.set('plates.features', Pw.features); renderList(); draw(); } }, `Teeth ${f.side === 'right' ? 'right' : 'left'} · flip`) : null;
+          return h('div', { class: 'rift-sides' }, age('begin', f.kind === 'rift' ? 'Opens at, Ma' : 'From, Ma', String(Pw.start)), f.kind === 'subduction' ? age('end', 'Until, Ma', '0') : null, flip);
+        })() : null;
+        if (f.kind !== 'rift') return when ? h('div', null, row, when) : row;
         // a rift opens between two plates
         const side = (key, label) => {
           const s = h('select', { class: 'sel', 'aria-label': `${label} plate of ${f.name}` }, h('option', { value: '' }, '—'), Pw.plates.map((p) => h('option', { value: p.id, selected: p.id === f[key] }, `${p.id}`)));
@@ -651,7 +695,7 @@
           return h('label', { class: 'rift-side' }, h('span', { class: 'field-label' }, label), s);
         };
         return h('div', null, row, h('div', { class: 'rift-sides' }, side('left', 'Opens between'), side('right', 'and'),
-          h('button', { type: 'button', class: 'btn small', onclick: () => { Object.assign(f, sidesOf(Pw, f)); ctx.set('plates.features', Pw.features); renderList(); draw(); } }, 'Detect')));
+          h('button', { type: 'button', class: 'btn small', onclick: () => { Object.assign(f, sidesOf(Pw, f)); ctx.set('plates.features', Pw.features); renderList(); draw(); } }, 'Detect')), when);
       }
 
       function renderStats() {
@@ -662,6 +706,7 @@
             ['Cratons', `${fmt.num(st.cratons * 100, 1)} %`, `${st.counts.craton} drawn`, null],
             ['Land, estimated', `${fmt.num(st.land * 100, 1)} %`, 'crust × 29/41, Earth’s share above the sea', 'On Earth about 29 % of the surface is land on about 41 % continental crust: the rest is flooded shelf.'],
             ['Rifts', `${fmt.int(st.rift)} km`, `${st.counts.rift} rifts · ${st.counts.failed} failed (${fmt.int(st.failed)} km)`, null],
+            ['Subduction zones', `${fmt.int(st.subduction)} km`, `${st.counts.subduction} zones · ${st.counts.arc} island arcs`, 'The length of every subduction zone marked, whenever it is active.'],
             ['Fastest plate', fastest ? `${fmt.num(fastest.cm, 1)} cm/yr` : '—', fastest ? `${fastest.p.name}, ${fmt.int(fastest.from)}–${fmt.int(fastest.to)} Ma` : 'no poles yet', `Earth’s plates: 1–${SPEED_OK} cm/yr; the fastest about 15–${SPEED_MAX}.`]]
             .map(([l, v, sub, tip]) => h('div', { class: 'readout' }, h('div', { class: 'lbl' }, l, info(tip)), h('div', { class: 'val' }, v), h('div', { class: 'sub' }, sub)))),
           st.crust > 0 ? h('div', { class: 'btn-row', style: { marginTop: '10px' } },
@@ -683,7 +728,7 @@
           type: 'FeatureCollection',
           features: Pw.features.filter((f) => f.coords.length >= (KINDS[f.kind].closed ? 3 : 2)).map((f) => ({
             type: 'Feature',
-            properties: { name: f.name, kind: f.kind, PLATEID1: f.plateId, plate: (Pw.plates.find((p) => p.id === f.plateId) || {}).name || '', gplates: KINDS[f.kind].gplates, left: f.left ?? null, right: f.right ?? null },
+            properties: { name: f.name, kind: f.kind, PLATEID1: f.plateId, plate: (Pw.plates.find((p) => p.id === f.plateId) || {}).name || '', gplates: KINDS[f.kind].gplates, left: f.left ?? null, right: f.right ?? null, begin: f.begin ?? Pw.start, end: f.end ?? 0, side: f.side ?? null },
             geometry: KINDS[f.kind].closed ? { type: 'Polygon', coordinates: [[...f.coords, f.coords[0]].map(([la, lo]) => [lo, la])] } : { type: 'LineString', coordinates: f.coords.map(([la, lo]) => [lo, la]) },
           })),
         };
@@ -709,7 +754,7 @@
           const Pw = w.plates;
           const ensure = (id, name) => { if (!Pw.plates.some((q) => q.id === id)) Pw.plates.push({ id, name: name || `Plate ${id}`, colour: PALETTE[Pw.plates.length % PALETTE.length], fixed: 0, rotations: [] }); };
           for (const p of plates) ensure(p.id, p.name);
-          for (const f of features) { ensure(f.plateId); Pw.features.push({ id: newId(), kind: f.kind, plateId: f.plateId, name: f.name || KINDS[f.kind].label, coords: f.coords, left: f.left ?? null, right: f.right ?? null }); }
+          for (const f of features) { ensure(f.plateId); Pw.features.push({ id: newId(), kind: f.kind, plateId: f.plateId, name: f.name || KINDS[f.kind].label, coords: f.coords, left: f.left ?? null, right: f.right ?? null, ...(f.begin != null && f.begin < Pw.start ? { begin: f.begin } : {}), ...(f.end ? { end: f.end } : {}), ...(f.side ? { side: f.side } : {}) }); }
           for (const f of Pw.features) if (f.kind === 'rift' && !f.left && !f.right) Object.assign(f, sidesOf(Pw, f));
           Pw.nextPlate = Math.max(Pw.nextPlate, ...Pw.plates.map((p) => p.id + 1));
         }, { structural: true });
@@ -747,7 +792,7 @@
               const p = f.properties || {}, geom = f.geometry || {};
               const kind = KINDS[p.kind] ? p.kind : geom.type === 'Polygon' ? (/craton/i.test(p.gplates || p.TYPE || '') ? 'craton' : 'crust') : 'rift';
               const ring = geom.type === 'Polygon' ? geom.coordinates[0].slice(0, -1) : geom.type === 'LineString' ? geom.coordinates : null;
-              return ring ? { kind, plateId: Number(p.PLATEID1 ?? p.plateId ?? 0), name: p.name || p.NAME, coords: ring.map(([lo, la]) => [la, lo]), left: p.left, right: p.right } : null;
+              return ring ? { kind, plateId: Number(p.PLATEID1 ?? p.plateId ?? 0), name: p.name || p.NAME, coords: ring.map(([lo, la]) => [la, lo]), left: p.left, right: p.right, begin: p.begin, end: p.end, side: p.side } : null;
             }).filter(Boolean);
             await takeIn(feats, [], file.name);
             return;
@@ -766,7 +811,7 @@
         const has = P().features.length > 0;
         replace(gplatesHost,
           h('p', { class: 'muted', style: { fontSize: '13.5px', marginBottom: '10px' } },
-            server ? `Through the server’s pyGPlates ${server.version}: a .zip with a .gpml file (cratons, crust, rifts, and a flowline for each opening rift) and a .rot file with every plate’s rotation poles, which GPlates desktop opens as they are.`
+            server ? `Through the server’s pyGPlates ${server.version}: a .zip with a .gpml file (cratons, crust, rifts, subduction zones with their polarity, island arcs, each with the ages it exists, and a flowline for each opening rift) and a .rot file with every plate’s rotation poles, which GPlates desktop opens as they are.`
               : server === false ? 'GPlates feature files are made by the WorldSmith server (world.yusupov.cloud). Here you can still load a .rot rotation file, and save and load GeoJSON, which GPlates also reads.' : 'Checking the server…'),
           h('div', { class: 'btn-row' },
             h('button', { class: 'btn small primary', type: 'button', disabled: !server || !has, onclick: exportGplates }, icon('download'), 'Export for GPlates'),
@@ -847,7 +892,45 @@
         renderAuto(); renderSide(); startPlay();
       }
 
-      function renderSide() { renderTools(); renderMotion(); renderList(); renderStats(); }
+      function renderLog12() {
+        const Pw = P(), last = lastPole(), marked = Pw.features.filter((f) => f.auto && (f.kind === 'subduction' || f.kind === 'arc')).length;
+        const zones = Pw.features.filter((f) => f.kind === 'subduction').length;
+        const canRift = last !== null && !atStart() && u.age > 0 && Pw.features.some((f) => f.kind === 'crust');
+        replace(log12Host,
+          h('p', { class: 'muted', style: { fontSize: '13.5px', marginBottom: '10px' } }, 'Where a plate’s coast leads its motion it overrides the ocean floor in front of it, which dives into a trench: a subduction zone, on the overriding plate, teeth towards it. Some trenches lie just off the coast (the Andes); others further out, with a chain of island arcs behind (Japan). Tick Leading coasts to see where they belong at any age.'),
+          h('div', { class: 'btn-row' },
+            h('button', { class: 'btn small primary', type: 'button', disabled: last === null, onclick: markZones }, marked ? 'Mark them again' : 'Mark subduction zones & island arcs'),
+            h('span', { class: 'muted', style: { fontSize: '13px', alignSelf: 'center' } }, last === null ? 'simulate or move the plates first' : `${zones} zones so far`)),
+          h('p', { class: 'muted', style: { fontSize: '13.5px', margin: '14px 0 10px' } }, 'A second rifting event: a new rift opening across a plate at a later age. Pick the age with the time slider; the console cuts the largest plate across, clear of its cratons, and simulates the two parts breaking apart from then. (Or draw a rift at that age yourself, and split its plate along it.)'),
+          h('div', { class: 'btn-row' },
+            h('button', { class: 'btn small', type: 'button', disabled: !canRift, onclick: secondRiftHere }, canRift ? `Second rifting event at ${fmt.int(u.age)} Ma` : 'Second rifting event (pick an age first)')));
+      }
+      async function markZones() {
+        const Pw = P(), a = u.auto || {};
+        const old = Pw.features.filter((f) => f.auto && (f.kind === 'subduction' || f.kind === 'arc'));
+        if (old.length && !await WS.ui.ask(`Replace the ${old.length} subduction zones and island arcs marked before? Those you drew yourself stay.`, { title: 'Mark again', ok: 'Replace them' })) return;
+        const made = WS.supercontinent.markSubduction({ ...Pw, features: Pw.features.filter((f) => !old.includes(f)) }, { seed: (a.seed ?? Pw.seed ?? 1) + Pw.features.length, every: Math.max(25, a.every || 25), radiusKm: ctx.d.planet.radiusKm });
+        ctx.mutate((w) => { w.plates.features = w.plates.features.filter((f) => !old.includes(f)).concat(made); });
+        const z = made.filter((f) => f.kind === 'subduction').length, arcs = made.filter((f) => f.kind === 'arc').length;
+        toast(z ? `${z} subduction zones and ${arcs} island arcs, from ${fmt.int(Math.max(...made.map((f) => f.begin)))} Ma on` : 'No coast leads its plate into the ocean: nothing to subduct yet');
+        u.subduction = false; renderLog12(); renderSide(); renderTools(); draw();
+      }
+      async function secondRiftHere() {
+        const Pw = P(), a = u.auto || {}, age = Math.round(u.age);
+        const duration = a.duration ? Math.min(a.duration, age) : age;
+        if (!await WS.ui.ask(`Split the largest plate along a new rift at ${fmt.int(age)} Ma, and simulate everything breaking apart from then for ${fmt.int(duration)} Myr? Every pole after ${fmt.int(age)} Ma is replaced.`, { title: 'Second rifting event', ok: 'Rift it', danger: true })) return;
+        const sr = WS.supercontinent.secondRift(Pw, age, { seed: (a.seed ?? Pw.seed ?? 1) + age, colour: PALETTE[Pw.plates.length % PALETTE.length] });
+        if (!sr) { toast('No plate has crust wide enough to rift clear of its cratons at this age'); return; }
+        const res = WS.supercontinent.simulate({ ...Pw, ...sr }, { seed: (a.seed ?? 1) + age, mode: 'apart', from: age, duration, interval: Math.min(a.every || 20, duration), minSpeed: Math.min(1.5, a.speed || 4), maxSpeed: a.speed || 4, radiusKm: ctx.d.planet.radiusKm });
+        ctx.mutate((w) => {
+          w.plates.features = sr.features.filter((f) => !(f.auto && (f.begin ?? Pw.start) < age));   // marks after the rift no longer hold
+          w.plates.plates = res.plates; w.plates.nextPlate = sr.nextPlate;
+        });
+        toast(`${sr.rift.name} splits plate ${sr.rift.plateId} at ${fmt.int(age)} Ma; breaking apart to ${fmt.int(res.end)} Ma. Mark the subduction zones again for the new motion.`);
+        u.selected = sr.rift.id; renderAuto(); renderLog12(); renderSide(); startPlay();
+      }
+
+      function renderSide() { renderTools(); renderMotion(); renderList(); renderStats(); renderLog12(); }
 
       return {
         el,
@@ -889,6 +972,14 @@
         else if (s.cm > SPEED_OK) out.push({ level: 'warn', text: `${p.name} moves ${fmt.num(s.cm, 1)} cm/yr between ${fmt.int(s.from)} and ${fmt.int(s.to)} Ma: fast (Earth’s plates mostly 1–${SPEED_OK}).` });
       }
       if (P.plates.some((p) => (p.rotations || []).length) && !out.some((o) => /cm\/yr/.test(o.text))) out.push({ level: 'ok', text: `Every plate moves at a believable speed (≤ ${SPEED_OK} cm/yr).` });
+      // Log 12
+      const zones = P.features.filter((f) => f.kind === 'subduction');
+      if (P.plates.some((p) => (p.rotations || []).length) && !zones.length) out.push({ level: 'info', text: 'The plates move but no subduction zones are marked: the ocean floor they push against has to go somewhere (Log 12).' });
+      for (const a of P.features.filter((f) => f.kind === 'arc')) {
+        const near = zones.some((z) => z.plateId === a.plateId && S.distanceToLine(S.latLon(S.centroid(a.coords)), z.coords) < 8);
+        if (!near) out.push({ level: 'warn', text: `${a.name} has no subduction zone on its plate nearby: island arcs rise a little behind a trench.` });
+      }
+      for (const z of zones) if (z.end != null && z.begin != null && z.end >= z.begin) out.push({ level: 'warn', text: `${z.name} ends (${z.end} Ma) before it begins (${z.begin} Ma).` });
       return out;
     },
   });

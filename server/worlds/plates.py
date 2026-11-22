@@ -8,9 +8,11 @@
   POST /api/plates/import   multipart "file": a .gpml or .gpmlz feature collection
                             → {"features": [...], "plates": [...], "skipped": n}
 
-Shapes are [lat, lon] lists. kind is craton | crust | rift | failed, written as the GPlates feature
-types Craton, ContinentalCrust and ContinentalRift (a failed rift is a ContinentalRift whose
-description says so). Shapes are stored as they were at the start age (the supercontinent as drawn),
+Shapes are [lat, lon] lists. kind is craton | crust | rift | failed | subduction | arc, written as the
+GPlates feature types Craton, ContinentalCrust, ContinentalRift (a failed rift is a ContinentalRift
+whose description says so), SubductionZone (on the overriding plate, with its subductionPolarity: the
+overriding side, left or right of the line as drawn) and IslandArc. A rift, trench or arc may begin
+after the start age ("begin") and a trench end before the present ("end"): their valid times. Shapes are stored as they were at the start age (the supercontinent as drawn),
 where every rotation is the identity. The rotation file holds each plate's total rotations relative
 to its fixed plate: the identity at the start age (and back to 4000 Ma), the poles set in WorldSmith,
 and the youngest pole again at 0 Ma, so the plate holds still after its last move. A rift with a
@@ -32,7 +34,10 @@ from django.views.decorators.http import require_GET, require_POST
 MAX_BODY = 4 * 1024 * 1024
 MAX_FEATURES = 2000
 MAX_POINTS = 20000
-KINDS = {'craton': 'Craton', 'crust': 'ContinentalCrust', 'rift': 'ContinentalRift', 'failed': 'ContinentalRift'}
+KINDS = {'craton': 'Craton', 'crust': 'ContinentalCrust', 'rift': 'ContinentalRift', 'failed': 'ContinentalRift',
+         'subduction': 'SubductionZone', 'arc': 'IslandArc'}
+CLOSED = ('craton', 'crust', 'arc')
+POLARITY = 'subductionPolarity'
 FAILED = 'failed rift'
 OLDEST = 4000.0
 
@@ -126,7 +131,7 @@ def export(request):
     for f in feats:
         if not isinstance(f, dict) or f.get('kind') not in KINDS:
             continue
-        closed = f['kind'] in ('craton', 'crust')
+        closed = f['kind'] in CLOSED
         coords = _clean_coords(f.get('coords'), closed)
         if coords is None:
             continue
@@ -136,16 +141,20 @@ def export(request):
         plate_id = _plate_id(f.get('plateId')) or 0
         plate_ids.add(plate_id)
         geometry = pg.PolygonOnSphere(coords) if closed else pg.PolylineOnSphere(coords)
+        # when it exists: a rift, trench or arc can begin after the start, and a trench end before the present
+        begin = float(f['begin']) if _number(f.get('begin')) and 0 < f['begin'] < start else start
+        end = float(f['end']) if _number(f.get('end')) and 0 < f['end'] < begin else pg.GeoTimeInstant.create_distant_future()
         feature = pg.Feature.create_reconstructable_feature(
             pg.FeatureType.create_gpml(KINDS[f['kind']]), geometry,
-            name=str(f.get('name') or '')[:120], valid_time=(start, pg.GeoTimeInstant.create_distant_future()),
-            reconstruction_plate_id=plate_id)
+            name=str(f.get('name') or '')[:120], valid_time=(begin, end), reconstruction_plate_id=plate_id)
         if f['kind'] == 'failed':
             feature.set_description(FAILED)
+        if f['kind'] == 'subduction':                              # the side of the overriding plate, as drawn
+            feature.set_enumeration(pg.PropertyName.create_gpml(POLARITY), 'Right' if f.get('side') == 'right' else 'Left')
         out.append(feature)
         left, right = _plate_id(f.get('left')), _plate_id(f.get('right'))
         if f['kind'] == 'rift' and left and right and left != right:
-            rifts.append((str(f.get('name') or 'Rift')[:120], coords, left, right))
+            rifts.append((str(f.get('name') or 'Rift')[:120], coords, left, right, plate_id, begin))
             plate_ids.update((left, right))
     if not out:
         return error('No valid shapes to export.')
@@ -166,17 +175,20 @@ def export(request):
         rotations.append(pg.Feature.create_total_reconstruction_sequence(fixed, pid, pg.GpmlIrregularSampling(
             [pg.GpmlTimeSample(pg.GpmlFiniteRotation(r), age, label) for age, r in seq])))
 
-    # flowlines: seeded on each opening rift at the start age, where its two plates still touch
+    # flowlines: seeded on each opening rift when it opens, where its two plates still touch
     if rifts:
         model = pg.RotationModel(rotations)
-        times = [0.0]
-        while times[-1] + step < start:
-            times.append(times[-1] + step)
-        times.append(start)
-        for rift_name, coords, left, right in rifts:
+        for rift_name, coords, left, right, plate_id, begin in rifts:
+            times = [0.0]
+            while times[-1] + step < begin:
+                times.append(times[-1] + step)
+            times.append(begin)
+            # the rift as it lay when it opened (its coordinates are in its plate's own frame)
+            turn = model.get_rotation(begin, plate_id) if plate_id else pg.FiniteRotation.create_identity_rotation()
+            seeds = pg.MultiPointOnSphere([turn * pg.PointOnSphere(c) for c in coords])
             out.append(pg.Feature.create_flowline(
-                pg.MultiPointOnSphere(coords), times, name=f'{rift_name} flowline', valid_time=(start, 0.0),
-                left_plate=left, right_plate=right, reverse_reconstruct=(model, start)))
+                seeds, times, name=f'{rift_name} flowline', valid_time=(begin, 0.0),
+                left_plate=left, right_plate=right, reverse_reconstruct=(model, begin)))
 
     name = _safe(data.get('name'))
     buf = io.BytesIO()
@@ -189,8 +201,9 @@ def export(request):
             z.write(rot, f'{name}.rot')
             z.writestr('README.txt', (
                 f'{name} - supercontinent exported from WorldSmith\n\n'
-                f'{name}.gpml  cratons, continental crust and rifts (failed rifts: ContinentalRift, description "{FAILED}"),\n'
-                '              and a Flowline for each rift that opens between two plates\n'
+                f'{name}.gpml  cratons, continental crust, rifts (failed rifts: ContinentalRift, description "{FAILED}"),\n'
+                '              subduction zones (SubductionZone, with polarity) and island arcs (IslandArc),\n'
+                '              each valid from when it forms, and a Flowline for each rift that opens between two plates\n'
                 f'{name}.rot   every plate\'s rotation poles, relative to its fixed plate\n\n'
                 f'The shapes are the supercontinent as drawn at {start:.0f} Ma, where every rotation is zero.\n'
                 'In GPlates: File > Open Feature Collection, open both files, then move the time slider.\n'))
@@ -228,7 +241,7 @@ def import_(request):
     features, plates, skipped, points = [], {}, 0, 0
     for feature in collection:
         ftype = feature.get_feature_type().get_name()
-        kind = {'Craton': 'craton', 'ContinentalCrust': 'crust', 'ContinentalRift': 'rift'}.get(ftype)
+        kind = {'Craton': 'craton', 'ContinentalCrust': 'crust', 'ContinentalRift': 'rift', 'SubductionZone': 'subduction', 'IslandArc': 'arc'}.get(ftype)
         if kind is None:
             skipped += 1
             continue
@@ -237,9 +250,9 @@ def import_(request):
         plate_id = feature.get_reconstruction_plate_id(0)
         for geometry in feature.get_geometries():
             closed = isinstance(geometry, pg.PolygonOnSphere)
-            if kind in ('craton', 'crust') and not closed:
+            if kind in CLOSED and not closed:
                 continue
-            if kind in ('rift', 'failed') and not isinstance(geometry, pg.PolylineOnSphere):
+            if kind not in CLOSED and not isinstance(geometry, pg.PolylineOnSphere):
                 continue
             coords = [[round(lat, 4), round(lon, 4)] for lat, lon in geometry.to_lat_lon_list()]
             if closed and len(coords) > 3 and coords[0] == coords[-1]:
@@ -247,6 +260,15 @@ def import_(request):
             points += len(coords)
             if points > MAX_POINTS or len(features) >= MAX_FEATURES:
                 return error('Too many shapes or points.', 413)
-            features.append({'kind': kind, 'plateId': int(plate_id), 'name': feature.get_name() or '', 'coords': coords})
+            item = {'kind': kind, 'plateId': int(plate_id), 'name': feature.get_name() or '', 'coords': coords}
+            begin, end = feature.get_valid_time()
+            if math.isfinite(begin) and begin < OLDEST:
+                item['begin'] = round(begin, 3)
+            if math.isfinite(end) and end > 0:
+                item['end'] = round(end, 3)
+            if kind == 'subduction':
+                polarity = feature.get_enumeration(pg.PropertyName.create_gpml(POLARITY), 'Left')
+                item['side'] = 'right' if str(polarity).lower() == 'right' else 'left'
+            features.append(item)
             plates.setdefault(int(plate_id), {'id': int(plate_id), 'name': f'Plate {plate_id}'})
     return JsonResponse({'features': features, 'plates': list(plates.values()), 'skipped': skipped})

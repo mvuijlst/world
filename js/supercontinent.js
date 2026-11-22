@@ -349,11 +349,13 @@
       if (assembled) break;                                    // one supercontinent: the gathering is over
     }
 
+    const priorAges = [...new Set(P.plates.flatMap((q) => (q.rotations || []).map((x) => x.age)).filter((a) => a > from && a < start))].sort((x, y) => y - x);
     const plates = P.plates.map((p) => {
       const b = bodies.find((x) => x.id === p.id);
       if (!b) return keep(p);
       // the poles before `from`, as rotations relative to plate 0 like the new ones
-      const older = from < start ? (p.rotations || []).filter((x) => x.age > from).map((x) => (p.fixed ? pole(m0.absolute(p.id, x.age), x.age) : { ...x })) : [];
+      // (a plate riding on another, such as half of a newly split plate, takes its poles at every age any plate has one)
+      const older = from >= start ? [] : p.fixed ? priorAges.map((a) => pole(m0.absolute(p.id, a), a)) : (p.rotations || []).filter((x) => x.age > from).map((x) => ({ ...x }));
       return { ...p, fixed: 0, rotations: [...older, ...b.poles] };
     });
     return { plates, welds, end: +Math.max(0, age).toFixed(3), assembled: mode === 'together' && bodies.every((_, i) => find(i) === find(0)) };
@@ -385,7 +387,169 @@
     return { plates, welds, end: from, phases };
   }
 
-  const api = { generate, simulate };
+  // ── Log 12: subduction zones, island arcs, a second rift ──────────────────────────────────
+
+  /* Points round a crust shape's coast, every 1.5°, with the outward normal: unit vectors in its plate's frame. */
+  const marginCache = new Map();
+  function margins(f) {
+    const key = `${f.id}:${f.coords.length}:${f.coords[0]}:${f.coords[f.coords.length - 1]}`;
+    if (marginCache.has(key)) return marginCache.get(key);
+    const ring = S.densify(f.coords, true, 1.5), inside = S.within(f.coords), vs = ring.map(S.vec);
+    const out = vs.map((v, i) => {
+      const a = vs[(i - 1 + vs.length) % vs.length], b = vs[(i + 1) % vs.length];
+      let n = norm(cross(v, [b[0] - a[0], b[1] - a[1], b[2] - a[2]]));
+      if (inside(norm(v.map((x, q) => x + 0.01 * n[q])))) n = n.map((x) => -x);
+      return { v, n };
+    });
+    marginCache.set(key, out);
+    if (marginCache.size > 500) marginCache.delete(marginCache.keys().next().value);
+    return out;
+  }
+
+  /*
+   * Leading coasts at an age: stretches of continental coast that lead their plate's motion
+   * (faster than 0.8 cm/yr over the `dt` Myr before), facing the sea rather than another plate's
+   * crust. There the continent overrides the ocean floor in front of it: a subduction zone.
+   * Returns [{plateId, feature, points: [{v, n}]}], v and n in the plate's own frame (rotate by
+   * m.absolute(plateId, age) to place them).
+   */
+  function leadingCoasts(P, m, age, radiusKm = 6371, dt = 5) {
+    const start = P.start ?? 1000;
+    const a0 = Math.min(start, age + dt), a1 = a0 - dt;
+    if (a0 <= a1 || a1 < 0) return [];
+    const crusts = P.features.filter((f) => f.kind === 'crust' && f.coords.length >= 3 && (f.begin ?? start) >= age);
+    const others = crusts.map((f) => ({ plateId: f.plateId, inside: S.within(m.reconstruct(f.plateId, f.coords, age)) }));
+    const out = [];
+    for (const f of crusts) {
+      const A = m.absolute(f.plateId, age), A0 = m.absolute(f.plateId, a0), A1 = m.absolute(f.plateId, a1);
+      const pts = margins(f).map(({ v, n }) => {
+        const p0 = Q.rotate(A0, v), p1 = Q.rotate(A1, v), d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]], len = Math.hypot(...d);
+        const nn = Q.rotate(A0, n), cm = ((len * radiusKm) / dt) * 0.1;
+        const lead = cm > 0.8 && dot(d, nn) / len > 0.35;
+        const cur = Q.rotate(A, v), nc = Q.rotate(A, n);
+        const open = lead && !others.some((o) => o.plateId !== f.plateId && o.inside(norm(cur.map((x, q) => x + 0.02 * nc[q]))));
+        return { v, n, on: open };
+      });
+      if (!pts.some((q) => q.on)) continue;
+      const len = pts.length, first = pts.findIndex((q) => !q.on);
+      if (first < 0) { out.push({ plateId: f.plateId, feature: f, points: pts.concat([pts[0]]) }); continue; }
+      let run = [];
+      for (let i = 1; i <= len; i++) {
+        const q = pts[(first + i) % len];
+        if (q.on) run.push(q); else { if (run.length >= 3) out.push({ plateId: f.plateId, feature: f, points: run }); run = []; }
+      }
+    }
+    return out;
+  }
+
+  /* A line `d` degrees out from a run of coast, smoothed. */
+  function offshore(points, d) {
+    const raw = points.map(({ v, n }) => norm(v.map((x, q) => Math.cos(d * D2R) * x + Math.sin(d * D2R) * n[q])));
+    return raw.map((_, i) => norm(raw.slice(Math.max(0, i - 2), i + 3).reduce((s, w) => s.map((x, q) => x + w[q]), [0, 0, 0])));
+  }
+  /* Which side of a line (as drawn) a direction points to: 'left' or 'right'. */
+  function sideOf(line, towards) {
+    const i = Math.max(0, Math.floor((line.length - 2) / 2)), a = line[i], b = line[i + 1];
+    return dot(cross(a, [b[0] - a[0], b[1] - a[1], b[2] - a[2]]), towards) > 0 ? 'left' : 'right';
+  }
+
+  /*
+   * Subduction zones and island arcs through a simulation, as in Log 12. Every `every` Myr from
+   * `from` down to `to`, the leading coasts are found; each new one starts a subduction zone (a
+   * SubductionZone on the overriding plate, polarity towards that plate), which lasts until its
+   * coast stops leading. Some are Andean margins, the trench just offshore; others have the trench
+   * well out to sea, with a chain of island arcs on the overriding plate behind it (as Japan).
+   * Returns new features, in the plates' own frames, with begin and end ages.
+   */
+  function markSubduction(P, opts = {}) {
+    const start = P.start ?? 1000, R = opts.radiusKm ?? 6371;
+    const every = Math.max(5, opts.every ?? 25);
+    const ages = P.plates.flatMap((p) => (p.rotations || []).map((x) => x.age));
+    const to = opts.to ?? (ages.length ? Math.min(...ages) : start), from = Math.min(start - 5, opts.from ?? start - every);
+    const m = Q.model(P.plates, start);
+    const r = rng(((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x5ab) >>> 0), U = (a, b) => a + (b - a) * r();
+    const zones = [], arcs = [];
+    let nz = P.features.filter((f) => f.kind === 'subduction').length, na = P.features.filter((f) => f.kind === 'arc').length;
+    const tag = `s${Date.now().toString(36)}`;
+    const toLL = (vs) => vs.map(ll);
+    for (let age = from; age >= to - 1e-9; age -= every) {
+      const runs = leadingCoasts(P, m, age, R).filter((rn) => rn.points.length >= 5);
+      const used = new Set();
+      for (const z of zones) {
+        if (z.end !== undefined) continue;
+        const hit = runs.findIndex((rn, i) => !used.has(i) && rn.plateId === z.plateId && rn.points.some(({ v }) => S.distanceToLine(S.latLon(v), z.coords) < z.offset + 3));
+        if (hit >= 0) used.add(hit); else z.end = +age.toFixed(3);
+      }
+      runs.forEach((rn, i) => {
+        if (used.has(i)) return;
+        const island = r() < (opts.islandShare ?? 0.5) && rn.points.length >= 5;
+        const offset = island ? U(4, 6) : U(0.8, 1.5);
+        const trench = offshore(rn.points, offset).filter((_, k, all) => k % 2 === 0 || k === all.length - 1);
+        if (trench.length < 2) return;
+        const landward = rn.points[Math.floor(rn.points.length / 2)].n.map((x) => -x);
+        zones.push({ id: `${tag}-z${zones.length}`, kind: 'subduction', plateId: rn.plateId, name: `Subduction zone ${++nz}`, coords: toLL(trench), side: sideOf(trench, landward), begin: +age.toFixed(3), offset, auto: true });
+        if (!island) return;
+        // the island arc: a narrow, lumpy belt of islands about 1.5° behind the trench, on the overriding plate
+        const line = offshore(rn.points, offset - U(1.2, 1.8)), nrm = rn.points.map((q) => q.n);
+        const w = U(0.3, 0.5), lump = wander(r, 0.35, 1.5);
+        const half = (sg) => line.map((v, j) => {
+          const t = j / (line.length - 1), wj = w * Math.max(0.25, Math.sin(Math.PI * t) ** 0.5 * (1 + lump(j))), n = nrm[j];
+          return norm(v.map((x, q) => x + sg * wj * D2R * n[q]));
+        });
+        arcs.push({ id: `${tag}-a${arcs.length}`, kind: 'arc', plateId: rn.plateId, name: `Island arc ${++na}`, coords: toLL([...half(1), ...half(-1).reverse()]), begin: +age.toFixed(3), auto: true });
+      });
+    }
+    for (const z of zones) delete z.offset;
+    return [...zones, ...arcs];
+  }
+
+  /*
+   * A second rifting event at an age (Log 12): a rift across the largest plate's largest piece of
+   * crust, roughly across its long axis and clear of its cratons. The piece is split; the smaller
+   * part becomes a new plate moving with the old one until then (fixed to it, no rotation of its
+   * own), so the two can part from that age. Returns {plates, features, nextPlate, rift} or null.
+   */
+  function secondRift(P, age, opts = {}) {
+    const start = P.start ?? 1000;
+    const r = rng((((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x2e1f) + Math.round(age)) >>> 0), U = (a, b) => a + (b - a) * r();
+    const crusts = P.features.filter((f) => f.kind === 'crust' && f.coords.length >= 3 && (f.begin ?? start) >= age);
+    const area = (id) => crusts.filter((f) => f.plateId === id).reduce((s, f) => s + S.areaFraction(f.coords), 0);
+    const plateIds = [...new Set(crusts.map((f) => f.plateId))].sort((a, b) => area(b) - area(a));
+    for (const pid of plateIds) {
+      const f = crusts.filter((x) => x.plateId === pid).sort((a, b) => S.areaFraction(b.coords) - S.areaFraction(a.coords))[0];
+      const cratons = P.features.filter((c) => c.kind === 'craton' && c.plateId === pid);
+      const inside = S.within(f.coords), c = S.centroid(f.coords);
+      const far = f.coords.map(S.vec).reduce((a, v) => (angle(c, v) > angle(c, a) ? v : a), S.vec(f.coords[0]));
+      for (let tries = 0; tries < 30; tries++) {
+        const centre = dest(c, U(0, 360), U(0, 6)), b = bearingTo(centre, far) + 90 + U(-25, 25), w = wander(r, 7, 8);
+        const arm = (sg) => { const pts = []; for (let s = 2; s < 120; s += 2) { const v = dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s); pts.push(v); if (!inside(v)) { pts.push(dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s + 2.5)); break; } } return pts; };
+        const line = [...arm(-1).reverse(), centre, ...arm(1)];
+        const lineLL = line.map(S.latLon);
+        if (cratons.some((k) => lineLL.some((p) => S.contains(k.coords, p)) || S.distanceToLine(S.latLon(S.centroid(k.coords)), lineLL) < 3)) continue;
+        const parts = S.splitPolygon(f.coords, lineLL);
+        if (!parts) continue;
+        const sizes = parts.map((q) => S.areaFraction(q)), small = sizes[0] < sizes[1] ? 0 : 1;
+        if (sizes[small] < 0.25 * (sizes[0] + sizes[1])) continue;
+        const newId = Math.max(P.nextPlate ?? 0, ...P.plates.map((p) => p.id + 1));
+        const inSmall = S.within(parts[small]);
+        const moves = (x) => x.plateId === pid && x.coords.length && inSmall(S.vec(KIND_CLOSED.has(x.kind) ? S.latLon(S.centroid(x.coords)) : x.coords[Math.floor(x.coords.length / 2)]));
+        const features = P.features.flatMap((x) => {
+          if (x === f) return parts.map((ring, i) => ({ ...x, id: `${x.id}-${i ? 'b' : 'a'}`, name: `${x.name} ${i === small ? 'B' : 'A'}`, plateId: i === small ? newId : pid, coords: ring.map(([la, lo]) => [+la.toFixed(4), +lo.toFixed(4)]) }));
+          return [x.kind !== 'rift' && x.kind !== 'crust' && moves(x) ? { ...x, plateId: newId } : x];
+        });
+        const mid = Math.floor(line.length / 2), n = norm(cross(line[mid], [line[mid + 1][0] - line[mid][0], line[mid + 1][1] - line[mid][1], line[mid + 1][2] - line[mid][2]]));
+        const leftIsSmall = inSmall(norm(line[mid].map((x, q) => x + 0.03 * n[q])));
+        const rift = { id: `r${Date.now().toString(36)}`, kind: 'rift', plateId: pid, name: `Rift ${P.features.filter((x) => x.kind === 'rift').length + 1}`, coords: lineLL.map(([la, lo]) => [+la.toFixed(4), +lo.toFixed(4)]), left: leftIsSmall ? newId : pid, right: leftIsSmall ? pid : newId, begin: +age.toFixed(3) };
+        features.push(rift);
+        const plates = [...P.plates.map((p) => ({ ...p })), { id: newId, name: `Plate ${newId}`, colour: opts.colour, fixed: pid, rotations: [] }];
+        return { plates, features, nextPlate: newId + 1, rift };
+      }
+    }
+    return null;
+  }
+  const KIND_CLOSED = new Set(['crust', 'craton', 'arc']);
+
+  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.supercontinent = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

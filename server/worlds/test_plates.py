@@ -126,3 +126,41 @@ class DriftTests(TestCase):
     def test_bad_start_age(self):
         r = Client().post('/api/plates/export', json.dumps({**DRIFT, 'start': -5}), content_type='application/json')
         self.assertEqual(r.status_code, 400)
+
+
+class SubductionTests(TestCase):
+    @skipUnless(HAVE, 'pyGPlates not installed')
+    def test_subduction_zones_arcs_and_a_later_rift_round_trip(self):
+        pg = pygplates()
+        world = json.loads(json.dumps(DRIFT))
+        world['features'] += [
+            {'kind': 'subduction', 'plateId': 2, 'name': 'Trench', 'coords': [[-20, 25], [0, 26], [20, 25]], 'side': 'right', 'begin': 950, 'end': 850},
+            {'kind': 'arc', 'plateId': 2, 'name': 'Arc', 'coords': [[-5, 23], [5, 23], [5, 24], [-5, 24]], 'begin': 950},
+            {'kind': 'rift', 'plateId': 2, 'name': 'Late rift', 'coords': [[-30, 10], [0, 10], [30, 10]], 'left': 2, 'right': 3, 'begin': 900},
+        ]
+        world['plates'].append({'id': 3, 'name': 'Split', 'fixed': 2, 'rotations': []})
+        c = Client()
+        r = c.post('/api/plates/export', json.dumps(world), content_type='application/json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        gpml = z.read('Drift.gpml')
+        self.assertIn(b'gpml:SubductionZone', gpml)
+        self.assertIn(b'gpml:IslandArc', gpml)
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            z.extractall(tmp)
+            fc = pg.FeatureCollection(os.path.join(tmp, 'Drift.gpml'))
+        trench = next(f for f in fc if f.get_name() == 'Trench')
+        self.assertEqual(trench.get_enumeration(pg.PropertyName.create_gpml('subductionPolarity')), 'Right')
+        self.assertEqual(trench.get_valid_time(), (950.0, 850.0))
+        late = next(f for f in fc if f.get_name() == 'Late rift flowline')
+        self.assertEqual(late.get_valid_time()[0], 900.0)
+
+        r = c.post('/api/plates/import', {'file': SimpleUploadedFile('Drift.gpml', gpml, content_type='application/xml')})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        got = {f['name']: f for f in r.json()['features']}
+        self.assertEqual((got['Trench']['kind'], got['Trench']['side'], got['Trench']['begin'], got['Trench']['end']), ('subduction', 'right', 950.0, 850.0))
+        self.assertEqual((got['Arc']['kind'], got['Arc']['begin']), ('arc', 950.0))
+        self.assertEqual(got['Late rift']['begin'], 900.0)
+        self.assertEqual(got['West crust'].get('begin'), 1000.0)                  # from the start: the app keeps it as drawn
