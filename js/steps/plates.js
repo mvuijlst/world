@@ -91,15 +91,17 @@
       const P = () => ctx.world.plates;
       const u = (ctx.ui.plates = ctx.ui.plates || { lat: 20, lon: 10, zoom: 1, tool: 'look', draft: [], selected: null, plate: null, age: null, playing: false, spread: true, flow: false });
       if (u.age === null || u.age > P().start) u.age = P().start;
+      u.playing = false;                                        // a fresh view starts paused
       const host = h('div', { class: 'scene-host globe-host' });
       const hint = h('div', { class: 'scene-status mono' });
       const timeHost = h('div', { class: 'time-bar' });
-      const toolsHost = h('div'), listHost = h('div'), statsHost = h('div'), gplatesHost = h('div'), motionHost = h('div');
+      const autoHost = h('div'), toolsHost = h('div'), listHost = h('div'), statsHost = h('div'), gplatesHost = h('div'), motionHost = h('div');
       let server = null;
 
       const el = h('div', { class: 'grid two' },
         h('div', { class: 'stack-gap' },
-          panel('Draw & move', { ticks: true, tag: 'TOOLS' }, toolsHost),
+          panel('Make & simulate', { ticks: true, tag: 'AUTOMATIC' }, autoHost),
+          panel('Draw & move', { tag: 'TOOLS' }, toolsHost),
           panel('Plate motion', { tag: 'ROTATION POLES' }, motionHost),
           panel('Plates & features', { tag: 'INVENTORY' }, listHost),
           panel('GPlates', { tag: 'IMPORT · EXPORT' }, gplatesHost)),
@@ -384,11 +386,19 @@
       // ── time ──
       let raf = null, lastT = 0;
       const setAge = (a) => { u.age = clamp(Math.round(a), 0, P().start); renderTime(); renderMotion(); draw(); };
+      /* Play runs to the last pole (nothing moves after it), or on to the present from there. */
+      const playEnd = () => { const ys = P().plates.flatMap((p) => (p.rotations || []).map((r) => r.age)); const last = ys.length ? Math.min(...ys) : 0; return u.age > last ? last : 0; };
+      const startPlay = () => {
+        if (u.age <= playEnd()) u.age = P().start;
+        u.playing = true; lastT = 0;
+        if (!raf) raf = requestAnimationFrame(play);
+        renderTime(); draw();
+      };
       const play = (ts) => {
         raf = null;
         if (!u.playing || !host.isConnected) return;
         if (!lastT) lastT = ts;
-        if (ts - lastT > 280) { lastT = ts; if (u.age <= 0) { u.playing = false; renderTime(); return; } setAge(u.age - (P().step || 10)); }
+        if (ts - lastT > 280) { lastT = ts; if (u.age <= playEnd()) { u.playing = false; renderTime(); return; } setAge(Math.max(playEnd(), u.age - (P().step || 10))); }
         raf = requestAnimationFrame(play);
       };
       function renderTime() {
@@ -402,7 +412,7 @@
           u.age = v; renderSide(); renderTime(); draw();
         });
         replace(timeHost,
-          h('button', { class: 'btn small primary', type: 'button', onclick: () => { u.playing = !u.playing; if (u.playing) { if (u.age <= 0) u.age = Pw.start; lastT = 0; raf = requestAnimationFrame(play); } renderTime(); } }, u.playing ? '❚❚' : '▶'),
+          h('button', { class: 'btn small primary', type: 'button', onclick: () => { if (u.playing) { u.playing = false; renderTime(); } else startPlay(); } }, u.playing ? '❚❚' : '▶'),
           h('button', { class: 'btn small', type: 'button', 'aria-label': 'Back one step', onclick: () => setAge(u.age + (Pw.step || 10)) }, '−'),
           h('div', { class: 'time-slider' }, slider, h('div', { class: 'time-scale mono' }, h('span', null, `${fmt.int(Pw.start)} Ma`), h('span', { class: 't-amber' }, `${fmt.int(u.age)} Ma · ${fmt.int(Pw.start - u.age)} Myr after the start`), h('span', null, '0 Ma'))),
           h('button', { class: 'btn small', type: 'button', 'aria-label': 'Forward one step', onclick: () => setAge(u.age - (Pw.step || 10)) }, '+'),
@@ -642,12 +652,75 @@
           h('p', { class: 'muted', style: { fontSize: '12.5px', marginTop: '10px' } }, 'In GPlates: File → Open Feature Collection, pick both files. Ages are in Ma; the shapes are stored as they were at the start age, where every rotation is zero.'));
       }
 
+      // ── make & simulate (Log 10 and 11, done for you) ──
+      function renderAuto() {
+        const a = (u.auto = u.auto || { seed: P().seed ?? ((Math.random() * 1e6) | 0), plates: 3, crust: 33, duration: 100, every: 20, speed: 4 });
+        const num = (key, attrs, label, tip) => {
+          const i = h('input', { class: 'txt num', type: 'number', value: a[key], 'aria-label': label, ...attrs });
+          i.addEventListener('change', () => { const v = Number(i.value); if (Number.isFinite(v)) a[key] = clamp(v, Number(attrs.min), Number(attrs.max)); i.value = a[key]; });
+          return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label, tip ? info(tip) : null), i);
+        };
+        const choice = (key, opts, label, tip) => {
+          const sel = h('select', { class: 'sel', 'aria-label': label }, opts.map(([v, t]) => h('option', { value: v, selected: a[key] === v }, t)));
+          sel.addEventListener('change', () => { a[key] = Number(sel.value); });
+          return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label, tip ? info(tip) : null), sel);
+        };
+        const dice = h('button', { class: 'btn small', type: 'button', 'aria-label': 'New random seed', title: 'New random seed', onclick: () => { a.seed = (Math.random() * 1e6) | 0; renderAuto(); } }, '⚄');
+        const has = P().features.length > 0, moving = P().plates.some((p) => (p.rotations || []).length);
+        replace(autoHost,
+          h('p', { class: 'muted', style: { fontSize: '13.5px', marginBottom: '10px' } }, 'Let the console make the supercontinent: plates split by rifts from a triple junction, a craton or two on each, failed rifts branching off. Then simulate its breakup. Everything it makes can be edited by hand afterwards.'),
+          h('div', { class: 'auto-grid' },
+            h('div', { class: 'seed-row' }, num('seed', { min: 0, max: 2147483647, step: 1 }, 'Seed', 'The same seed and settings make the same supercontinent and the same drift.'), dice),
+            choice('plates', [[3, '3 · one triple junction'], [4, '4'], [5, '5']], 'Plates'),
+            num('crust', { min: 15, max: 40, step: 1 }, 'Crust, % of surface', 'Earth’s continental crust covers about 40 % of it; a supercontinent of 30–35 % leaves room for shelves.')),
+          h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+            h('button', { class: 'btn small primary', type: 'button', onclick: generate }, has ? 'Replace with a new supercontinent' : 'Generate supercontinent')),
+          h('div', { class: 'auto-grid', style: { marginTop: '14px' } },
+            choice('duration', [[50, '50 Myr'], [100, '100 Myr'], [200, '200 Myr'], [300, '300 Myr']], 'Simulate for', 'Log 11 covers the first 100 million years.'),
+            choice('every', [[10, '10 Myr'], [20, '20 Myr'], [25, '25 Myr'], [50, '50 Myr']], 'A pole every'),
+            num('speed', { min: 2, max: 15, step: 0.5 }, 'Top speed, cm/yr', `The largest plate stays nearly still; each other one gets a speed between 1.5 cm/yr and this. Earth’s mostly move 1–${SPEED_OK}.`)),
+          h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+            h('button', { class: 'btn small primary', type: 'button', disabled: !has, onclick: simulate }, moving ? 'Simulate again' : 'Simulate the breakup')));
+      }
+      function generate() {
+        const a = u.auto;
+        if (P().features.length && !confirm('Replace everything drawn on this globe with a new supercontinent?')) return;
+        const g = WS.supercontinent.generate({ seed: a.seed, plates: a.plates, crust: a.crust / 100 });
+        ctx.mutate((w) => {
+          w.plates.plates = g.plates.map((p, i) => ({ ...p, colour: PALETTE[i % PALETTE.length] }));
+          w.plates.features = g.features;
+          w.plates.nextPlate = g.nextPlate;
+          w.plates.seed = g.seed;
+        });
+        u.selected = null; u.draft = []; u.playing = false; u.age = P().start;
+        const c = S.latLon(S.centroid(g.features.filter((f) => f.kind === 'crust').flatMap((f) => f.coords)));
+        u.lat = clamp(c[0], -60, 60); u.lon = c[1]; u.zoom = 1;
+        if (g.plates.length < a.plates) toast(`Only ${g.plates.length} plates would fit with seed ${a.seed}: try another seed`);
+        else toast(`Supercontinent ${a.seed}: ${g.plates.length} plates, ${g.features.filter((f) => f.kind === 'craton').length} cratons`);
+        renderAuto(); renderTime(); renderSide(); draw();
+      }
+      function simulate() {
+        const a = u.auto, Pw = P();
+        if (Pw.plates.some((p) => (p.rotations || []).length) && !confirm('Replace every plate’s rotation poles with a new simulation?')) return;
+        const duration = Math.min(a.duration, Pw.start);
+        const plates = WS.supercontinent.simulate(Pw, { seed: a.seed, duration, interval: Math.min(a.every, duration), minSpeed: Math.min(1.5, a.speed), maxSpeed: a.speed, radiusKm: ctx.d.planet.radiusKm });
+        ctx.mutate((w) => {
+          w.plates.plates = plates;
+          // a rift opens between the plates on either side of it
+          for (const f of w.plates.features) if (f.kind === 'rift' && !(f.left && f.right)) Object.assign(f, sidesOf(w.plates, f));
+        });
+        toast(`Simulated ${duration} Myr: ${plates.filter((p) => p.rotations.length).length} plates drifting`);
+        u.age = Pw.start; u.spread = true;
+        renderAuto(); renderSide(); startPlay();
+      }
+
       function renderSide() { renderTools(); renderMotion(); renderList(); renderStats(); }
 
       return {
         el,
         update() {
           if (u.age > P().start) u.age = P().start;
+          if (!autoHost.childNodes.length) renderAuto();
           renderTime(); renderSide(); renderGplates();
           if (!ro._on) { ro.observe(host); ro._on = true; } else draw();
           if (server === null) checkServer().then(renderGplates);

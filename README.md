@@ -93,6 +93,12 @@ reconstructions). Plate speeds are checked against Earth's (1–10 cm/yr, never 
 the parting plates the new ocean floor is drawn by age, with the mid-ocean ridge (half-stage
 rotation) and, optionally, flowlines.
 
+**Make & simulate** does both for you (`js/supercontinent.js`, seeded): it generates a supercontinent
+of 3–5 plates, split by rifts that meet at a triple junction (further junctions for 4 and 5), with a
+craton or two well inside each plate and failed rifts branching off the rifts. Then it simulates the
+breakup: rotation poles every 10–50 Myr that carry each plate away from the middle at Earth-like
+speeds, the largest plate nearly still, the heading wandering a little. All of it stays editable.
+
 The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
 (`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection
 (Craton, ContinentalCrust and ContinentalRift features on their plate IDs, and a Flowline for each

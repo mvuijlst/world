@@ -5,6 +5,6 @@
   "description": "Client-side planetary design console following Artifexian's WorldSmith method",
   "scripts": {
     "start": "python tools/serve.py",
-    "test": "node --test tests/calc.test.js tests/sky.test.js tests/sphere.test.js tests/rotation.test.js"
+    "test": "node --test tests/calc.test.js tests/sky.test.js tests/sphere.test.js tests/rotation.test.js tests/supercontinent.test.js"
   }
 }

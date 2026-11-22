@@ -570,3 +570,7 @@ textarea.notes:focus { outline: none; border-color: var(--teal); }
 table.data.poles th, table.data.poles td { padding: 4px 4px; }
 table.data.poles input.txt.num { width: 100%; min-width: 0; max-width: 84px; padding: 2px 4px; min-height: 30px; font-size: 16px; }
 table.data.poles td:first-child input.txt.num { max-width: 64px; }
+.auto-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; align-items: end; }
+.seed-row { display: flex; gap: 6px; align-items: end; }
+.seed-row .field { flex: 1; min-width: 0; }
+.auto-grid .txt.num { width: 100%; }
