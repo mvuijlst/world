@@ -1,0 +1,24 @@
+[Unit]
+Description=Gunicorn for world.yusupov.cloud (WorldSmith API)
+After=network.target
+
+[Service]
+User=django
+Group=django
+WorkingDirectory=/home/django/world-yusupov/server
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/home/django/world-yusupov/server/.env
+ExecStart=/home/django/world-yusupov/server/venv/bin/python -m gunicorn \
+          config.wsgi:application \
+          --bind 127.0.0.1:8031 \
+          --workers 2 \
+          --timeout 60 \
+          --max-requests 1000 \
+          --max-requests-jitter 100
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

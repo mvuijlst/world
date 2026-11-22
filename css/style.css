@@ -498,3 +498,13 @@ textarea.notes:focus { outline: none; border-color: var(--teal); }
   main.stage { padding: 0; }
   .panel { break-inside: avoid; box-shadow: none; }
 }
+
+/* ── dialog (sign in) ─────────────────────────────────────────────── */
+.dialog {
+  margin: auto; width: min(420px, calc(100vw - 32px)); padding: 0;
+  background: var(--panel-solid); color: var(--text); border: 1px solid var(--line);
+  box-shadow: var(--glow-line), 0 20px 60px rgba(0, 0, 0, .6);
+}
+.dialog::backdrop { background: rgba(0, 0, 0, .6); }
+.dialog .field .txt { width: 100%; }
+.dialog form { gap: 0; }

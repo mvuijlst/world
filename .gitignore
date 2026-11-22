@@ -3,3 +3,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 __pycache__/
+server/.venv/
+server/venv/
+server/.env
+server/db.sqlite3*
+server/staticfiles/
+server/.dev-credentials

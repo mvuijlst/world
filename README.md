@@ -49,6 +49,47 @@ workbook's cell notes: habitable-zone checks, gas partial pressures, moon-zone l
 Worlds are kept in this browser's `localStorage` (several worlds, switchable from
 **Worlds** in the top bar). Export to JSON for backups or to move between machines.
 
+When the page is served by the WorldSmith server, **Worlds → Sign in to sync** copies every
+world to your account there and fetches worlds saved on other devices (`js/sync.js`). The
+browser copy stays the working copy, so the app keeps working offline and from plain static
+hosting. If two devices edit the same world, the server's version is kept under the world's
+name and the other is saved next to it as "(conflict …)". Deleting a world removes it everywhere.
+
+## Server (`server/`)
+
+A small Django app: session login, and one JSON document per world per account.
+
+| | |
+|---|---|
+| `GET /api/session` | who is signed in; sets the CSRF cookie |
+| `POST /api/login`, `/api/logout` | `{"username", "password"}`; 10 failures per 15 min per address and per name |
+| `GET /api/worlds` | your worlds: id, name, revision, deleted |
+| `GET/PUT/DELETE /api/worlds/<id>` | read; save (`{"rev", "data"}`, 409 if the server copy moved on); delete (kept as a tombstone) |
+
+Accounts are made with `manage.py createsuperuser` (or in `/admin/`).
+
+Local development, app and API on one origin:
+
+```powershell
+uv venv server/.venv; uv pip install --python server/.venv -r server/requirements.txt
+python tools/dev_server.py
+```
+
+then open <http://127.0.0.1:5179>. Tests: `cd server; $env:DJANGO_DEBUG=1; .venv/Scripts/python manage.py test worlds`.
+
+## Deployment
+
+Live at <https://world.yusupov.cloud>, from `/home/django/world-yusupov` on the VPS:
+nginx serves the app files and passes `/api/` and `/admin/` to gunicorn on `127.0.0.1:8031`
+(`world-yusupov.service`). Both config files are in `server/deploy/` (certbot has since added
+the TLS lines to the live nginx file). The secret key and host name live in
+`server/.env` on the server only.
+
+Every push to `main` runs `.github/workflows/deploy.yml`: the engine and API tests, then an
+rsync of the site, `pip install`, `migrate`, `collectstatic` and a restart of the service,
+followed by a check that `/api/session` answers. The SSH key, host, port, user and path are
+repository secrets. The server's `.env`, venv and database are never overwritten.
+
 ## Fidelity to the workbook
 
 `tests/calc.test.js` checks the engine against the values cached in the

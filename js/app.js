@@ -49,25 +49,141 @@
   // ── persistence ──────────────────────────────────────────────────────
   const saveEl = () => document.getElementById('save-state');
   function markDirty() {
-    const el = saveEl();
-    if (el) { el.className = 'save-state dirty'; el.textContent = 'UNSAVED'; }
     clearTimeout(app.saveTimer);
     app.saveTimer = setTimeout(saveNow, 600);
+    showSaveState();
   }
-  function saveNow() {
+  /* touch: this save holds an edit the server should get (false when merely opening a world). */
+  function saveNow(touch = true) {
     clearTimeout(app.saveTimer);
     app.saveTimer = null;
     const ok = WS.store.save(app.world);
-    const el = saveEl();
-    if (el) { el.className = `save-state ${ok ? 'saved' : 'dirty'}`; el.textContent = ok ? 'SAVED LOCALLY' : 'STORAGE OFF'; }
+    if (touch) { WS.sync.touched(app.world.id); schedulePush(); }
+    app.storageOk = ok;
+    showSaveState();
   }
   window.addEventListener('beforeunload', () => { if (app.saveTimer) saveNow(); });
 
-  function loadWorld(w) {
+  function showSaveState() {
+    const el = saveEl();
+    if (!el) return;
+    const s = WS.sync.state;
+    let cls = 'saved', txt = 'SAVED LOCALLY';
+    if (app.storageOk === false) { cls = 'dirty'; txt = 'STORAGE OFF'; }
+    else if (app.saveTimer) { cls = 'dirty'; txt = 'UNSAVED'; }
+    else if (s.user) {
+      if (s.status === 'error') { cls = 'dirty'; txt = 'SYNC ERROR'; }
+      else if (s.status === 'syncing' || app.pushTimer || app.pushing) { cls = 'dirty'; txt = 'SYNCING'; }
+      else { cls = 'saved'; txt = 'SYNCED'; }
+    }
+    el.className = `save-state ${cls}`;
+    el.textContent = txt;
+    el.title = s.error || (s.user ? `Stored on the server as ${s.user}` : s.available ? 'Stored in this browser. Sign in under Worlds to sync.' : 'Stored in this browser only.');
+  }
+
+  // ── server sync ──────────────────────────────────────────────────────
+  function schedulePush() {
+    if (!WS.sync.state.user) return;
+    clearTimeout(app.pushTimer);
+    app.pushTimer = setTimeout(pushNow, 1200);
+    showSaveState();
+  }
+  async function pushNow() {
+    app.pushTimer = null;
+    if (!WS.sync.state.user || app.pushing) return;
+    app.pushing = true;
+    showSaveState();
+    try {
+      const out = await WS.sync.push(app.world);
+      if (out.world && out.world.id !== app.world.id) {
+        // deleted elsewhere: our edits live on as a new world
+        app.world = out.world;
+        toast('This world was deleted on another device; your copy was kept as a new world.');
+      } else if (out.world) {
+        loadWorld(out.world, false);
+        toast(`Changed on another device. Your version is saved as “${out.conflictCopy.name}”.`);
+      }
+      if (out.world) setTimeout(runSync, 0); // send the kept copy too
+      WS.sync.setStatus('synced');
+    } catch (err) {
+      WS.sync.setStatus('error', err.message);
+    } finally {
+      app.pushing = false;
+      showSaveState();
+    }
+  }
+
+  let lastSync = 0;
+  async function runSync() {
+    if (!WS.sync.state.user) return;
+    if (app.saveTimer) saveNow();
+    lastSync = Date.now();
+    const currentId = app.world.id;
+    const pristine = WS.sync.isPristine(currentId);
+    const { replaced, removed } = await WS.sync.syncAll();
+    if (pristine && WS.store.index().length > 1) {
+      // a fresh template on a new device: open the newest synced world instead
+      WS.store.remove(currentId);
+      const next = WS.store.load(WS.store.index()[0].id);
+      if (next) { loadWorld(next, false); return; }
+    }
+    if (removed.includes(currentId)) {
+      loadWorld(WS.store.current() || freshWorld(), false);
+      toast('This world was deleted on another device.');
+    } else if (replaced.includes(currentId)) {
+      const w = WS.store.load(currentId);
+      if (w) loadWorld(w, false);
+    }
+    showSaveState();
+  }
+  const resync = () => { if (document.visibilityState === 'visible' && Date.now() - lastSync > 30000) runSync(); };
+  document.addEventListener('visibilitychange', resync);
+  window.addEventListener('focus', resync);
+
+  function freshWorld() {
+    const w = WS.data.defaultWorld();
+    WS.store.save(w);
+    WS.sync.markPristine(w.id);
+    return w;
+  }
+
+  function signInDialog() {
+    const err = h('p', { class: 't-red', role: 'alert', style: { minHeight: '1.4em', fontSize: '14px' } });
+    const user = h('input', { class: 'txt', name: 'username', autocomplete: 'username', required: true, 'aria-label': 'Username' });
+    const pass = h('input', { class: 'txt', type: 'password', name: 'password', autocomplete: 'current-password', required: true, 'aria-label': 'Password' });
+    const dlg = h('dialog', { class: 'dialog', 'aria-labelledby': 'signin-title' });
+    const form = h('form', { method: 'dialog', class: 'stack-gap' },
+      h('header', { class: 'panel-head' }, h('span', { id: 'signin-title' }, 'Sign in to sync'), h('span', { class: 'tag' }, 'SERVER')),
+      h('div', { class: 'panel-body stack-gap', style: { gap: '12px' } },
+        h('p', { class: 'muted', style: { fontSize: '14px' } }, 'Your worlds are kept in this browser and copied to the server, so they follow you to other devices.'),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Username'), user),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Password'), pass),
+        err,
+        h('div', { class: 'btn-row' },
+          h('button', { class: 'btn primary', type: 'submit' }, 'Sign in'),
+          h('button', { class: 'btn', type: 'button', onclick: () => dlg.close() }, 'Cancel'))));
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      try {
+        await WS.sync.signIn(user.value.trim(), pass.value);
+        dlg.close();
+        toast(`Signed in as ${WS.sync.state.user}`);
+        await runSync();
+      } catch (ex) { err.textContent = ex.message; }
+    });
+    dlg.addEventListener('close', () => dlg.remove());
+    dlg.appendChild(form);
+    document.body.appendChild(dlg);
+    dlg.showModal();
+    user.focus();
+  }
+
+  function loadWorld(w, touch = false) {
     app.world = w;
     ctx.ui = {};
     compute();
-    saveNow();
+    saveNow(touch);
     renderTopbarWorld();
     renderNav();
     renderStep();
@@ -122,7 +238,7 @@
     fileIn.addEventListener('change', async () => {
       const f = fileIn.files && fileIn.files[0];
       if (!f) return;
-      try { const w = await WS.store.importJson(f); loadWorld(w); toast(`Imported “${w.name}”`); }
+      try { const w = await WS.store.importJson(f); loadWorld(w, true); toast(`Imported “${w.name}”`); }
       catch (err) { toast(`Import failed: ${err.message}`); }
       fileIn.value = '';
       open(false);
@@ -134,24 +250,35 @@
     }
     function fill() {
       const list = WS.store.index();
+      const st = WS.sync.state;
+      const account = !st.available ? null : st.user
+        ? [h('div', { class: 'nav-title', style: { margin: '4px 10px 6px' } }, `SIGNED IN · ${st.user.toUpperCase()}`),
+          h('button', { type: 'button', role: 'menuitem', onclick: () => { open(false); runSync().then(() => toast(WS.sync.state.status === 'error' ? `Sync failed: ${WS.sync.state.error}` : 'Synced with the server')); } }, icon('reset'), 'Sync now'),
+          h('button', { type: 'button', role: 'menuitem', onclick: async () => { open(false); if (app.saveTimer) saveNow(); if (app.pushTimer) await pushNow(); await WS.sync.signOut(); showSaveState(); toast('Signed out. Your worlds stay in this browser.'); } }, icon('x'), 'Sign out'),
+          h('hr')]
+        : [h('button', { type: 'button', role: 'menuitem', onclick: () => { open(false); signInDialog(); } }, icon('link'), 'Sign in to sync'), h('hr')];
       replace(pop,
+        account,
         h('div', { class: 'nav-title', style: { margin: '4px 10px 6px' } }, 'STORED WORLDS'),
         list.map((x) => h('button', {
           type: 'button', role: 'menuitem', class: ['world-item', x.id === app.world.id && 'current'],
-          onclick: () => { if (x.id !== app.world.id) { saveNow(); const w = WS.store.load(x.id); if (w) loadWorld(w); } open(false); },
+          onclick: () => { if (x.id !== app.world.id) { if (app.saveTimer) saveNow(); const w = WS.store.load(x.id); if (w) loadWorld(w); } open(false); },
         }, h('span', null, x.name), h('small', null, new Date(x.updated).toLocaleDateString()))),
         h('hr'),
-        h('button', { type: 'button', role: 'menuitem', onclick: () => { saveNow(); const w = WS.data.defaultWorld(`World ${list.length + 1}`); loadWorld(w); ctx.go('briefing'); open(false); toast('New world created from the Sol/Earth template'); } }, icon('plus'), 'New world'),
-        h('button', { type: 'button', role: 'menuitem', onclick: () => { saveNow(); const w = WS.store.migrate(JSON.parse(JSON.stringify(app.world))); w.id = WS.data.newId('w'); w.name = `${app.world.name} (copy)`; loadWorld(w); open(false); toast('World duplicated'); } }, icon('copy'), 'Duplicate'),
+        h('button', { type: 'button', role: 'menuitem', onclick: () => { if (app.saveTimer) saveNow(); const w = WS.data.defaultWorld(`World ${list.length + 1}`); loadWorld(w, true); ctx.go('briefing'); open(false); toast('New world created from the Sol/Earth template'); } }, icon('plus'), 'New world'),
+        h('button', { type: 'button', role: 'menuitem', onclick: () => { if (app.saveTimer) saveNow(); const w = WS.store.migrate(JSON.parse(JSON.stringify(app.world))); w.id = WS.data.newId('w'); w.name = `${app.world.name} (copy)`; loadWorld(w, true); open(false); toast('World duplicated'); } }, icon('copy'), 'Duplicate'),
         h('button', { type: 'button', role: 'menuitem', onclick: () => { WS.store.exportJson(app.world); open(false); } }, icon('download'), 'Export JSON'),
         h('label', { class: 'mi', role: 'menuitem', for: 'import-file', tabindex: 0, onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } } }, icon('upload'), 'Import JSON'),
         fileIn,
         h('hr'),
         h('button', {
           type: 'button', role: 'menuitem', onclick: () => {
-            if (!confirm(`Delete “${app.world.name}” from this browser? This cannot be undone (export it first if you want a copy).`)) return;
-            WS.store.remove(app.world.id);
-            const next = WS.store.current() || WS.data.defaultWorld();
+            const synced = WS.sync.state.user;
+            if (!confirm(`Delete “${app.world.name}”${synced ? ' from this browser and the server' : ' from this browser'}? This cannot be undone (export it first if you want a copy).`)) return;
+            const gone = app.world.id;
+            WS.store.remove(gone);
+            WS.sync.remove(gone);
+            const next = WS.store.current() || freshWorld();
             loadWorld(next); open(false); toast('World deleted');
           },
         }, icon('x'), 'Delete this world'));
@@ -182,7 +309,7 @@
           h('span', null, h('i', { class: 'lamp ok' }), 'Within Earth-like limits'),
           h('span', null, h('i', { class: 'lamp warn' }), 'Possible, but check'),
           h('span', null, h('i', { class: 'lamp fail' }), 'Breaks the method')),
-        h('p', { class: 'muted', style: { fontSize: '12px', marginTop: '8px' } }, 'Everything is stored in this browser only. Use Worlds → Export to keep a backup.')));
+        h('p', { class: 'muted', style: { fontSize: '12px', marginTop: '8px' } }, 'Worlds are kept in this browser. Sign in under Worlds to sync them with the server; Export saves a file backup.')));
     updateLamps();
   }
 
@@ -243,10 +370,11 @@
     renderTopbar();
     document.getElementById('scrim').addEventListener('click', () => toggleNav(false));
     window.addEventListener('hashchange', () => { renderStep(); updateLamps(); });
-    const w = WS.store.current() || WS.data.defaultWorld();
-    loadWorld(w);
+    WS.sync.onChange(showSaveState);
+    loadWorld(WS.store.current() || freshWorld());
+    WS.sync.init().then((st) => { showSaveState(); if (st.user) runSync(); });
   }
 
-  WS.app = { ctx, boot, refresh, saveNow };
+  WS.app = { ctx, boot, refresh, saveNow, runSync, get world() { return app.world; } };
   document.addEventListener('DOMContentLoaded', boot);
 })(window);

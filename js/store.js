@@ -39,13 +39,18 @@
     try { const raw = safeGet(WORLD_KEY(id)); return raw ? migrate(JSON.parse(raw)) : null; } catch { return null; }
   }
 
-  function save(w) {
-    w.updated = new Date().toISOString();
+  /*
+   * opts.keepCurrent: don't make this the world opened next time (used for synced copies).
+   * opts.keepStamp:   keep w.updated as it is (a copy fetched from the server).
+   */
+  function save(w, opts = {}) {
+    if (!opts.keepStamp || !w.updated) w.updated = new Date().toISOString();
     const ok = safeSet(WORLD_KEY(w.id), JSON.stringify(w));
     const list = index().filter((x) => x.id !== w.id);
-    list.unshift({ id: w.id, name: w.name, updated: w.updated, star: w.star.name, planet: w.planet.name });
+    list.push({ id: w.id, name: w.name, updated: w.updated, star: w.star.name, planet: w.planet.name });
+    list.sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     writeIndex(list);
-    safeSet(CURRENT_KEY, w.id);
+    if (!opts.keepCurrent) safeSet(CURRENT_KEY, w.id);
     return ok;
   }
 

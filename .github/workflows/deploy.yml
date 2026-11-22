@@ -1,0 +1,123 @@
+# Tests every push, and copies the site to the VPS when main changes.
+#
+# Needs these repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST         server name or IP
+#   DEPLOY_PORT         SSH port
+#   DEPLOY_USER         SSH user that owns the site directory
+#   DEPLOY_PATH         absolute path of the site, e.g. /home/django/world-yusupov
+#   DEPLOY_SSH_KEY      private key made for this job (public half in that user's authorized_keys)
+#   DEPLOY_KNOWN_HOSTS  the server's known_hosts line(s)
+#
+# The Django server in DEPLOY_PATH/server is updated (requirements, migrations, static files)
+# and restarted, which needs this sudoers rule on the server:
+#   <DEPLOY_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart world-yusupov
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Calculation engine against the workbook
+        run: node --test tests/calc.test.js
+      - name: Scripts parse
+        run: for f in js/*.js js/steps/*.js; do node --check "$f"; done
+      - name: Django API
+        working-directory: server
+        env:
+          DJANGO_DEBUG: '1'
+        run: |
+          pip install --quiet -r requirements.txt
+          python manage.py makemigrations --check --dry-run
+          python manage.py test worlds
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: Check that the deploy secrets are set
+        run: |
+          missing=""
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing"; exit 1; fi
+          case "$DEPLOY_PATH" in /*) ;; *) echo "::error::DEPLOY_PATH must be absolute"; exit 1 ;; esac
+
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Refuse to write anywhere but an existing WorldSmith site
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "grep -q 'WorldSmith' '$DEPLOY_PATH/index.html' && test -f '$DEPLOY_PATH/server/.env'" \
+            || { echo "::error::$DEPLOY_PATH on the server is not a WorldSmith site. Nothing was copied."; exit 1; }
+
+      - name: Copy the site
+        run: |
+          # Only changed files are written. The server's own files (.env, venv, database,
+          # collected static) are never touched; nothing else is deleted either.
+          rsync --recursive --links --compress --checksum --chmod=D755,F644 --itemize-changes \
+            --exclude '.git*' --exclude '.github' --exclude '.claude' --exclude '/tests' --exclude '/tools' \
+            --exclude 'package.json' \
+            --exclude 'server/.env' --exclude 'server/venv' --exclude 'server/.venv' --exclude 'server/db.sqlite3*' \
+            --exclude 'server/staticfiles' --exclude 'server/.dev-credentials' --exclude '__pycache__' \
+            -e "ssh -i ~/.ssh/deploy_key -p $DEPLOY_PORT -o BatchMode=yes" \
+            ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Update and restart the Django server
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" bash -s -- "$DEPLOY_PATH/server" <<'EOF'
+          set -euo pipefail
+          cd "$1"
+          set -a; . ./.env; set +a
+          venv/bin/pip install --quiet --disable-pip-version-check -r requirements.txt
+          venv/bin/python manage.py migrate --noinput
+          venv/bin/python manage.py createcachetable
+          venv/bin/python manage.py collectstatic --noinput --verbosity 0
+          venv/bin/python manage.py check --deploy --fail-level ERROR
+          sudo -n /usr/bin/systemctl restart world-yusupov
+          sleep 2
+          host="${DJANGO_ALLOWED_HOSTS%%,*}"
+          curl --fail --silent --show-error --resolve "$host:443:127.0.0.1" "https://$host/api/session" > /dev/null
+          echo "Server updated and answering at https://$host"
+          EOF
+
+      - name: Remove the key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

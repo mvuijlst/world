@@ -4,8 +4,20 @@
     {
       "name": "worldsmith",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["tools/serve.py", "5178"],
+      "runtimeArgs": [
+        "tools/serve.py",
+        "5178"
+      ],
       "port": 5178
+    },
+    {
+      "name": "worldsmith-django",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "tools/dev_server.py",
+        "5179"
+      ],
+      "port": 5179
     }
   ]
 }
