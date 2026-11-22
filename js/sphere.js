@@ -188,7 +188,9 @@
    */
   function orthographic(lat0, lon0, R, cx, cy) {
     const c = vec([lat0, lon0]);
-    const east = norm(Math.abs(c[2]) > 0.999 ? cross([0, 1, 0], c) : cross([0, 0, 1], c)), north = cross(c, east);
+    // east from the centre's longitude, so that it is the same at the poles as everywhere else (and
+    // as the globes drawn cell by cell, which turn the same way)
+    const lo = (lon0 * Math.PI) / 180, east = [-Math.sin(lo), Math.cos(lo), 0], north = cross(c, east);
     return {
       project(p) {
         const u = vec(p), z = dot(u, c);

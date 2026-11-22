@@ -105,3 +105,16 @@ test('tracing on the globe: shapes behind it are clipped to the rim, not drawn a
   pr.trace(g, S.densify(cap(-10, 180, 20), true, 2), true);
   assert.equal(g.pts.length, 0);
 });
+
+test('the globe turns the same way at the poles as the cell-by-cell globes', () => {
+  // the Climate and Rivers & biomes steps draw their globes cell by cell with this inverse
+  for (const lat0 of [0, 35, 87.9, 89, -89]) {
+    const pr = S.orthographic(lat0, 40, 400, 500, 450), la0 = (lat0 * Math.PI) / 180, lo0 = (40 * Math.PI) / 180;
+    for (const [x, y] of [[800, 450], [500, 200], [750, 700], [250, 300]]) {
+      const px = (x - 500) / 400, py = (450 - y) / 400, pz = Math.sqrt(1 - px * px - py * py);
+      const la = Math.asin(pz * Math.sin(la0) + py * Math.cos(la0)) * 180 / Math.PI, lo = (lo0 + Math.atan2(px, pz * Math.cos(la0) - py * Math.sin(la0))) * 180 / Math.PI;
+      const q = pr.project([la, lo]);
+      near(q[0], x, 1e-6, `x at ${lat0}°`); near(q[1], y, 1e-6, `y at ${lat0}°`);
+    }
+  }
+});
