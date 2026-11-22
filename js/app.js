@@ -194,6 +194,8 @@
     if (t === 'pulp') document.documentElement.setAttribute('data-theme', 'pulp');
     else document.documentElement.removeAttribute('data-theme');
     try { localStorage.setItem('worldsmith.theme', t); } catch { /* ignore */ }
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = t === 'pulp' ? '#efdfb8' : '#0b0806';
   }
   function currentTheme() { return document.documentElement.getAttribute('data-theme') === 'pulp' ? 'pulp' : 'crt'; }
 
@@ -233,7 +235,7 @@
 
   function worldsMenu() {
     const pop = h('div', { class: 'menu-pop', role: 'menu' });
-    const btn = h('button', { class: 'icon-btn', type: 'button', 'aria-haspopup': 'true', 'aria-expanded': 'false', onclick: (e) => { e.stopPropagation(); open(!pop.classList.contains('open')); } }, icon('globe'), h('span', null, 'Worlds'));
+    const btn = h('button', { class: 'icon-btn', type: 'button', 'aria-haspopup': 'true', 'aria-expanded': 'false', onclick: (e) => { e.stopPropagation(); open(!pop.classList.contains('open')); } }, icon('globe'), h('span', { class: 'worlds-label' }, 'Worlds'));
     const fileIn = h('input', { type: 'file', accept: '.json,application/json', class: 'sr-only', id: 'import-file' });
     fileIn.addEventListener('change', async () => {
       const f = fileIn.files && fileIn.files[0];
@@ -323,10 +325,41 @@
       el.title = { ok: 'All nominal', warn: 'Cautions', fail: 'Faults', info: '' }[lvl];
       const link = document.getElementById(`nav-${st.id}`);
       if (link) link.setAttribute('aria-current', app.step && app.step.id === st.id ? 'page' : 'false');
+      const sbLamp = document.getElementById('stepbar-lamp');
+      if (sbLamp && app.step && app.step.id === st.id) sbLamp.className = `lamp ${lvl}`;
     }
   }
 
   // ── step page ────────────────────────────────────────────────────────
+  function lede(paras) {
+    const el = h('div', { class: 'lede' }, paras.map((p) => h('p', null, p)));
+    if (paras.length > 1) {
+      const more = h('button', { type: 'button', class: 'lede-toggle', 'aria-expanded': 'false' }, 'More about this step');
+      more.addEventListener('click', () => {
+        const open = el.classList.toggle('open');
+        more.setAttribute('aria-expanded', String(open));
+        more.textContent = open ? 'Less' : 'More about this step';
+      });
+      el.appendChild(more);
+    }
+    return el;
+  }
+
+  /* Phones: a thumb-reach bar with previous / current (opens the sequence) / next. */
+  function renderStepbar(step, prev, next) {
+    const bar = document.getElementById('stepbar');
+    if (!bar) return;
+    const idx = WS.steps.indexOf(step);
+    const lampEl = h('span', { class: 'lamp info', id: 'stepbar-lamp', 'aria-hidden': 'true' });
+    replace(bar,
+      prev ? h('a', { class: 'sb-btn', href: `#/${prev.id}`, 'aria-label': `Previous: ${prev.title}` }, icon('arrowL')) : h('span', { class: 'sb-btn', 'aria-hidden': 'true' }),
+      h('button', { type: 'button', class: 'sb-mid', 'aria-label': 'Open the build sequence', onclick: () => toggleNav(true) },
+        h('span', { class: 'sb-num' }, `${step.num}`, h('small', null, ` / ${String(WS.steps.length - 1).padStart(2, '0')}`)),
+        h('span', { class: 'sb-title' }, step.title), lampEl),
+      next ? h('a', { class: 'sb-btn primary', href: `#/${next.id}`, 'aria-label': `Next: ${next.title}` }, icon('arrowR')) : h('span', { class: 'sb-btn', 'aria-hidden': 'true' }));
+    bar.style.setProperty('--progress', `${(idx / (WS.steps.length - 1)) * 100}%`);
+  }
+
   function renderStep() {
     const id = (location.hash.match(/^#\/([\w-]+)/) || [])[1] || 'briefing';
     const step = stepById(id) || WS.steps[0];
@@ -347,7 +380,7 @@
       h('header', { class: 'step-head' },
         h('div', { class: 'param-strip' }, h('span', { class: 'k' }, 'Editing current parameter:'), h('span', { class: 'v' }, step.strip || step.title)),
         h('div', { class: 'step-title' }, h('h1', null, step.title), h('span', { class: 'code' }, step.code)),
-        step.lede ? h('div', { class: 'lede' }, step.lede.map((p) => h('p', null, p))) : null),
+        step.lede ? lede(step.lede) : null),
       app.view.el,
       step.checks || step.notes !== false ? h('div', { class: 'grid two-even', style: { marginTop: '16px' } },
         step.checks ? panel('Diagnostics', { tag: 'SELF-TEST' }, app.diagEl) : null,
@@ -356,6 +389,7 @@
         prev ? h('a', { class: 'btn', href: `#/${prev.id}` }, icon('arrowL'), `${prev.num} ${prev.title}`) : h('span'),
         next ? h('a', { class: 'btn primary', href: `#/${next.id}` }, `${next.num} ${next.title}`, icon('arrowR')) : h('span')),
       h('p', { class: 'credit' }, 'Method after Artifexian · The WorldSmith 8.00'));
+    renderStepbar(step, prev, next);
     refresh();
     document.title = `${step.title} · ${app.world.name} · WorldSmith`;
     if (changed) { window.scrollTo(0, 0); main.style.animation = 'none'; void main.offsetWidth; main.style.animation = ''; }
@@ -369,6 +403,7 @@
     applyTheme(theme);
     renderTopbar();
     document.getElementById('scrim').addEventListener('click', () => toggleNav(false));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleNav(false); });
     window.addEventListener('hashchange', () => { renderStep(); updateLamps(); });
     WS.sync.onChange(showSaveState);
     loadWorld(WS.store.current() || freshWorld());

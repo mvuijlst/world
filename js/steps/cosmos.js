@@ -3,7 +3,7 @@
  */
 (function () {
   'use strict';
-  const { h, panel, field, textField, readouts, linked, fmt, replace, icon, toast, leds, info } = WS.ui;
+  const { h, panel, field, textField, readouts, linked, fmt, replace, icon, toast, leds, info, cardify, fold } = WS.ui;
   const V = WS.viz;
   const lvl = (ok, warn) => (ok ? 'ok' : warn ? 'warn' : 'fail');
   const between = (x, a, b) => x >= a && x <= b;
@@ -118,14 +118,15 @@
         { label: 'Nearest system', value: (c) => (c.d.galaxy.nearest ? fmt.num(c.d.galaxy.nearest.distance, 2) : '—'), unit: 'ly', state: () => 'ok' },
       ]);
       const mapHost = h('div', { class: 'viz-frame' });
-      const hoodHost = h('div', { class: 'viz-frame', style: { touchAction: 'none', cursor: 'grab' } });
+      const hoodHost = h('div', { class: 'viz-frame drag-x', style: { cursor: 'grab' } });
       const classTable = h('div');
       const sysTable = h('div', { class: 'table-wrap' });
 
       // drag to rotate
       let drag = null;
-      hoodHost.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, yaw: ctx.ui.yaw, pitch: ctx.ui.pitch }; hoodHost.setPointerCapture(e.pointerId); ctx.ui.spin = false; spinBtn.textContent = 'Auto-rotate'; });
-      hoodHost.addEventListener('pointermove', (e) => { if (!drag) return; ctx.ui.yaw = drag.yaw + (e.clientX - drag.x) / 120; ctx.ui.pitch = Math.max(-1.4, Math.min(1.4, drag.pitch + (e.clientY - drag.y) / 120)); drawHood(); });
+      hoodHost.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, yaw: ctx.ui.yaw, pitch: ctx.ui.pitch, touch: e.pointerType !== 'mouse' }; if (!drag.touch) hoodHost.setPointerCapture(e.pointerId); ctx.ui.spin = false; spinBtn.textContent = 'Auto-rotate'; });
+      hoodHost.addEventListener('pointercancel', () => { drag = null; });
+      hoodHost.addEventListener('pointermove', (e) => { if (!drag) return; ctx.ui.yaw = drag.yaw + (e.clientX - drag.x) / 120; if (!drag.touch) ctx.ui.pitch = Math.max(-1.4, Math.min(1.4, drag.pitch + (e.clientY - drag.y) / 120)); drawHood(); });
       hoodHost.addEventListener('pointerup', () => { drag = null; });
       const spinBtn = h('button', { class: 'btn small', type: 'button', onclick: () => { ctx.ui.spin = !ctx.ui.spin; spinBtn.textContent = ctx.ui.spin ? 'Hold rotation' : 'Auto-rotate'; if (ctx.ui.spin) loop(); } }, ctx.ui.spin ? 'Hold rotation' : 'Auto-rotate');
       const drawHood = () => replace(hoodHost, V.neighbourhood(ctx.d.galaxy, ctx.world.galaxy.hoodRadius, ctx.ui.yaw, ctx.ui.pitch, ctx.world.galaxy.systemNames));
@@ -170,19 +171,19 @@
           if (sig !== sysSig) {
             sysSig = sig;
             const names = c.world.galaxy.systemNames;
-            replace(sysTable, h('table', { class: 'data' },
-              h('thead', null, h('tr', null, h('th', null, '#'), h('th', null, 'Star system name'), h('th', null, 'x'), h('th', null, 'y'), h('th', null, 'z'), h('th', null, 'Distance (ly)'), h('th', null, ''))),
+            replace(sysTable, fold(`${gd.systems.length + 1} star systems · names & coordinates`, h('div', { class: 'table-wrap' }, h('table', { class: 'data' },
+              h('thead', null, h('tr', null, h('th', null, '#'), h('th', null, 'Star system name'), h('th', { class: 'hide-sm' }, 'x'), h('th', { class: 'hide-sm' }, 'y'), h('th', { class: 'hide-sm' }, 'z'), h('th', null, 'Distance (ly)'), h('th', null, ''))),
               h('tbody', null,
-                h('tr', null, h('td', null, '0'), h('td', { class: 'txtcell' }, h('b', { class: 't-amber' }, `${c.world.star.name} (home)`)), h('td', { class: 'num' }, '0'), h('td', { class: 'num' }, '0'), h('td', { class: 'num' }, '0'), h('td', { class: 'num' }, '0'), h('td')),
+                h('tr', null, h('td', null, '0'), h('td', { class: 'txtcell' }, h('b', { class: 't-amber' }, `${c.world.star.name} (home)`)), h('td', { class: 'num hide-sm' }, '0'), h('td', { class: 'num hide-sm' }, '0'), h('td', { class: 'num hide-sm' }, '0'), h('td', { class: 'num' }, '0'), h('td')),
                 gd.systems.map((sy) => {
                   const inp = h('input', { class: 'txt', value: names[sy.index] || '', placeholder: `Star System ${sy.index}`, 'aria-label': `Name for star system ${sy.index}` });
                   inp.addEventListener('input', () => { c.world.galaxy.systemNames[sy.index] = inp.value; ctx.set('galaxy.systemNames', c.world.galaxy.systemNames, { soft: true }); });
                   inp.addEventListener('change', () => drawHood());
                   return h('tr', null, h('td', null, String(sy.index)), h('td', null, inp),
-                    h('td', { class: 'num' }, fmt.num(sy.x, 2)), h('td', { class: 'num' }, fmt.num(sy.y, 2)), h('td', { class: 'num' }, fmt.num(sy.z, 2)),
+                    h('td', { class: 'num hide-sm' }, fmt.num(sy.x, 2)), h('td', { class: 'num hide-sm' }, fmt.num(sy.y, 2)), h('td', { class: 'num hide-sm' }, fmt.num(sy.z, 2)),
                     h('td', { class: 'num' }, fmt.num(sy.distance, 2)),
                     h('td', null, gd.nearest && sy.index === gd.nearest.index ? h('span', { class: 'pill teal' }, 'nearest') : gd.farthest && sy.index === gd.farthest.index ? h('span', { class: 'pill red' }, 'farthest') : null));
-                }))));
+                }))))));
           }
           if (ctx.ui.spin && !raf) loop();
         },
@@ -314,7 +315,7 @@
             inp.addEventListener('input', () => { const v = Number(inp.value); if (inp.value !== '' && Number.isFinite(v)) { b[key] = v; ctx.set(`system.bodies.${i}.${key}`, v); } });
             return inp;
           };
-          const nameIn = h('input', { class: 'txt', value: b.name, 'aria-label': 'Body name', style: { width: '130px' } });
+          const nameIn = h('input', { class: 'txt name-in', value: b.name, 'aria-label': 'Body name' });
           nameIn.addEventListener('input', () => ctx.set(`system.bodies.${i}.name`, nameIn.value));
           const kindSel = h('select', { class: 'sel', 'aria-label': `${b.name} type` }, KINDS.map(([v, t]) => h('option', { value: v, selected: v === b.kind }, t)));
           kindSel.addEventListener('change', () => ctx.set(`system.bodies.${i}.kind`, kindSel.value, { structural: true }));
@@ -327,14 +328,14 @@
           const aIn = num('a', 'any', 'semi-major axis');
           aIn.addEventListener('change', () => ctx.mutate((ww) => ww.system.bodies.sort((x, y) => x.a - y.a), { structural: true }));
           return h('tr', null, h('td', null, nameIn), h('td', null, kindSel), h('td', null, h('div', { style: { display: 'flex', gap: '4px' } }, aIn, snap)),
-            h('td', null, num('radius', 'any', 'radius')), h('td', null, num('albedo', 'any', 'geometric albedo')), h('td', null, h('label', { class: 'check' }, atm)), h('td', null, del));
+            h('td', null, num('radius', 'any', 'radius')), h('td', null, num('albedo', 'any', 'geometric albedo')), h('td', null, h('label', { class: 'check' }, atm)), h('td', { class: 'actions', 'data-label': '' }, del));
         };
-        replace(bodyHost, h('table', { class: 'data' },
-          h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Type'), h('th', null, 'Orbit (AU)'), h('th', null, 'Radius R⊕'), h('th', null, 'Albedo (geom.)'), h('th', null, 'Atm.'), h('th'))),
+        replace(bodyHost, cardify(h('table', { class: 'data' },
+          h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Type'), h('th', null, 'Orbit (AU)'), h('th', null, 'Radius R⊕'), h('th', null, 'Albedo (geom.)'), h('th', null, 'Atmosphere'), h('th'))),
           h('tbody', null,
             h('tr', { class: 'hz' }, h('td', { class: 'txtcell' }, h('b', { class: 't-amber' }, w.planet.name), ' ', h('span', { class: 'pill amber' }, 'home')), h('td', { class: 'txtcell' }, 'Terrestrial'),
               h('td', { class: 'num' }, h('a', { href: '#/planet', class: 'link-chip' }, `${fmt.num(w.planet.a, 3)} ↗`)), h('td', { class: 'num' }, fmt.num(c.d.planet.radius, 3)), h('td', { class: 'num' }, '—'), h('td', null, '✓'), h('td')),
-            w.system.bodies.map(row))),
+            w.system.bodies.map(row)))),
         h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, 'Radius, geometric albedo and atmosphere feed the brightness calculations on the Sky step. The home world is edited on the Planet step.'));
       };
 
@@ -346,9 +347,9 @@
         };
         const shown = c.d.system.orbits.filter((o, i) => i < 8 || o.a <= c.d.system.debrisOut * 1.1);
         replace(orbitHost, h('table', { class: 'data' },
-          h('thead', null, h('tr', null, h('th', null, '#'), h('th', null, 'AU'), h('th', null, 'Mkm'), h('th', null, 'Notes'), h('th', null, 'Occupant'))),
+          h('thead', null, h('tr', null, h('th', null, '#'), h('th', null, 'AU'), h('th', { class: 'hide-sm' }, 'Mkm'), h('th', null, 'Notes'), h('th', null, 'Occupant'))),
           h('tbody', null, shown.map((o) => h('tr', { class: [o.habitable && 'hz', o.beyondFrost && 'frost', (o.crowded || o.insideLimit) && 'bad'] },
-            h('td', null, String(o.n)), h('td', { class: 'num' }, fmt.num(o.a, 3)), h('td', { class: 'num' }, fmt.num(o.a * 149.6, 1)),
+            h('td', null, String(o.n)), h('td', { class: 'num' }, fmt.num(o.a, 3)), h('td', { class: 'num hide-sm' }, fmt.num(o.a * 149.6, 1)),
             h('td', { class: 'txtcell' },
               o.habitable ? h('span', { class: 'pill teal' }, 'habitable') : null,
               o.role ? h('span', { class: 'pill amber' }, o.role) : o.beyondFrost ? h('span', { class: 'pill mute' }, 'beyond frost') : null,

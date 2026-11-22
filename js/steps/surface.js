@@ -3,7 +3,7 @@
  */
 (function () {
   'use strict';
-  const { h, panel, field, textField, readouts, linked, fmt, replace, icon, toast, info, tabs } = WS.ui;
+  const { h, panel, field, textField, readouts, linked, fmt, replace, icon, toast, info, tabs, cardify } = WS.ui;
   const V = WS.viz;
   const C = WS.calc;
   const lvl = (ok, warn) => (ok ? 'ok' : warn ? 'warn' : 'fail');
@@ -89,9 +89,9 @@
             h('td', null, mk('widths', 'width (km)', f.infinite, f.widthOk)), h('td', { class: 'txtcell muted' }, f.widthRange.text),
             h('td', { class: 'num' }, f.erodedHeight === null ? 'Tapering' : fmt.int(f.erodedHeight)));
         });
-        replace(featTable, h('table', { class: 'data' },
+        replace(featTable, cardify(h('table', { class: 'data' },
           h('thead', null, h('tr', null, h('th', null, 'Feature'), h('th', null, 'Height m'), h('th', null, ['Suggested ', info('Average heights. Individual peaks may exceed them. 0 means at or below sea level. “Tapering” slopes between its neighbours — leave it blank.')]), h('th', null, 'Width km'), h('th', null, ['Suggested ', info('Average widths. 0 means the feature may be absent. ∞ tapers off until it meets another feature (mountain, coast, rift…) — leave it blank.')]), h('th', null, 'Eroded m'))),
-          h('tbody', null, rows)));
+          h('tbody', null, rows))));
       };
       let featSig = '';
       return {
@@ -146,10 +146,12 @@
       const groups = [['all', 'All'], ...Object.entries(WS.data.CLIMATE_GROUPS).map(([k2, v]) => [k2, `${k2} · ${v}`])];
       const drawCards = () => {
         replace(groupTabs, tabs(groups, ctx.ui.climateGroup, (g) => { ctx.ui.climateGroup = g; drawCards(); }));
-        replace(cards, WS.data.CLIMATE_ZONES.filter((z) => ctx.ui.climateGroup === 'all' || z.group === ctx.ui.climateGroup).map((z) => h('article', { class: 'card' },
-          h('div', { class: 'swatch', style: { background: z.color } }),
-          h('h3', null, h('span', null, z.name), h('span', { class: 'code' }, z.code)),
-          h('p', { class: 'muted', style: { fontSize: '12.5px' } }, z.key),
+        replace(cards, WS.data.CLIMATE_ZONES.filter((z) => ctx.ui.climateGroup === 'all' || z.group === ctx.ui.climateGroup).map((z) => h('details', { class: 'card', open: window.matchMedia('(min-width: 700px)').matches },
+          h('summary', null,
+            h('div', { class: 'swatch', style: { background: z.color } }),
+            h('h3', null, h('span', null, z.name), h('span', { class: 'code' }, z.code)),
+            h('p', { class: 'muted', style: { fontSize: '12.5px' } }, z.key),
+            h('span', { class: 'chev' }, `${z.rainfall.split(',')[0]} rain · ${z.examples} ▾`)),
           h('dl', null,
             h('dt', null, 'Rainfall'), h('dd', null, z.rainfall),
             h('dt', null, 'Temperature'), h('dd', null, z.temperature),

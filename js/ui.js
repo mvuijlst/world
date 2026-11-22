@@ -86,15 +86,50 @@
     target.setAttribute('aria-describedby', 'ws-tip');
   }
   function hideTip() { if (tipEl) tipEl.classList.remove('show'); if (tipFor) tipFor.removeAttribute('aria-describedby'); tipFor = null; }
-  document.addEventListener('mouseover', (e) => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t) showTip(t); });
-  document.addEventListener('mouseout', (e) => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t) hideTip(); });
-  document.addEventListener('focusin', (e) => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t) showTip(t); });
-  document.addEventListener('focusout', hideTip);
+  // A tap fires pointerdown → (mouseover) → focus → click in quick succession; only the
+  // click should decide, so hover is for mice and a tap toggles.
+  let lastPointer = 'mouse';
+  const tipTarget = (e) => e.target.closest && e.target.closest('[data-tip]');
+  document.addEventListener('pointerdown', (e) => {
+    lastPointer = e.pointerType || 'mouse';
+    if (lastPointer !== 'mouse' && tipFor && !tipTarget(e)) hideTip(); // tap elsewhere closes
+  }, true);
+  document.addEventListener('mouseover', (e) => { const t = tipTarget(e); if (t && lastPointer === 'mouse') showTip(t); });
+  document.addEventListener('mouseout', (e) => { const t = tipTarget(e); if (t && lastPointer === 'mouse') hideTip(); });
+  document.addEventListener('focusin', (e) => { const t = tipTarget(e); if (t && lastPointer === 'mouse' && e.target.matches(':focus-visible')) showTip(t); });
+  document.addEventListener('focusout', () => { if (lastPointer === 'mouse') hideTip(); });
   document.addEventListener('click', (e) => {
     const t = e.target.closest && e.target.closest('.info-btn[data-tip]');
-    if (t) { e.preventDefault(); tipFor === t ? hideTip() : showTip(t); }
+    if (!t) return;
+    e.preventDefault();
+    if (lastPointer === 'mouse') { showTip(t); return; } // hover already handles mice
+    if (tipFor === t) hideTip(); else showTip(t);
   });
-  window.addEventListener('scroll', hideTip, { passive: true });
+  window.addEventListener('scroll', () => { if (lastPointer === 'mouse') hideTip(); }, { passive: true });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
+
+  /*
+   * On narrow screens `table.data.cards` lays each row out as a card; every cell shows its
+   * column heading from data-label. Call after the table is built.
+   */
+  function cardify(table) {
+    const heads = [...table.querySelectorAll('thead th')].map((th) => {
+      const c = th.cloneNode(true);
+      c.querySelectorAll('.info-btn').forEach((b) => b.remove());
+      return c.textContent.trim();
+    });
+    table.classList.add('cards');
+    table.querySelectorAll('tbody tr').forEach((tr) => {
+      [...tr.children].forEach((td, i) => { if (!td.hasAttribute('data-label')) td.setAttribute('data-label', heads[i] || ''); });
+    });
+    return table;
+  }
+
+  /* A section that starts open on wide screens and folded on phones. */
+  const wide = () => window.matchMedia('(min-width: 700px)').matches;
+  function fold(summary, ...body) {
+    return h('details', { class: 'fold', open: wide() }, h('summary', null, summary), body);
+  }
 
   function info(text) {
     if (!text) return null;
@@ -285,6 +320,6 @@
 
   WS.ui = {
     h, s, clear, replace, fmt, info, get, set, panel, field, textField, selectField, linked,
-    readouts, diagnostics, worst, gauge, leds, tabs, toast, icon,
+    readouts, diagnostics, worst, gauge, leds, tabs, toast, icon, cardify, fold,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

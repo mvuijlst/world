@@ -10,6 +10,7 @@
 
   const svgBox = (w, hgt, label, ...kids) =>
     s('svg', { class: 'viz', viewBox: `0 0 ${w} ${hgt}`, role: 'img', 'aria-label': label, preserveAspectRatio: 'xMidYMid meet' }, ...kids);
+  const wideViz = (svg) => { svg.classList.add('wide-viz'); return svg; };
   const text = (x, y, str, cls = '', extra = {}) => s('text', { x, y, class: cls, ...extra }, str);
   const line = (x1, y1, x2, y2, cls = 'ln') => s('line', { x1, y1, x2, y2, class: cls });
   const circle = (cx, cy, r, cls = 'ln') => s('circle', { cx, cy, r, class: cls });
@@ -344,7 +345,7 @@
     kids.push(s('rect', { x: X(md.periapsis), y: y - 5, width: Math.max(2, X(md.apoapsis) - X(md.periapsis)), height: 10, class: 'solid-amber', opacity: 0.6 }));
     kids.push(circle(X(m.a), y, 6, 'solid-amber glow'));
     kids.push(text(Math.min(X(m.a) - 20, W - 130), y + 76, `${(m.name || 'MOON').toUpperCase()} ${fmt.int(m.a)} km`, 't-amber t-ui'));
-    return svgBox(W, H, 'Moon orbit against the allowed moon zone (logarithmic)', ...kids);
+    return wideViz(svgBox(W, H, 'Moon orbit against the allowed moon zone (logarithmic)', ...kids));
   }
 
   // ── SKY: positions seen from above ────────────────────────────────────
@@ -451,7 +452,7 @@
       km += ws[i];
     });
     kids.push(line(x0, yBase + 9, x1, yBase + 9, 'ln-faint'));
-    return svgBox(W, H, 'Mountain range cross-section, active and eroded', ...kids);
+    return wideViz(svgBox(W, H, 'Mountain range cross-section, active and eroded', ...kids));
   }
   function findDefined(arr, i, dir) { for (let j = i + dir; j >= 0 && j < arr.length; j += dir) if (arr[j] !== null && arr[j] !== undefined) return arr[j]; return null; }
   function niceStep(max) { const raw = max / 5; const p = 10 ** Math.floor(Math.log10(raw)); const m = raw / p; return (m < 1.5 ? 1 : m < 3 ? 2 : m < 7 ? 5 : 10) * p; }
@@ -470,7 +471,7 @@
     kids.push(poly([[x0, Y(0)], ...pts, [x1, Y(0)]], 'fill-teal'));
     kids.push(poly(pts, 'ln-amber glow'));
     kids.push(line(X(20), y0, X(20), y1, 'ln-faint dash'), text(X(20) + 4, y0 + 12, '20 Myr', '', { 'font-size': 13 }));
-    return svgBox(W, H, 'Ocean depth by crust age', ...kids);
+    return wideViz(svgBox(W, H, 'Ocean depth by crust age', ...kids));
   }
 
   // ── POPULATION: logistic growth curve ─────────────────────────────────
@@ -490,7 +491,7 @@
     kids.push(circle(X(years), Y(pd.world), 5, 'solid-teal glow'));
     kids.push(text(Math.min(X(years) + 8, W - 110), Y(pd.world) - 8, fmt.big(pd.world), 't-teal'));
     kids.push(text(x1 - 70, y1 - 6, 'YEARS', 't-ui'));
-    return svgBox(W, H, 'World population over time (logistic growth)', ...kids);
+    return wideViz(svgBox(W, H, 'World population over time (logistic growth)', ...kids));
   }
 
   // ── CLIMATE: latitude strip ───────────────────────────────────────────

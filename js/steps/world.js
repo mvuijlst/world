@@ -3,7 +3,7 @@
  */
 (function () {
   'use strict';
-  const { h, panel, field, textField, readouts, linked, fmt, replace, icon, gauge, info } = WS.ui;
+  const { h, panel, field, textField, readouts, linked, fmt, replace, icon, gauge, info, cardify } = WS.ui;
   const V = WS.viz;
   const C = WS.calc;
   const between = (x, a, b) => x >= a && x <= b;
@@ -312,14 +312,14 @@
           const src = bodies[i];
           const fh = b.fromHome;
           const span = fh.dMax - fh.dMin;
-          const slider = h('input', { type: 'range', min: fh.dMin, max: fh.dMax, step: span / 400 || 0.001, value: src.distance, 'aria-label': `${b.name} current distance`, style: { width: '140px' } });
-          const num = h('input', { class: 'txt num', type: 'number', step: 'any', value: +src.distance.toFixed(4), 'aria-label': `${b.name} current distance (AU)` });
+          const slider = h('input', { type: 'range', min: fh.dMin, max: fh.dMax, step: span / 400 || 0.001, value: src.distance, 'aria-label': `${b.name} current distance`, style: { width: '140px', flex: '1 1 140px', minWidth: 0 } });
+          const num = h('input', { class: 'txt num', type: 'number', step: 'any', value: +src.distance.toFixed(4), 'aria-label': `${b.name} current distance (AU)`, style: { width: '96px', flex: '0 0 96px' } });
           const commit = (v) => { if (!Number.isFinite(v)) return; ctx.set(`system.bodies.${i}.distance`, v); };
           slider.addEventListener('input', () => { num.value = (+slider.value).toFixed(4); commit(Number(slider.value)); });
           num.addEventListener('input', () => { if (num.value !== '') { slider.value = num.value; commit(Number(num.value)); } });
           const cells = { phase: h('td', { class: 'num' }), elong: h('td', { class: 'num' }), mag: h('td', { class: 'num' }), naked: h('td'), obs: h('td', { class: 'txtcell' }), vis: h('td', { class: 'txtcell' }) };
           const tr = h('tr', null, h('td', { class: 'txtcell' }, h('b', null, b.name)), h('td', { class: 'num' }, `${fmt.num(fh.dMin, 3)}–${fmt.num(fh.dMax, 3)}`),
-            h('td', null, h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, slider, num)),
+            h('td', { class: 'span-all' }, h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, slider, num)),
             cells.phase, cells.elong, cells.mag, cells.naked, cells.obs, cells.vis);
           tr._update = (cc) => {
             const f2 = cc.d.sky.bodies[i].fromHome;
@@ -333,14 +333,14 @@
           };
           return tr;
         });
-        replace(planetTable, h('table', { class: 'data' },
+        replace(planetTable, cardify(h('table', { class: 'data' },
           h('thead', null, h('tr', null, h('th', null, 'Planet'), h('th', null, 'Range (AU)'), h('th', null, ['Distance now ', info('Current distance between this planet and the home world. It must lie between the minimum and maximum (red when outside).')]),
             h('th', null, ['Phase° ', info('Phase angle: 0° fully lit, 90° half lit, 180° unlit. Brightness is unreliable above ~120°.')]),
             h('th', null, ['Elong.° ', info('Angle from the star as seen from home. < 20°: lost in the glare. < 50°: twilight only. 180°: opposition.')]),
             h('th', null, ['Mag. ', info('Current apparent magnitude. Below about +5 to +7 is visible to the naked eye.')]),
             h('th', null, ['Known since antiquity? ', info('Could the planet ever be seen with the naked eye under perfect conditions? Yes: known since antiquity. Maybe: depends on the observer. No: a modern discovery.')]),
             h('th', null, 'Observable'), h('th', null, 'Visibility'))),
-          h('tbody', null, rows)),
+          h('tbody', null, rows))),
           bodies.length ? null : h('p', { class: 'muted' }, 'No other bodies yet — add some on the Planetary System step.'));
         planetTable._rows = rows;
       };
@@ -351,11 +351,11 @@
           k.update(c);
           replace(sizesHost, V.starSizes(c.d.sky, c.world.planet.name));
           replace(posHost, V.skyPositions(c.d.sky, c.world.planet.a, c.world.planet.name, c.world.system.bodies));
-          replace(starTable, h('table', { class: 'data' },
+          replace(starTable, cardify(h('table', { class: 'data' },
             h('thead', null, h('tr', null, h('th', null, 'World'), h('th', null, 'AU'), h('th', null, 'Magnitude'), h('th', null, 'Brightness'), h('th', null, 'Size'))),
             h('tbody', null,
               h('tr', { class: 'hz' }, h('td', { class: 'txtcell' }, h('b', { class: 't-amber' }, c.world.planet.name)), h('td', { class: 'num' }, fmt.num(c.world.planet.a, 3)), h('td', { class: 'num' }, fmt.num(c.d.sky.home.magnitude, 2)), h('td', { class: 'num' }, fmt.num(c.d.sky.home.brightness, 4)), h('td', { class: 'num' }, fmt.num(c.d.sky.home.size, 3))),
-              c.d.sky.bodies.map((b) => h('tr', null, h('td', { class: 'txtcell' }, b.name), h('td', { class: 'num' }, fmt.num(b.fromBody.a, 3)), h('td', { class: 'num' }, fmt.num(b.fromBody.magnitude, 2)), h('td', { class: 'num' }, fmt.num(b.fromBody.brightness, 4)), h('td', { class: 'num' }, fmt.num(b.fromBody.size, 3)))))));
+              c.d.sky.bodies.map((b) => h('tr', null, h('td', { class: 'txtcell' }, b.name), h('td', { class: 'num' }, fmt.num(b.fromBody.a, 3)), h('td', { class: 'num' }, fmt.num(b.fromBody.magnitude, 2)), h('td', { class: 'num' }, fmt.num(b.fromBody.brightness, 4)), h('td', { class: 'num' }, fmt.num(b.fromBody.size, 3))))))));
           const s2 = c.world.system.bodies.map((b) => `${b.id}:${b.a}`).join('|') + c.world.planet.a;
           if (s2 !== sig) { sig = s2; renderPlanetTable(c); }
           (planetTable._rows || []).forEach((r) => r._update(c));
