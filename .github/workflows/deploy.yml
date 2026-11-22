@@ -39,9 +39,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Calculation engine (workbook) and sky colours (Panoptes)
-        run: node --test tests/calc.test.js tests/sky.test.js
+        run: node --test tests/calc.test.js tests/sky.test.js tests/sphere.test.js
       - name: Scripts parse
         run: for f in js/*.js js/steps/*.js; do node --check "$f"; done
+      - name: System library for pyGPlates
+        run: sudo apt-get install -y -q --no-install-recommends libgl1
       - name: Django API
         working-directory: server
         env:

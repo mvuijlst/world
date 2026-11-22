@@ -33,11 +33,12 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
-| 09 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
-| 10 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
-| 11 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
-| 12 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 13 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 09 | Plates | the supercontinent as in Worldbuilder's Log 10: cratons, continental crust, rifts and failed rifts drawn on a globe, plates, a land estimate for Population, GPlates export/import |
+| 10 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
+| 11 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
+| 12 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
+| 13 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 14 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -72,6 +73,21 @@ their method in words and their results as images, so:
 `js/orbits.js` places every body on its Kepler orbit (t = 0 at the home world's vernal equinox) and
 turns positions into altitude and azimuth for an observer on any world, using its axial tilt and
 rotation (other worlds get a stable made-up tilt and day unless set).
+
+## Plates and GPlates
+
+The Plates step follows Artifexian's Worldbuilder's Log 10 ("GPlates: the Supercontinent"):
+draw cratons, the continental crust round them, rifts and failed rifts on a globe. Each craton
+starts a plate; crust and rifts join the plate of the craton they start on. Areas and coverage are
+measured on the sphere (`js/sphere.js`), and the crust's share gives a land estimate for the
+Population step (crust × 29/41, Earth's ratio).
+
+The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
+(`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection
+(Craton, ContinentalCrust and ContinentalRift features on their plate IDs) and a `.rot` rotation file
+holding one fixed rotation per plate, ready for poles to be added in GPlates. **Import** reads a
+`.gpml`/`.gpmlz` back. GeoJSON export/import works without the server. pyGPlates needs the system
+library libGL (`apt install libgl1`); it is GPL-2 and runs only on the server.
 
 ## Data
 

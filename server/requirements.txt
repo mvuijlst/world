@@ -1,2 +1,4 @@
 django>=5.2,<6
 gunicorn>=23
+# GPlates files for the Plates step; needs the system library libGL (apt install libgl1)
+pygplates>=1.0,<2
