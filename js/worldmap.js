@@ -260,17 +260,35 @@
     const activeMargin = new Uint8Array(N);
     for (const t of trenches) stamp(gr, S.latLon(t.v), km(550), (k) => { activeMargin[k] = 1; });
 
-    // 4. the land, before sea level: rising inland, shelves at the rim, cratons as old flat shields
+    // 4. where the coast runs (Log 23): not the crust's outline but a field of "how far inland", the
+    // distance into the crust (negative out at sea) roughened by domain-warped fractal noise, so the
+    // coast gets bays, peninsulas, capes and offshore islands at every scale
+    const nA = noise3(seed ^ 0xa11), nB = noise3(seed ^ 0xb22), nC = noise3(seed ^ 0xc33);
+    const warped = (k, freq, oct, amt) => {
+      const x = gr.xyz[k * 3], y = gr.xyz[k * 3 + 1], w = gr.xyz[k * 3 + 2];
+      return nz(x + amt * nA(x, y, w, 1.7, 3), y + amt * nB(x, y, w, 1.7, 3), w + amt * nC(x, y, w, 1.7, 3), freq, oct);
+    };
+    // three scales (the noise's spread is about 0.35): peninsulas and gulfs shifting the coast by some
+    // 450 km, bays and headlands by 140 km, coves by 45 km
+    const reachK = km(3000), Pot = new Float32Array(N);
+    for (let k = 0; k < N; k++) {
+      const sd = cont[k] ? dIn[k] : -dOut[k];
+      Pot[k] = Math.abs(sd) > reachK ? sd : sd + km(1290) * warped(k, 2.2, 6, 0.4) + km(400) * warped(k, 7.5, 4, 0.2) + km(130) * fbm(k, 22, 3);
+    }
+    // 5. sea level: the coast is where that field crosses the level that leaves the share asked for dry
+    const crustShare = shareAbove(gr, Float32Array.from(cont, (c) => (c ? 1 : 0)), 0.5);
+    const target = clamp(opts.land ?? crustShare * (29 / 41), 0.01, Math.max(0.02, crustShare * 1.05));
+    let lo = -40, hi = 40;
+    for (let it = 0; it < 40; it++) { const mid = (lo + hi) / 2; if (shareAbove(gr, Pot, mid) > target) lo = mid; else hi = mid; }
+    const p0 = (lo + hi) / 2, sea = p0;
+    const dry = (k) => Pot[k] > p0;
+
+    // 6. the land: rising gently inland, broad basins and uplands, cratons as old flat shields
     const z = new Float32Array(N);
     for (let k = 0; k < N; k++) {
-      if (cont[k]) {
-        const shelfW = (activeMargin[k] ? km(40) : km(150) * (0.6 + 0.5 * (fbm(k, 1.5, 2) + 1))) * shelfF;
-        // near the coast, rougher: bays, headlands and offshore islands rather than the crust's outline
-        const coastal = 1 - smooth(dIn[k] / km(450));
-        z[k] = H(160 + 1250 * (1 - Math.exp(-dIn[k] / km(900))) + 380 * fbm(k, 2.5, 5) + 320 * fbm(k, 1.1, 3) - (craton[k] ? 80 : 0)
-          + coastal * 950 * fbm(k, 7, 6)
-          - 420 * Math.exp(-dIn[k] / Math.max(km(15), shelfW)));
-      }
+      if (!dry(k)) continue;
+      const d = Pot[k] - p0;
+      z[k] = H(Math.max(4, 25 + 1250 * (1 - Math.exp(-d / km(900))) + (380 * fbm(k, 2.5, 5) + 320 * fbm(k, 1.1, 3)) * smooth(d / km(250)) - (craton[k] ? 80 : 0)));
     }
     // mountain belts (Log 24): peak heights by type, worn down since they stopped rising
     const oro = new Float32Array(N);
@@ -280,43 +298,38 @@
       fillPolygon(gr, placed(o), (k) => { if (h > oro[k]) oro[k] = h; });
     }
     const oroS = blur(gr, oro, Math.max(1, Math.round(km(65) / gr.dx)), 2);
-    // large igneous provinces: basalt plateaus on land, raised ocean floor at sea
+    // large igneous provinces: ragged basalt plateaus on land, raised ocean floor at sea
     const lip = new Float32Array(N);
     for (const f of P.features.filter((x) => x.kind === 'lip' && live(x) && x.coords.length >= 3)) {
-      const old = Math.max(0, (f.begin ?? start) - age), h = f.type === 'oceanic plateau' ? H(2600) : H(700) * (0.4 + 0.6 * Math.exp(-old / 150));
-      fillPolygon(gr, placed(f), (k) => { if (h > lip[k]) lip[k] = h; });
+      const old = Math.max(0, (f.begin ?? start) - age), h = f.type === 'oceanic plateau' ? H(2400) : H(450) * (0.4 + 0.6 * Math.exp(-old / 150));
+      fillPolygon(gr, placed(f), (k) => { const v = h * clamp(0.55 + 0.9 * warped(k, 8, 4, 0.3), 0, 1); if (v > lip[k]) lip[k] = v; });
     }
-    const lipS = blur(gr, lip, Math.max(1, Math.round(km(45) / gr.dx)), 2);
+    const lipS = blur(gr, lip, Math.max(1, Math.round(km(60) / gr.dx)), 2);
     for (let k = 0; k < N; k++) {
-      if (!cont[k]) continue;
-      const ridged = 1 - Math.abs(fbm(k, 9, 4));               // sharp crests
-      z[k] += oroS[k] * (0.45 + 0.75 * ridged * ridged) + lipS[k] * 0.9;
+      if (!dry(k)) continue;
+      const ridged = 1 - Math.abs(warped(k, 9, 5, 0.15));        // sharp, branching crests
+      z[k] += oroS[k] * (0.4 + 0.8 * ridged * ridged) + lipS[k] * 0.8;
     }
 
-    // 5. sea level (Log 23): so that land covers the share asked for
-    const crustShare = shareAbove(gr, Float32Array.from(cont, (c) => (c ? 1 : 0)), 0.5);
-    const target = clamp(opts.land ?? crustShare * (29 / 41), 0.01, Math.max(0.02, crustShare * 0.98));
-    let lo = H(-2000), hi = H(6000);
-    for (let it = 0; it < 40; it++) { const mid = (lo + hi) / 2; if (shareAbove(gr, Float32Array.from(z, (v, k) => (cont[k] ? v : -1e9)), mid) > target) lo = mid; else hi = mid; }
-    const sea = (lo + hi) / 2;
-    for (let k = 0; k < N; k++) if (cont[k]) { z[k] -= sea; if (z[k] < 0) z[k] = Math.max(z[k], -110 - 70 * (fbm(k, 6, 2) + 1)) * (1 + Math.min(1, -z[k] / 600)); }
-
-    // 6. the sea floor (Log 26): depth from age, slopes off the shelves, plateaus
+    // 7. the sea floor (Log 26): shelf, slope, then depth from the floor's age; oceanic plateaus
     for (let k = 0; k < N; k++) {
-      if (cont[k]) continue;
+      if (dry(k)) continue;
+      const e = p0 - Pot[k];                                      // how far out from the coast
+      const shelfW = (activeMargin[k] ? km(40) : km(150) * (0.6 + 0.5 * (fbm(k, 1.5, 2) + 1))) * shelfF;
       // the world's depth curve (ridge depth + 350·√age, flattening on old floor); floor older than the
       // map's ocean (no isochron left) is taken as old
       const a = oage[k], hills = H(180) * fbm(k, 14, 3);
-      const d = (a >= 0 ? depth(a) : depth(150) + 300 * fbm(k, 2, 3)) - 150 * Math.max(0, fbm(k, 3, 2));
-      const rise = smooth(dOut[k] / km(250));                 // continental slope and rise
-      z[k] = -(220 + (d - 220) * rise) + hills * rise + lipS[k] * rise;
+      const D = (a >= 0 ? depth(a) : depth(150) + 300 * fbm(k, 2, 3)) - 150 * Math.max(0, fbm(k, 3, 2));
+      const shelf = 20 + 120 * clamp(e / shelfW, 0, 1);
+      const rise = smooth((e - shelfW) / km(260));             // continental slope and rise
+      z[k] = -(shelf + (D - shelf) * rise) + (hills + lipS[k]) * rise;
     }
     // trenches, on the ocean side of each subduction zone
     const off = km(40) * D2R, tw = km(50), trench = new Float32Array(N);
     for (const t of trenches) {
       const c = t.v.map((x, q) => x + off * t.out[q]), cl = S.latLon(c);
       stamp(gr, cl, tw * 2.4, (k, dd) => {
-        if (cont[k]) return;
+        if (Pot[k] > p0 - km(70)) return;
         const extra = H(2600 + 1600 * (fbm(k, 4, 2) + 1) / 2) * Math.exp(-((dd / tw) ** 2));     // below the floor beside it
         if (extra > trench[k]) trench[k] = extra;
       });
@@ -325,7 +338,8 @@
 
     // 7. islands (Log 22): island arcs, and hotspot volcanoes sinking as they age
     for (const f of P.features.filter((x) => x.kind === 'arc' && live(x) && !x.accreted && x.coords.length >= 3)) {
-      fillPolygon(gr, placed(f), (k) => { const r = 1 - Math.abs(fbm(k, 12, 3)); const hgt = H(-500 + 2600 * r * r); z[k] = Math.max(z[k], hgt); });
+      // a submarine ridge with volcanoes along it: only their tops break the surface, as a chain of islands
+      fillPolygon(gr, placed(f), (k) => { const v = warped(k, 26, 4, 0.2); const hgt = H(-1600 + 4300 * smooth((v + 0.05) / 0.75)); z[k] = Math.max(z[k], hgt); });
     }
     const cache = new Map();
     for (const h of P.features.filter((x) => x.kind === 'hotspot' && (x.begin ?? start) >= age)) {
@@ -365,7 +379,7 @@
   /* Sample a built map at [lat, lon] (nearest cell). */
   const sample = (map, la, lo) => map.z[cellOf(map.grid, la, lo)];
 
-  const api = { build, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf };
+  const api = { build, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.worldmap = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

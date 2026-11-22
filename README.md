@@ -164,6 +164,9 @@ following Worldbuilder's Log 20–26:
 - **Plates and boundaries** (Log 20, topologies): continental crust and dated ocean floor on their
   plates, the rest on the nearest. Boundaries are convergent near an active trench, divergent on a young
   ridge, otherwise transform.
+- **Coasts**: not the crust's outline. A field of "how far inland", the distance into the crust
+  roughened by domain-warped fractal noise at three scales (gulfs and peninsulas, bays, coves), is cut at
+  the level that leaves the land share dry. The coast gets bays, capes, inland seas and offshore islands.
 - **Continents and shelves** (Log 23): the crust rises gently inland. Its rim is flooded shelf, about
   150 km wide on quiet coasts and 40 km on active ones. Sea level is set so land covers the share asked
   for (by default the Population step's).

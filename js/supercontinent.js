@@ -47,7 +47,8 @@
     return (deg) => t.reduce((s, [j, a, p]) => s + a * Math.cos(j * deg * D2R + p), 0);
   }
   function wander(r, amp, scale) {
-    const t = [[1 / scale, r() * 6.283, amp * (0.5 + 0.5 * r())], [2.7 / scale, r() * 6.283, amp * 0.45 * r()]];
+    // a slow swing, a smaller one, and a jagged one: rifts and coasts are irregular at every scale
+    const t = [[1 / scale, r() * 6.283, amp * (0.5 + 0.5 * r())], [2.7 / scale, r() * 6.283, amp * 0.45 * r()], [7.3 / scale, r() * 6.283, amp * 0.18 * r()]];
     return (s) => t.reduce((acc, [k, p, a]) => acc + a * (Math.sin(k * s + p) - Math.sin(p)), 0);
   }
 
@@ -63,18 +64,12 @@
     const firstId = opts.firstId ?? 101;
     const capRadius = (f) => Math.acos(1 - 2 * f) * R2D;
 
-    // the outline: a lumpy disc round the centre, scaled until it covers the target share
+    // the outline: a lobed, ragged disc (big lobes and small jags), scaled until it covers the share
     const C = S.vec([U(-35, 35), U(-180, 180)]);
-    const lumps = periodic(r, 0.24);
-    const ring = (R) => Array.from({ length: 90 }, (_, k) => dest(C, k * 4, clamp(R * (1 + lumps(k * 4)), 0.5 * R, 84)));
-    let R0 = capRadius(target);
-    for (let it = 0; it < 4; it++) R0 = Math.min(80, R0 * capRadius(target) / capRadius(S.areaFraction(ring(R0).map(S.latLon))));
-    const blobLL = ring(R0).map(S.latLon);
-    const inBlob = (v) => S.contains(blobLL, S.latLon(v));
-    const scale = R0 / 68;
-
-    // the triple junction, and the coast seen from it (so every shape is star-shaped round it)
-    const J = dest(C, U(0, 360), U(0, 0.18 * R0));
+    const lumps = periodic(r, 0.42, 2, 6), jags = periodic(r, 0.16, 7, 24);
+    const ring = (R) => Array.from({ length: 180 }, (_, k) => dest(C, k * 2, clamp(R * (1 + lumps(k * 2) + jags(k * 2)), 0.42 * R, 84)));
+    // the triple junction lies off-centre, so the pieces differ in size
+    const jb = U(0, 360), jf = U(0.08, 0.38);
     const reach = (from, b, inside) => {
       let d = 1;
       while (d < 150 && inside(dest(from, b, d))) d += 1;
@@ -82,19 +77,34 @@
       for (let i = 0; i < 22; i++) { const m = (lo + hi) / 2; if (inside(dest(from, b, m))) lo = m; else hi = m; }
       return lo;
     };
-    const coast = Array.from({ length: 120 }, (_, k) => ({ b: k * 3, v: dest(J, k * 3, reach(J, k * 3, inBlob)) }));
+    // the coast as seen from the junction (every piece is star-shaped round it), scaled to the share
+    const shape = (R) => {
+      const blobLL = ring(R).map(S.latLon), inB = S.within(blobLL), J = dest(C, jb, jf * R);
+      const inBlob = (v) => inB(v);
+      const coast = Array.from({ length: 180 }, (_, k) => ({ b: k * 2, v: dest(J, k * 2, reach(J, k * 2, inBlob)) }));
+      return { J, inBlob, coast };
+    };
+    let R0 = capRadius(target), sh = shape(R0);
+    for (let it = 0; it < 4; it++) {
+      const got = S.areaFraction(sh.coast.map((c) => S.latLon(c.v)));
+      R0 = Math.min(82, R0 * capRadius(target) / capRadius(got));
+      sh = shape(R0);
+    }
+    const { J, inBlob, coast } = sh;
+    const scale = R0 / 68;
 
-    // three rift arms from the junction to the coast, about 120° apart, wavering
+    // three rift arms from the junction to the coast, at uneven angles (70-170°), wavering
     const arms = [];
+    const gaps = [U(0.6, 1.4), U(0.6, 1.4), U(0.6, 1.4)], gsum = gaps[0] + gaps[1] + gaps[2];
     let b = U(0, 360);
     for (let i = 0; i < 3; i++) {
-      const w = wander(r, 9, 14 * scale), pts = [J];
+      const w = wander(r, 14, 12 * scale), pts = [J];
       let s = 3;
       for (; s < 170; s += 3) { const bb = b + w(s); if (s >= reach(J, bb, inBlob)) break; pts.push(dest(J, bb, s)); }
       const be = b + w(s), se = reach(J, be, inBlob);
       pts.push(dest(J, be, se));
       arms.push({ pts, end: mod360(be), ext: dest(J, be, se + 2.5) });
-      b += 120 + U(-22, 22);
+      b += (360 * gaps[i]) / gsum;
     }
     // the plates between them: arm i, the coast clockwise to arm i+1, arm i+1 back to the junction
     let pieces = arms.map((a, i) => {
@@ -474,7 +484,9 @@
 
   /* A line `d` degrees out from a run of coast, smoothed. */
   function offshore(points, d) {
-    const raw = points.map(({ v, n }) => norm(v.map((x, q) => Math.cos(d * D2R) * x + Math.sin(d * D2R) * n[q])));
+    // d: degrees out, or a function of the position along (0-1), as for an arc bowed out to sea
+    const at = typeof d === 'function' ? d : () => d;
+    const raw = points.map(({ v, n }, i) => { const dd = at(points.length > 1 ? i / (points.length - 1) : 0.5) * D2R; return norm(v.map((x, q) => Math.cos(dd) * x + Math.sin(dd) * n[q])); });
     return raw.map((_, i) => norm(raw.slice(Math.max(0, i - 2), i + 3).reduce((s, w) => s.map((x, q) => x + w[q]), [0, 0, 0])));
   }
   /* Which side of a line (as drawn) a direction points to: 'left' or 'right'. */
@@ -512,15 +524,23 @@
       }
       runs.forEach((rn, i) => {
         if (used.has(i)) return;
-        const island = r() < (opts.islandShare ?? 0.5) && rn.points.length >= 5;
-        const offset = island ? U(4, 6) : U(0.8, 1.5);
-        const trench = offshore(rn.points, offset).filter((_, k, all) => k % 2 === 0 || k === all.length - 1);
+        // an island arc needs a long margin; its trench bows out to sea (arcs are arcs), and the arc is
+        // a stretch of it, not the whole coast
+        const island = r() < (opts.islandShare ?? 0.35) && rn.points.length >= 8;
+        const offset = island ? U(3, 4.5) : U(0.8, 1.5), bow = island ? U(0.25, 0.5) : 0.15;
+        const out = (t) => offset * (1 - bow + bow * 2 * Math.sin(Math.PI * t));
+        const trench = offshore(rn.points, out).filter((_, k, all) => k % 2 === 0 || k === all.length - 1);
         if (trench.length < 2) return;
-        const landward = rn.points[Math.floor(rn.points.length / 2)].n.map((x) => -x);
+        // the teeth point at the plate: from the trench's middle towards the coast it came from
+        const tm = trench[Math.max(0, Math.floor((trench.length - 2) / 2))], cm = rn.points[Math.min(rn.points.length - 1, Math.floor((trench.length - 2) / 2) * 2)].v;
+        const landward = [cm[0] - tm[0], cm[1] - tm[1], cm[2] - tm[2]];
         zones.push({ id: `${tag}-z${zones.length}`, kind: 'subduction', plateId: rn.plateId, name: `Subduction zone ${++nz}`, coords: toLL(trench), side: sideOf(trench, landward), begin: +age.toFixed(3), offset, auto: true });
         if (!island) return;
         // the island arc: a narrow, lumpy belt of islands about 1.5° behind the trench, on the overriding plate
-        const line = offshore(rn.points, offset - U(1.2, 1.8)), nrm = rn.points.map((q) => q.n);
+        const back = U(1.2, 1.8), a0 = U(0, 0.25), a1 = U(0.75, 1);   // the arc covers part of the margin
+        const take = rn.points.filter((_, i, all) => { const t = i / (all.length - 1); return t >= a0 && t <= a1; });
+        if (take.length < 4) return;
+        const line = offshore(take, (t) => out(a0 + t * (a1 - a0)) - back), nrm = take.map((q) => q.n);
         const w = U(0.3, 0.5), lump = wander(r, 0.35, 1.5);
         const half = (sg) => line.map((v, j) => {
           const t = j / (line.length - 1), wj = w * Math.max(0.25, Math.sin(Math.PI * t) ** 0.5 * (1 + lump(j))), n = nrm[j];
@@ -899,6 +919,8 @@
     let P = { plates: g.plates, features: g.features, nextPlate: g.nextPlate, start, step: 10, seed };
     const events = [];
     const at = (f) => Math.round((start * f) / 5) * 5;                  // ages as fractions of the history
+    // when things happen varies with the seed
+    const f1 = 0.8 + 0.1 * r(), f2 = f1 - 0.07 - 0.07 * r(), f3 = f2 - 0.09 - 0.08 * r(), f4 = f3 - 0.1 - 0.08 * r();
     const run = (mode, from, to, extra = {}) => {
       if (from <= to) return from;
       const res = simulate(P, { seed: seed + from, mode, from, duration: from - to, interval: 25, minSpeed: Math.min(1.5, speed), maxSpeed: speed, radiusKm: R, ...extra });
@@ -908,15 +930,16 @@
     };
     const split = (res, what, age) => { if (res) { P = { ...P, ...res }; events.push({ age, kind: what, a: res.rift.plateId, b: res.nextPlate - 1 }); } };
     // the first breakup (Log 11)
-    run('apart', start, at(0.85));
+    run('apart', start, at(f1));
     // a second rifting event (Logs 12-13)
-    split(secondRift(P, at(0.85), { seed: seed + 1 }), 'rift', at(0.85));
-    run('apart', at(0.85), at(0.75));
-    // a microcontinent (Log 14), and the continents wander
-    split(microcontinent(P, at(0.75), { seed: seed + 2, radiusKm: R }), 'microcontinent', at(0.75));
-    run('wander', at(0.75), at(0.62));
+    split(secondRift(P, at(f1), { seed: seed + 1 }), 'rift', at(f1));
+    run('apart', at(f1), at(f2));
+    // a microcontinent or two (Log 14), and the continents wander
+    split(microcontinent(P, at(f2), { seed: seed + 2, radiusKm: R }), 'microcontinent', at(f2));
+    if (r() < 0.5) { const fm = (f2 + f3) / 2; run('wander', at(f2), at(fm)); split(microcontinent(P, at(fm), { seed: seed + 5, radiusKm: R }), 'microcontinent', at(fm)); run('wander', at(fm), at(f3)); }
+    else run('wander', at(f2), at(f3));
     // they come together again: arcs and continents collide (Logs 15-16)
-    let gathered = run('together', at(0.62), Math.max(at(0.3), 0));
+    let gathered = run('together', at(f3), Math.max(at(Math.max(0.25, f4)), 0));
     // the supercontinent holds a while, then the modern breakup: rifts near the old sutures
     const breakup = Math.max(Math.min(gathered, at(0.2 + 0.08 * r())), 0);
     gathered = run('wander', gathered, breakup);
