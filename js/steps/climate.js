@@ -24,9 +24,10 @@
   WS.currentClimate = (w, d, opts = {}) => {
     if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
     const pl = K.planetOf(w, d), m = WS.currentMap(w, d);
-    if (cache && cache.mapRef === m && JSON.stringify(cache.pl) === JSON.stringify(pl)) return cache;
+    // (the World map's brush changes the map in place: its stroke count says when)
+    if (cache && cache.mapRef === m && cache.strokes === m.strokes && JSON.stringify(cache.pl) === JSON.stringify(pl)) return cache;
     if (opts.peek) return null;
-    cache = { mapRef: m, clim: K.build(m.map, pl), pl };
+    cache = { mapRef: m, strokes: m.strokes, clim: K.build(m.map, pl), pl };
     return cache;
   };
 
