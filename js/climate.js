@@ -305,7 +305,34 @@
         if (z[k] > -80 && Tc >= 20 && upwell[k] < 0.4) reef[k] = 1;
       }
     }
-    return { W, H, lat, z, land, seasons, equinoxT: eqT, rainYear, seaCold, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
+    const iceMap = iceOnMap({ W, H, seaCold }, map, planet.seed ?? 1);
+    return { W, H, lat, z, land, seasons, equinoxT: eqT, rainYear, seaCold, iceMap, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
+  }
+
+  /*
+   * Winter sea ice on a map's own cells: the climate's coldest-season sea temperature (seaCold, on its
+   * coarser grid), smoothly between its cells, with the same wandering edge. Uint8Array, map.W × map.H.
+   */
+  function iceOnMap(c, map, seed) {
+    const { W, H } = map, gr = map.grid, N = W * H, cW = c.W, cH = c.H, sc = c.seaCold, out = new Uint8Array(N), wob = iceWobble(seed);
+    const wrap = (q) => ((q % cW) + cW) % cW;
+    for (let j = 0; j < H; j++) {
+      const fj = clamp(((j + 0.5) / H) * cH - 0.5, 0, cH - 1), j0 = Math.floor(fj), j1 = Math.min(cH - 1, j0 + 1), tj = fj - j0;
+      for (let i = 0; i < W; i++) {
+        const k = j * W + i;
+        if (map.z[k] > 0) continue;
+        const fi = ((i + 0.5) / W) * cW - 0.5, i0 = Math.floor(fi), ti = fi - i0;
+        let sw = 0, v = 0;
+        for (const [q, wt] of [[j0 * cW + wrap(i0), (1 - ti) * (1 - tj)], [j0 * cW + wrap(i0 + 1), ti * (1 - tj)], [j1 * cW + wrap(i0), (1 - ti) * tj], [j1 * cW + wrap(i0 + 1), ti * tj]]) {
+          if (Number.isNaN(sc[q])) continue;
+          sw += wt; v += wt * sc[q];
+        }
+        // (a sea the coarser cells call land: the nearest sea round about)
+        for (let r = 1; r <= 2 && sw <= 0; r++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) { const jj = Math.round(fj) + dj; if (jj < 0 || jj >= cH) continue; const q = jj * cW + wrap(Math.round(fi) + di); if (!Number.isNaN(sc[q])) { sw += 1; v += sc[q]; } }
+        if (sw > 0 && v / sw + wob(gr.xyz[k * 3], gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2]) < -1.8) out[k] = 1;
+      }
+    }
+    return out;
   }
 
   /* A sea-ice edge's wander (°C) at a point on the unit sphere: eddies a few hundred km across. */
@@ -344,7 +371,7 @@
     };
   }
 
-  const api = { build, insolation, koppen, ZONES, planetOf, iceWobble };
+  const api = { build, insolation, koppen, ZONES, planetOf, iceWobble, iceOnMap };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.climate = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

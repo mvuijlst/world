@@ -47,43 +47,54 @@
       const cv = h('canvas', { class: 'scene-canvas', role: 'img', 'aria-label': 'Climate map' });
       host.appendChild(cv);
       const g = cv.getContext('2d');
-      let clim = null, img = null, off = null, busy = false;
+      let clim = null, fmap = null, img = null, off = null, busy = false;
 
       function ensure() {
         const w = ctx.world, d = ctx.d;
         if (!w.plates.features.some((f) => f.kind === 'crust')) { clim = null; return; }
         if (busy) return;
         const pl = K.planetOf(w, d), have = WS.currentClimate(w, d, { peek: true });
-        if (have) { if (clim !== have.clim || !off) { clim = have.clim; paint(); renderStats(); renderKey(); hint.textContent = `${clim.W} × ${clim.H} cells · hover for a place${pl.locked ? ' · tidally locked' : ''}`; } return; }   // nothing changed
+        if (have) { if (clim !== have.clim || !off) { clim = have.clim; fmap = have.mapRef.map; paint(); renderStats(); renderKey(); hint.textContent = `${clim.W} × ${clim.H} cells · hover for a place${pl.locked ? ' · tidally locked' : ''}`; } return; }   // nothing changed
         busy = true; hint.textContent = 'Working out the climate…';
         setTimeout(() => {
           const t0 = performance.now();
-          clim = WS.currentClimate(w, d).clim; busy = false;
+          const c = WS.currentClimate(w, d); clim = c.clim; fmap = c.mapRef.map; busy = false;
           paint(); renderStats(); renderIn(); renderKey(); draw();
           hint.textContent = `${clim.W} × ${clim.H} cells · ${fmt.int(performance.now() - t0)} ms${pl.locked ? ' · tidally locked' : ''}`;
           WS.app.refresh();
         }, 30);
       }
       const season = () => clim.seasons[u.season];
-      /* Colours for every cell of the layer on view. */
+      /* The climate cell for a cell of the map, of the same kind (land or sea) where there is one near. */
+      function cellFor(kk, isLand) {
+        const MW = fmap.W, MH = fmap.H, ii = kk % MW, jj = (kk - ii) / MW, { W, H, land } = clim;
+        const i = Math.floor((ii * W) / MW), j = Math.min(H - 1, Math.floor((jj * H) / MH)), k = j * W + i;
+        if (!!land[k] === isLand) return k;
+        for (let r = 1; r <= 2; r++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) { const q2 = j + dj; if (q2 < 0 || q2 >= H) continue; const q = q2 * W + ((i + di + W) % W); if (!!land[q] === isLand) return q; }
+        return k;
+      }
+      const fineAt = (la, lo) => clamp(Math.floor(((90 - la) / 180) * fmap.H), 0, fmap.H - 1) * fmap.W + ((Math.floor(((lo + 180) / 360) * fmap.W) % fmap.W) + fmap.W) % fmap.W;
+      /* Colours for every cell of the map (its coast and sea ice), from the climate's coarser cells. */
       function paint() {
-        if (!clim) return;
-        const { W, H, land } = clim, px = new Uint8ClampedArray(W * H * 4), s = season(), year = u.season === 'year';
-        for (let k = 0; k < W * H; k++) {
+        if (!clim || !fmap) return;
+        const MW = fmap.W, MH = fmap.H, fz = fmap.z, iceF = clim.iceMap, px = new Uint8ClampedArray(MW * MH * 4), s = season(), year = u.season === 'year';
+        const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ;
+        for (let kk = 0; kk < MW * MH; kk++) {
+          const isLand = fz[kk] > 0, k = cellFor(kk, isLand), iced = !isLand && iceF && iceF[kk];
           let c;
-          const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ;
-          if (u.layer === 'zones') c = land[k] ? hex(clim.zones[clim.zone[k] - 1]?.[1] || '#888888') : clim.ice[k] ? SEAICE : SEA;
+          if (u.layer === 'zones') c = isLand ? hex(clim.zones[clim.zone[k] - 1]?.[1] || '#888888') : iced ? SEAICE : SEA;
           else if (u.layer === 'temp') c = ramp(TEMP, year ? (J.T[k] + L.T[k] + 2 * E.T[k]) / 4 : s.T[k]);
-          else if (u.layer === 'rain') c = land[k] ? ramp(RAIN, year ? clim.rainYear[k] : 2 * s.Pr[k]) : SEA.map((x) => x + 30);
-          else if (u.layer === 'wind') { const p = (year ? (J.P[k] + L.P[k] + 2 * E.P[k]) / 4 : s.P[k]) - 1013; c = p > 0 ? [200 + Math.min(55, p * 4), 150 - Math.min(80, p * 5), 120] : [120 + p * 3, 150 + p * 2, 210]; if (land[k]) c = c.map((x) => x * 0.8 + 30); }
-          else if (u.layer === 'currents') c = land[k] ? [150, 145, 130] : clim.ice[k] ? SEAICE : clim.sst[k] > 0.3 ? [40 + Math.min(180, clim.sst[k] * 45), 60, 110] : clim.sst[k] < -0.3 ? [30, 70 + Math.min(150, -clim.sst[k] * 35), 140 + Math.min(100, -clim.sst[k] * 25)] : SEA;
-          else c = land[k] ? [150, 145, 130] : clim.ice[k] ? SEAICE : clim.reef[k] ? [255, 110, 150] : [30, 60 + Math.min(150, clim.fish[k] * 80), 100 + Math.min(80, clim.fish[k] * 40)];
+          else if (u.layer === 'rain') c = isLand ? ramp(RAIN, year ? clim.rainYear[k] : 2 * s.Pr[k]) : SEA.map((x) => x + 30);
+          else if (u.layer === 'wind') { const p = (year ? (J.P[k] + L.P[k] + 2 * E.P[k]) / 4 : s.P[k]) - 1013; c = p > 0 ? [200 + Math.min(55, p * 4), 150 - Math.min(80, p * 5), 120] : [120 + p * 3, 150 + p * 2, 210]; if (isLand) c = c.map((x) => x * 0.8 + 30); }
+          // (under the ice the sea is at freezing: no warm or cold currents there, only drift)
+          else if (u.layer === 'currents') c = isLand ? [150, 145, 130] : iced ? SEAICE : clim.sst[k] > 0.3 ? [40 + Math.min(180, clim.sst[k] * 45), 60, 110] : clim.sst[k] < -0.3 ? [30, 70 + Math.min(150, -clim.sst[k] * 35), 140 + Math.min(100, -clim.sst[k] * 25)] : SEA;
+          else c = isLand ? [150, 145, 130] : iced ? SEAICE : clim.reef[k] ? [255, 110, 150] : [30, 60 + Math.min(150, clim.fish[k] * 80), 100 + Math.min(80, clim.fish[k] * 40)];
           // the coast, on every layer but the zones (which show it anyway)
-          if (u.layer !== 'zones') { const i = k % W, j = (k - i) / W; if (land[k] !== land[j * W + ((i + 1) % W)] || (j + 1 < H && land[k] !== land[k + W])) c = [25, 25, 30]; }
-          px.set([c[0], c[1], c[2], 255], k * 4);
+          if (u.layer !== 'zones') { const ii = kk % MW, jj = (kk - ii) / MW; if (isLand !== fz[jj * MW + ((ii + 1) % MW)] > 0 || (jj + 1 < MH && isLand !== fz[kk + MW] > 0)) c = [25, 25, 30]; }
+          px.set([c[0], c[1], c[2], 255], kk * 4);
         }
-        img = new ImageData(px, W, H);
-        off = h('canvas'); off.width = W; off.height = H; off.getContext('2d').putImageData(img, 0, 0);
+        img = new ImageData(px, MW, MH);
+        off = h('canvas'); off.width = MW; off.height = MH; off.getContext('2d').putImageData(img, 0, 0);
       }
 
       // ── drawing: map or globe, with arrows for winds and currents ──
@@ -112,8 +123,8 @@
             const o = (y * W + x) * 4, px2 = (x - cx) / r, py = (cy - y) / r, r2 = px2 * px2 + py * py;
             if (r2 > 1) { d[o + 3] = 0; continue; }
             const pz = Math.sqrt(1 - r2), la = Math.asin(clamp(pz * sla + py * cla, -1, 1)), lo = lo0 + Math.atan2(px2, pz * cla - py * sla);
-            const j = clamp(Math.floor(((90 - la * R2D) / 180) * clim.H), 0, clim.H - 1), i = ((Math.floor(((((lo * R2D + 180) % 360) + 360) % 360) / 360 * clim.W)) % clim.W + clim.W) % clim.W;
-            const k = (j * clim.W + i) * 4, lit = 0.6 + 0.4 * pz;
+            const IW = img.width, IH = img.height, j = clamp(Math.floor(((90 - la * R2D) / 180) * IH), 0, IH - 1), i = ((Math.floor(((((lo * R2D + 180) % 360) + 360) % 360) / 360 * IW)) % IW + IW) % IW;
+            const k = (j * IW + i) * 4, lit = 0.6 + 0.4 * pz;
             d[o] = img.data[k] * lit; d[o + 1] = img.data[k + 1] * lit; d[o + 2] = img.data[k + 2] * lit; d[o + 3] = 255;
           }
           g.putImageData(out, 0, 0);
@@ -129,9 +140,17 @@
           const k = Math.floor(j) * clim.W + Math.floor(i), la = clim.lat[Math.floor(j)], lo = -180 + ((i + 0.5) * 360) / clim.W;
           let ux, vy, col;
           if (s) { ux = s.u[k]; vy = s.v[k]; col = 'rgba(255,255,255,0.85)'; }
-          else { if (clim.land[k]) continue; ux = clim.current.u[k]; vy = clim.current.v[k]; col = clim.sst[k] > 0.3 ? 'rgba(255,140,110,0.95)' : clim.sst[k] < -0.3 ? 'rgba(150,210,255,0.95)' : 'rgba(255,255,255,0.6)'; }
+          let drift = false;
+          if (!s) {
+            if (clim.land[k]) continue;
+            ux = clim.current.u[k]; vy = clim.current.v[k];
+            // under sea ice the currents still run and carry the ice with them, slowed (the ice shields
+            // the water from the wind), and the water is at freezing: neither warm nor cold
+            drift = !!(clim.iceMap && clim.iceMap[fineAt(la, lo)]);
+            col = drift ? 'rgba(40,60,90,0.85)' : clim.sst[k] > 0.3 ? 'rgba(255,140,110,0.95)' : clim.sst[k] < -0.3 ? 'rgba(150,210,255,0.95)' : 'rgba(255,255,255,0.6)';
+          }
           const l = Math.hypot(ux, vy); if (l < 1e-6) continue;
-          const len = 2.4 * Math.min(1, l * (s ? 6 : 1.4)) + 0.6;            // degrees
+          const len = (2.4 * Math.min(1, l * (s ? 6 : 1.4)) + 0.6) * (drift ? 0.6 : 1);   // degrees
           const a = toScreen(la, lo), b = toScreen(clamp(la + (vy / l) * len, -89, 89), lo + ((ux / l) * len) / Math.max(0.2, Math.cos(la * D2R)));
           if (!a[2] || !b[2] || Math.abs(b[0] - a[0]) > cv.width / 4) continue;
           g.strokeStyle = col; g.fillStyle = col;
@@ -152,9 +171,10 @@
         const p = at(e);
         if (clim && p) {
           const j = clamp(Math.floor(((90 - p[0]) / 180) * clim.H), 0, clim.H - 1), i = clamp(Math.floor(((p[1] + 180) / 360) * clim.W), 0, clim.W - 1), k = j * clim.W + i;
-          const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ, z = clim.z[k];
-          const code = clim.land[k] ? clim.zones[clim.zone[k] - 1]?.[0] : null;
-          hint.textContent = `${fmt.num(p[0], 1)}°, ${fmt.num(p[1], 1)}° · ${z > 0 ? `${fmt.int(z)} m` : 'sea'} · ${fmt.num(J.T[k], 0)} / ${fmt.num(E.T[k], 0)} / ${fmt.num(L.T[k], 0)} °C · ${fmt.int(clim.rainYear[k])} mm a year${code ? ` · ${code} ${NAME[code] || ''}` : clim.ice[k] ? ' · sea ice' : clim.reef[k] ? ' · coral reefs' : ''}`;
+          const fk = fineAt(p[0], p[1]), z = fmap.z[fk], isLand = z > 0, k2 = cellFor(fk, isLand), iced = !isLand && clim.iceMap && clim.iceMap[fk];
+          const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ;
+          const code = isLand ? clim.zones[clim.zone[k2] - 1]?.[0] : null;
+          hint.textContent = `${fmt.num(p[0], 1)}°, ${fmt.num(p[1], 1)}° · ${isLand ? `${fmt.int(z)} m` : 'sea'} · ${fmt.num(J.T[k2], 0)} / ${fmt.num(E.T[k2], 0)} / ${fmt.num(L.T[k2], 0)} °C · ${fmt.int(clim.rainYear[k2])} mm a year${code ? ` · ${code} ${NAME[code] || ''}` : iced ? ' · sea ice (winter)' : clim.reef[k2] ? ' · coral reefs' : ''}`;
         }
         if (!drag || u.view !== 'globe') return;
         const k = (180 / Math.PI) / R() * (cv.width / cv.clientWidth);
@@ -184,7 +204,7 @@
         } else if (u.layer === 'temp') items = TEMP.map(([t, c]) => [c, `${t} °C`]);
         else if (u.layer === 'rain') items = RAIN.map(([t, c]) => [c, `${t} mm/yr`]);
         else if (u.layer === 'wind') items = [[[240, 110, 120], 'high pressure'], [[100, 130, 210], 'low pressure'], [[255, 255, 255], 'surface wind']];
-        else if (u.layer === 'currents') items = [[[220, 60, 110], 'warm current'], [[30, 200, 240], 'cold current'], [SEAICE, 'sea ice']];
+        else if (u.layer === 'currents') items = [[[220, 60, 110], 'warm current'], [[30, 200, 240], 'cold current'], [SEAICE, 'sea ice (dark arrows: its drift)']];
         else items = [[[30, 210, 180], 'rich fishing (upwelling, shelves)'], [[255, 110, 150], 'coral reefs'], [SEAICE, 'sea ice']];
         replace(keyHost, panel('Key', { tag: LAYERS.find((l) => l[0] === u.layer)[1].toUpperCase() }, h('div', { class: 'map-key mono', style: { marginLeft: 0 } }, items.map(([c, t]) => h('span', null, sw(c), t)))));
       }
@@ -197,8 +217,10 @@
           if (land[k]) {
             la += a; const gname = clim.zones[clim.zone[k] - 1]?.[0]?.[0]; grp[gname] = (grp[gname] || 0) + a;
             hot = Math.max(hot, J.T[k], L.T[k], E.T[k]); cold = Math.min(cold, J.T[k], L.T[k], E.T[k]); const p = clim.rainYear[k]; wet = Math.max(wet, p); dry = Math.min(dry, p);
-          } else { sea += a; if (clim.ice[k]) ice += a; if (clim.reef[k]) reefs++; }
+          } else { sea += a; if (clim.reef[k]) reefs++; }
         }
+        // sea ice on the map's own cells
+        if (fmap && clim.iceMap) { let s2 = 0, i2 = 0; for (let kk = 0; kk < fmap.W * fmap.H; kk++) if (!(fmap.z[kk] > 0)) { const a = fmap.grid.cosl[Math.floor(kk / fmap.W)]; s2 += a; if (clim.iceMap[kk]) i2 += a; } sea = s2; ice = i2; }
         const pc = (gname) => `${fmt.int((100 * (grp[gname] || 0)) / Math.max(1e-9, la))} %`;
         replace(statsHost, h('div', { class: 'readouts' },
           [['Tropical (A)', pc('A'), 'of the land'], ['Dry (B)', pc('B'), 'deserts & steppes'], ['Temperate (C)', pc('C'), ''], ['Continental (D)', pc('D'), ''], ['Polar (E)', pc('E'), 'tundra & ice'],
