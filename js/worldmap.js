@@ -243,6 +243,13 @@
     for (let k = 0; k < N; k++) if (cont[k] || oage[k] >= 0) known[k] = 1;
     const near = distance(gr, known, plate);
     const pl = near.label;
+    // welded continents are one landmass: close the narrow gaps between pieces of crust (a dilation
+    // then an erosion by ~200 km) so a suture lies inland, not between two coasts
+    {
+      const g = Math.max(1.5 * gr.dx, km(200)), d0 = distance(gr, cont).d;
+      const grown = Uint8Array.from(d0, (v) => (v <= g ? 1 : 0)), back = distance(gr, grown.map((c) => 1 - c)).d;
+      for (let k = 0; k < N; k++) if (!cont[k] && grown[k] && back[k] > g) { cont[k] = 1; plate[k] = plate[k] || 0; }
+    }
     const dIn = distance(gr, cont.map((c) => 1 - c)).d;       // inland from the coast of the crust
     const dOut = distance(gr, cont).d;                        // out to sea from the crust
 
@@ -260,6 +267,19 @@
     const activeMargin = new Uint8Array(N);
     for (const t of trenches) stamp(gr, S.latLon(t.v), km(550), (k) => { activeMargin[k] = 1; });
 
+    // mountain belts (Log 24): heights by type (a collision range, a plateau behind one, a cordillera,
+    // accreted highlands), worn down once they stop rising: Alps-like while young, Appalachian after
+    // some 250 Myr, low hills after a billion years
+    const oro = new Float32Array(N), plat = new Float32Array(N);
+    const PEAK = { collision: 6600, cordillera: 4600, accretion: 2600, plateau: 3800 };
+    const worn = (since) => 0.12 + 0.88 * Math.exp(-since / 110);
+    for (const o of P.features.filter((x) => x.kind === 'orogen' && live(x) && x.coords.length >= 3)) {
+      const since = Math.max(0, (o.active ?? 0) - age), into = o.type === 'plateau' ? plat : oro;
+      const h = (PEAK[o.type] ?? 3000) * (o.type === 'plateau' ? Math.exp(-since / 60) : worn(since) * (since > 500 ? Math.exp(-(since - 500) / 500) : 1)) * relief;
+      fillPolygon(gr, placed(o), (k) => { if (h > into[k]) into[k] = h; });
+    }
+    const oroS = blur(gr, oro, Math.max(1, Math.round(km(65) / gr.dx)), 2), platS = blur(gr, plat, Math.max(1, Math.round(km(120) / gr.dx)), 2);
+
     // 4. where the coast runs (Log 23): not the crust's outline but a field of "how far inland", the
     // distance into the crust (negative out at sea) roughened by domain-warped fractal noise, so the
     // coast gets bays, peninsulas, capes and offshore islands at every scale
@@ -274,6 +294,8 @@
     for (let k = 0; k < N; k++) {
       const sd = cont[k] ? dIn[k] : -dOut[k];
       Pot[k] = Math.abs(sd) > reachK ? sd : sd + km(1290) * warped(k, 2.2, 6, 0.4) + km(400) * warped(k, 7.5, 4, 0.2) + km(130) * fbm(k, 22, 3);
+      // mountains and plateaus near the crust stand above the sea: ranges join the land they rise on
+      if (sd > -km(400) && (oroS[k] > H(300) || platS[k] > H(300))) Pot[k] += km(500) * clamp(Math.max(oroS[k], platS[k]) / H(1500), 0, 1);
     }
     // 5. sea level: the coast is where that field crosses the level that leaves the share asked for dry
     const crustShare = shareAbove(gr, Float32Array.from(cont, (c) => (c ? 1 : 0)), 0.5);
@@ -290,14 +312,6 @@
       const d = Pot[k] - p0;
       z[k] = H(Math.max(4, 25 + 1250 * (1 - Math.exp(-d / km(900))) + (380 * fbm(k, 2.5, 5) + 320 * fbm(k, 1.1, 3)) * smooth(d / km(250)) - (craton[k] ? 80 : 0)));
     }
-    // mountain belts (Log 24): peak heights by type, worn down since they stopped rising
-    const oro = new Float32Array(N);
-    const PEAK = { collision: 5200, cordillera: 4000, accretion: 2400 };
-    for (const o of P.features.filter((x) => x.kind === 'orogen' && live(x) && x.coords.length >= 3)) {
-      const since = Math.max(0, (o.active ?? 0) - age), h = (PEAK[o.type] ?? 3000) * (0.18 + 0.82 * Math.exp(-since / 120)) * relief;
-      fillPolygon(gr, placed(o), (k) => { if (h > oro[k]) oro[k] = h; });
-    }
-    const oroS = blur(gr, oro, Math.max(1, Math.round(km(65) / gr.dx)), 2);
     // large igneous provinces: ragged basalt plateaus on land, raised ocean floor at sea
     const lip = new Float32Array(N);
     for (const f of P.features.filter((x) => x.kind === 'lip' && live(x) && x.coords.length >= 3)) {
@@ -308,7 +322,7 @@
     for (let k = 0; k < N; k++) {
       if (!dry(k)) continue;
       const ridged = 1 - Math.abs(warped(k, 9, 5, 0.15));        // sharp, branching crests
-      z[k] += oroS[k] * (0.4 + 0.8 * ridged * ridged) + lipS[k] * 0.8;
+      z[k] += oroS[k] * (0.4 + 0.8 * ridged * ridged) + platS[k] * (0.85 + 0.15 * fbm(k, 6, 3)) + lipS[k] * 0.8;
     }
 
     // 7. the sea floor (Log 26): shelf, slope, then depth from the floor's age; oceanic plateaus

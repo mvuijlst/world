@@ -185,7 +185,7 @@ test('Logs 14-19: one button makes the whole history, ending at the present', ()
   for (const p of w.plates.filter((q) => q.rotations.length)) assert.equal(Math.min(...p.rotations.map((r) => r.age)), 0, `plate ${p.id} moves to the present`);
   assert.ok(w.events.some((e) => e.kind === 'microcontinent'), 'a microcontinent');
   assert.ok(w.events.some((e) => e.kind === 'continent'), 'continents collided');
-  for (const o of w.features.filter((f) => f.kind === 'orogen')) assert.ok(o.begin >= o.active && ['cordillera', 'collision', 'accretion'].includes(o.type), `${o.name}`);
+  for (const o of w.features.filter((f) => f.kind === 'orogen')) assert.ok(o.begin >= o.active && ['cordillera', 'collision', 'accretion', 'plateau'].includes(o.type), `${o.name}`);
   for (const h of w.features.filter((f) => f.kind === 'hotspot')) assert.ok(h.plateId === 0 && h.coords.length === 1, 'hotspots fixed in the mantle');
   const accreted = w.features.filter((f) => f.kind === 'arc' && f.accreted);
   for (const a of accreted) assert.ok(w.features.some((x) => x.kind === 'arc' && x.end === a.begin && a.id.startsWith(x.id)), `${a.name} continues an arc that ended then`);

@@ -242,7 +242,9 @@
     const from = clamp(opts.from ?? start, 0, start);
     const duration = clamp(opts.duration ?? 100, 0, from), end = from - duration;
     const interval = clamp(opts.interval ?? 20, 1, Math.max(1, duration));
-    const mode = ['apart', 'wander', 'together'].includes(opts.mode) ? opts.mode : 'apart';
+    const mode = ['apart', 'wander', 'together', 'indent'].includes(opts.mode) ? opts.mode : 'apart';
+    // indent: each mover heads straight for its target, fast (India for Asia); the rest wander
+    const indents = mode === 'indent' ? (opts.indent || []) : [];
     const seed = Number.isFinite(opts.seed) ? opts.seed >>> 0 : (Math.random() * 2 ** 31) | 0;
     const r = rng((seed ^ 0x5eed ^ Math.round(from * 7919)) >>> 0), U = (a, b) => a + (b - a) * r();
     const vmin = opts.minSpeed ?? 2, vmax = Math.max(vmin, opts.maxSpeed ?? 6), R = opts.radiusKm ?? 6371;
@@ -318,10 +320,52 @@
       apart[i][j] = !c;
       if (c && mode !== 'apart') parent[find(j)] = find(i);
     }
+    // in a breakup, the contacts that do not rift stay welded (as Eurasia across the Urals)
+    for (const [a, b] of opts.keep || []) {
+      const i = bodies.findIndex((x) => x.id === a), j = bodies.findIndex((x) => x.id === b);
+      if (i >= 0 && j >= 0) parent[find(j)] = find(i);
+    }
     const middle = () => norm(bodies.reduce((s, b) => s.map((v, k) => v + b.area * b.now.c[k]), [0, 0, 0]));
+    /*
+     * A collision is not a kiss: the ocean between closes along the whole front. After first contact
+     * the smaller block turns about the contact point, a degree at a time, while that brings more of
+     * the two margins together without one riding over the other.
+     */
+    const overlaps = (i, j) => bodies[j].now.samples.filter((sm) => bodies[i].now.inside.some((f) => f(sm))).length + bodies[i].now.samples.filter((sm) => bodies[j].now.inside.some((f) => f(sm))).length;
+    const front = (i, j, gap = 3) => { const c = Math.cos(gap * D2R); return bodies[i].now.samples.filter((sm) => bodies[j].now.samples.some((t) => dot(sm, t) > c)).length; };
+    function zip(i, j, gi, gj) {
+      const area = (g) => bodies.reduce((sum, b, x) => sum + (find(x) === g ? b.area : 0), 0);
+      const turnG = area(gi) <= area(gj) ? gi : gj, a = turnG === gi ? i : j, o = turnG === gi ? j : i;
+      // the contact: the closest pair of coast samples
+      let best = -2, pivot = null;
+      for (const sm of bodies[a].now.samples) for (const t of bodies[o].now.samples) { const d = dot(sm, t); if (d > best) { best = d; pivot = norm(sm.map((x, q) => x + t[q])); } }
+      if (!pivot) return;
+      const members = bodies.map((_, x) => x).filter((x) => find(x) === turnG);
+      const turn = (deg) => { const rq = Q.fromAxisAngle(pivot, deg * D2R); for (const x of members) { bodies[x].tot = Q.mul(rq, bodies[x].tot); place(bodies[x]); } };
+      // more of the front together is better; riding far over the other is not (some overlap is the
+      // collision itself)
+      const value = () => front(a, o) - 2 * Math.max(0, overlaps(a, o) - 3);
+      let score = value(), dir = 0;
+      for (const sg of [1, -1]) { turn(sg); const sc = value(); turn(-sg); if (sc > score) { score = sc; dir = sg; } }
+      if (!dir) return;
+      turn(dir);
+      for (let step = 1; step < 40; step++) {
+        turn(dir);
+        const sc = value();
+        if (sc < score) { turn(-dir); break; }
+        score = sc;
+      }
+    }
     const C0 = middle();
     const biggest = bodies.reduce((a, b) => (b.area > a.area ? b : a), bodies[0]);
     for (const b of bodies) b.v = mode !== 'wander' && b === biggest ? U(0.3, 0.9) : U(vmin, vmax);
+    if (mode === 'indent') for (const b of bodies) {
+      const job = indents.find((x) => x.mover === b.id), tg = job && bodies.find((x) => x.id === job.target);
+      if (!tg) { b.v = indents.some((x) => x.target === b.id) ? U(0.3, 0.9) : U(vmin * 0.6, vmax * 0.7); continue; }   // targets nearly still, the rest drifting
+      // fast enough to arrive within some 60 % of the time (India reached 15-18 cm/yr)
+      const gap = Math.max(2, angle(b.now.c, tg.now.c) - 0.6 * (b.rad + tg.rad));
+      b.v = clamp((((gap * Math.PI * R) / 180) / (0.45 * duration)) * 0.1, vmin, 18);
+    }
     const heading = new Map();
 
     // pin each plate where it is when continuing, so it does not glide from an older pole
@@ -338,7 +382,12 @@
         const lead = members.reduce((a, i) => (bodies[i].area > bodies[a].area ? i : a), members[0]);
         const c = norm(members.reduce((s, i) => s.map((v, q) => v + bodies[i].area * bodies[i].now.c[q]), [0, 0, 0]));
         let axis, speed = clamp(bodies[lead].v * U(0.85, 1.15), 0.2, vmax);
-        if (mode === 'wander') {
+        const pushing = mode === 'indent' && indents.find((x) => members.some((i) => bodies[i].id === x.mover) && !members.some((i) => bodies[i].id === x.target));
+        const tgt = pushing ? bodies.find((x) => x.id === pushing.target) : null;
+        if (tgt) {
+          axis = cross(c, tgt.now.c);                         // straight at it
+          speed = clamp(bodies[members.find((i) => bodies[i].id === pushing.mover)].v * U(0.9, 1.1), 0.2, 15);
+        } else if (mode === 'wander' || mode === 'indent') {
           const h = (heading.has(g) ? heading.get(g) : U(0, 360)) + U(-12, 12);
           heading.set(g, h);
           const { east, north } = frame(c), b = h * D2R;
@@ -372,7 +421,11 @@
           if (!apart[i][j]) continue;            // rifting apart from each other in this run: they part, not weld
           if (!contact(i, j)) continue;
           const gi = find(i), gj = find(j);
-          bodies.forEach((b, x) => { if (find(x) === gi || find(x) === gj) { b.tot = before[x]; place(b); } });
+          // they keep converging a few steps after contact: the margins override and the crust thickens
+          // (how mountain belts and plateaus are built), then the front zips shut
+          const more = 1 + Math.floor(r() * 3);
+          for (let x = 0; x < bodies.length; x++) if (find(x) === gi || find(x) === gj) { let q = bodies[x].tot; for (let t = 0; t < more; t++) q = Q.mul(stages.get(find(x)), q); bodies[x].tot = q; place(bodies[x]); }
+          zip(i, j, gi, gj);
           parent[gj] = gi;
           welds.push({ age: +(age - dt).toFixed(3), a: bodies[i].id, b: bodies[j].id });
           hit = true;
@@ -743,10 +796,11 @@
       const now = new Map();
       for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
         const key = `${ids[i]}:${ids[j]}`, A = coasts.get(ids[i]), B = coasts.get(ids[j]);
-        const touch = touching(A, B);
+        // the simulation welds blocks a degree or two apart: that is a meeting
+        const touch = touching(A, B, 2.5);
         now.set(key, touch);
-        // a meeting counts only after the two have been clearly apart (3°), not a graze while parting
-        if (!touch && !touching(A, B, 3)) parted.add(key);
+        // a meeting counts only after the two have been clearly apart (4°), not a graze while parting
+        if (!touch && !touching(A, B, 4)) parted.add(key);
       }
       // arcs that hit another plate's continent
       for (const a of features.filter((x) => x.kind === 'arc' && live(x) && !x.accreted)) {
@@ -764,7 +818,7 @@
         if (!touch || !parted.has(key)) continue;
         parted.delete(key);
         const [ia, ib] = key.split(':').map(Number), big = (area.get(ia) || 0) >= (area.get(ib) || 0) ? ia : ib, other = big === ia ? ib : ia;
-        const A = coasts.get(big), B = coasts.get(other), near = Math.cos(2 * D2R);
+        const A = coasts.get(big), B = coasts.get(other), near = Math.cos(6 * D2R);   // the facing margins: one collision zone
         const contact = chain(A.pieces.flatMap((p) => p.coast).filter((s) => B.pts.some((t) => dot(s, t) > near) || B.pieces.some((q) => q.inside(s))));
         if (contact.length < 3) continue;
         const back = Q.inverse(m.absolute(big, age));
@@ -783,7 +837,8 @@
   /*
    * Log 17, orogeny: the mountain belts, each from its cause, and when it was last pushed up.
    *  - cordillera: behind a subduction zone off a continent, 1.5-5° inland, for as long as it subducts;
-   *  - collision: on a suture, 2-4° either side, pushed up for 30-60 Myr after the collision;
+   *  - collision: on a suture, 250-450 km either side, pushed up for 40-80 Myr after the collision,
+   *    with a high plateau behind it on the larger plate's side when it lasted long enough;
    *  - accretion: where an island arc was accreted, for 20-40 Myr after.
    * Old belts are worn down: their `active` age says until when they grew.
    */
@@ -809,8 +864,23 @@
       out.push({ id: `o${z.id}`, kind: 'orogen', type: 'cordillera', plateId: z.plateId, name: `${['Cordillera', 'Range', 'Sierra'][n % 3]} ${++n}`, coords: [...a, ...b.reverse()].map((v) => fix4(S.latLon(v))), begin: z.begin ?? start, active: z.end ?? 0, auto: true });
     }
     for (const s of P.features.filter((f) => f.kind === 'suture' && f.coords.length >= 2)) {
-      const ring = belt(S.densify(s.coords, false, 1.5).map(S.vec), km(U(220, 450)), wander(r, 0.25, 2));
-      if (ring) out.push({ id: `o${s.id}`, kind: 'orogen', type: 'collision', plateId: s.plateId, name: `Mountains ${++n}`, coords: ring.map((v) => fix4(S.latLon(v))), begin: s.begin, active: Math.max(0, s.begin - U(30, 60)), auto: true });
+      // a collision range astride the suture (the Himalaya, the Alps), pushed up for 40-80 Myr
+      const line = S.densify(s.coords, false, 1.5).map(S.vec), w = km(U(250, 450)), active = Math.max(0, s.begin - U(40, 80));
+      const ring = belt(line, w, wander(r, 0.25, 2));
+      if (ring) out.push({ id: `o${s.id}`, kind: 'orogen', type: 'collision', plateId: s.plateId, name: `Mountains ${++n}`, coords: ring.map((v) => fix4(S.latLon(v))), begin: s.begin, active, auto: true });
+      // behind it, on the larger plate's side, a high plateau of thickened crust (Tibet), if the
+      // collision went on long enough
+      if (line.length >= 3 && s.begin - active > 50) {
+        const inC = crustOf(s.plateId), side = (sg) => line.map((v, j) => {
+          const a = line[Math.max(0, j - 1)], b = line[Math.min(line.length - 1, j + 1)];
+          const nn = norm(cross(v, [b[0] - a[0], b[1] - a[1], b[2] - a[2]]));
+          return (d) => norm(v.map((x, k) => Math.cos(d * D2R) * x + sg * Math.sin(d * D2R) * nn[k]));
+        });
+        const depthOf = (sg) => side(sg).filter((fn) => inC.some((test) => test(fn(w * 2)))).length;
+        const sg = depthOf(1) >= depthOf(-1) ? 1 : -1, fns = side(sg), far = w + km(U(400, 900));
+        const near = fns.map((fn) => fn(w * 0.8)), back = fns.map((fn) => fn(far));
+        out.push({ id: `p${s.id}`, kind: 'orogen', type: 'plateau', plateId: s.plateId, name: `Plateau ${++n}`, coords: [...near, ...back.reverse()].map((v) => fix4(S.latLon(v))), begin: s.begin, active, auto: true });
+      }
     }
     for (const a of P.features.filter((f) => f.kind === 'arc' && f.accreted)) {
       out.push({ id: `o${a.id}`, kind: 'orogen', type: 'accretion', plateId: a.plateId, name: `Highlands ${++n}`, coords: a.coords, begin: a.begin, active: Math.max(0, a.begin - U(20, 40)), auto: true });
@@ -904,6 +974,78 @@
   }
 
   /*
+   * The breakup of an assembled supercontinent at an age. Of the contacts between its plates, only
+   * some rift (the rest stay welded, their old mountains inland). A rift does not follow the old
+   * suture but runs a few degrees inside the plate that leaves, so a sliver of it stays welded to the
+   * other with the suture and its mountains between them (as Avalonia with North America, the
+   * Appalachians inland). Returns {P, keep: pairs that stay welded, events}.
+   */
+  function breakup(P, age, opts = {}) {
+    const start = P.start ?? 1000, m = Q.model(P.plates, start), co = coastsAt(P, m, age), ids = [...co.keys()];
+    const r = rng((((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0xb7ea) + Math.round(age)) >>> 0), U = (a, b) => a + (b - a) * r();
+    const area = (id) => P.features.filter((f) => f.kind === 'crust' && f.plateId === id).reduce((sum, f) => sum + S.areaFraction(f.coords), 0);
+    const pairs = [];
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) if (touching(co.get(ids[i]), co.get(ids[j]), 3)) pairs.push([ids[i], ids[j]]);   // welded blocks keep a small gap
+    for (let i = pairs.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [pairs[i], pairs[j]] = [pairs[j], pairs[i]]; }
+    const nRift = pairs.length ? Math.max(1, Math.round(pairs.length * U(0.35, 0.6))) : 0;
+    const keep = pairs.slice(nRift), events = [];
+    let Q2 = P, n = P.features.filter((f) => f.kind === 'rift').length;
+    for (const [a, b] of pairs.slice(0, nRift)) {
+      const stay = area(a) >= area(b) ? a : b, go = stay === a ? b : a;
+      const A = co.get(stay), B = co.get(go), near = Math.cos(2 * D2R);
+      const contact = chain(A.pieces.flatMap((q) => q.coast).filter((v) => B.pts.some((t) => dot(v, t) > near) || B.pieces.some((q) => q.inside(v))));
+      let done = false;
+      if (contact.length >= 3) {
+        // the new rift: the contact moved some degrees into the leaving plate, smoothed, run on past both ends
+        const d = U(2.5, 6), cB = B.c;
+        const moved = contact.map((v) => { const t = norm(cB.map((x, k) => x - dot(cB, v) * v[k])); return norm(v.map((x, k) => Math.cos(d * D2R) * x + Math.sin(d * D2R) * t[k])); });
+        const sm = moved.map((_, i) => norm(moved.slice(Math.max(0, i - 2), i + 3).reduce((acc, w) => acc.map((x, k) => x + w[k]), [0, 0, 0])));
+        const back = Q.inverse(m.absolute(go, age));
+        const piece0 = P.features.filter((f) => f.kind === 'crust' && f.plateId === go && (f.begin ?? start) >= age).sort((x, y) => S.areaFraction(y.coords) - S.areaFraction(x.coords))[0];
+        const inPiece = piece0 ? S.within(piece0.coords) : () => false;
+        // run on past each end, straight on, until out of the leaving plate's crust
+        const ext = (p, q) => {
+          const dir = norm(p.map((x, k) => x - dot(p, q) * q[k])), pts = [];
+          for (let st = 1; st <= 20; st++) {
+            const v = norm(p.map((x, k) => Math.cos(st * 3 * D2R) * x + Math.sin(st * 3 * D2R) * dir[k]));
+            pts.push(v);
+            if (!inPiece(Q.rotate(back, v))) { pts.push(norm(p.map((x, k) => Math.cos((st + 1) * 3 * D2R) * x + Math.sin((st + 1) * 3 * D2R) * dir[k]))); break; }
+          }
+          return pts;
+        };
+        const head = ext(sm[0], sm[1]).reverse(), tail = ext(sm[sm.length - 1], sm[sm.length - 2]);
+        const lineLL = [...head, ...sm, ...tail].map((v) => S.latLon(Q.rotate(back, v)));
+        const piece = P.features.filter((f) => f.kind === 'crust' && f.plateId === go && (f.begin ?? start) >= age).sort((x, y) => S.areaFraction(y.coords) - S.areaFraction(x.coords))[0];
+        // a point of the leaving plate between the contact and the new rift: the sliver's side
+        const cm = contact[Math.floor(contact.length / 2)], tm = norm(cB.map((x, k) => x - dot(cB, cm) * cm[k]));
+        const probe = S.latLon(Q.rotate(back, norm(cm.map((x, k) => Math.cos(d * 0.4 * D2R) * x + Math.sin(d * 0.4 * D2R) * tm[k]))));
+        const res = piece && splitWith(Q2, age, Q2.features.find((f) => f.id === piece.id) || piece, lineLL, (parts, sizes) => {
+          const i = S.within(parts[0])(S.vec(probe)) ? 0 : S.within(parts[1])(S.vec(probe)) ? 1 : null;
+          if (i === null) return null;
+          const share = sizes[i] / (sizes[0] + sizes[1]);
+          return share > 0.01 && share < 0.45 ? i : null;
+        }, { name: `Rift ${++n}`, auto: true });
+        if (res) {
+          Q2 = { ...Q2, ...res };
+          keep.push([stay, res.nextPlate - 1]);                      // the sliver stays with the other side
+          events.push({ age, kind: 'rift', how: 'sliver', a: go, b: res.nextPlate - 1 });
+          done = true;
+        }
+      }
+      if (!done && contact.length >= 3) {                           // otherwise along the contact itself
+        const mid = Math.floor(contact.length / 2), nx = Math.min(contact.length - 1, mid + 1), m0 = nx === mid ? mid - 1 : mid;
+        const nn = norm(cross(contact[m0], [contact[nx][0] - contact[m0][0], contact[nx][1] - contact[m0][1], contact[nx][2] - contact[m0][2]]));
+        const probe = norm(contact[m0].map((x, k) => x + 0.03 * nn[k]));
+        const leftIsA = A.pieces.some((q) => q.inside(probe)) || !B.pieces.some((q) => q.inside(probe));
+        const left = leftIsA ? stay : go, right = leftIsA ? go : stay, back = Q.inverse(m.absolute(left, age));
+        Q2 = { ...Q2, features: Q2.features.concat([{ id: `c${left}-${right}-${Math.round(age)}`, kind: 'rift', plateId: left, left, right, name: `Rift ${++n}`, coords: contact.map((v) => fix4(S.latLon(Q.rotate(back, v)))), begin: +age.toFixed(3), auto: true }]) };
+        events.push({ age, kind: 'rift', how: 'contact', a: left, b: right });
+      }
+    }
+    return { P: Q2, keep, events };
+  }
+
+  /*
    * The whole history at once, Logs 10-19: a supercontinent, its breakup, a second rift, a
    * microcontinent, wandering, a gathering with collisions, a long-lived supercontinent, then the
    * modern breakup to the present; then the subduction zones and island arcs, accretions and
@@ -914,7 +1056,7 @@
   function makeWorld(opts = {}) {
     const seed = Number.isFinite(opts.seed) ? opts.seed >>> 0 : (Math.random() * 2 ** 31) | 0;
     const start = clamp(Math.round(opts.start ?? 1000), 300, 4000), R = opts.radiusKm ?? 6371, speed = opts.maxSpeed ?? 4;
-    const r = rng((seed ^ 0x7e57) >>> 0);
+    const r = rng((seed ^ 0x7e57) >>> 0), U = (a, b) => a + (b - a) * r();
     const g = generate({ seed, plates: opts.plates ?? 4, crust: opts.crust ?? 0.33 });
     let P = { plates: g.plates, features: g.features, nextPlate: g.nextPlate, start, step: 10, seed };
     const events = [];
@@ -941,12 +1083,38 @@
     // they come together again: arcs and continents collide (Logs 15-16)
     let gathered = run('together', at(f3), Math.max(at(Math.max(0.25, f4)), 0));
     // the supercontinent holds a while, then the modern breakup: rifts near the old sutures
-    const breakup = Math.max(Math.min(gathered, at(0.2 + 0.08 * r())), 0);
-    gathered = run('wander', gathered, breakup);
-    if (breakup > 0) {
-      P = { ...P, features: P.features.concat(riftContacts(P, breakup)) };
-      split(secondRift(P, breakup, { seed: seed + 3 }), 'rift', breakup);
-      run('apart', breakup, 0);
+    const split2 = Math.max(Math.min(gathered, at(0.2 + 0.08 * r())), 0);
+    gathered = run('wander', gathered, split2);
+    if (split2 > 0) {
+      const bu = breakup(P, split2, { seed: seed + 3 });
+      P = bu.P; events.push(...bu.events);
+      // the parts drift apart, then some meet again in the last stretch (India and Asia, Africa and
+      // Europe): young, high collision ranges
+      const late = Math.min(split2 - 20, Math.round(U(70, 140)));
+      const sep = run('apart', split2, Math.max(0, late), { keep: bu.keep });
+      if (sep > 0) {
+        // one or two smaller continents run into larger ones: young, high collision ranges
+        const m2 = Q.model(P.plates, start), co = coastsAt(P, m2, sep);
+        const areaOf = (id) => P.features.filter((f) => f.kind === 'crust' && f.plateId === id).reduce((sum, f) => sum + S.areaFraction(f.coords), 0);
+        const blocks = [...co.values()].map((e) => ({ id: e.plateId, c: e.c, a: areaOf(e.plateId) })).filter((b) => b.a > 0.004);
+        // what is welded to what now (touching, or kept together at the breakup): groups that move as one
+        const touches = (x, y) => touching(co.get(x), co.get(y), 3) || bu.keep.some(([p1, p2]) => (p1 === x && p2 === y) || (p1 === y && p2 === x));
+        const grp = new Map(blocks.map((b) => [b.id, b.id]));
+        const root = (x) => (grp.get(x) === x ? x : root(grp.get(x)));
+        for (const x of blocks) for (const y of blocks) if (x.id < y.id && touches(x.id, y.id)) grp.set(root(y.id), root(x.id));
+        const groups = [...new Set(blocks.map((b) => root(b.id)))].map((g) => blocks.filter((b) => root(b.id) === g));
+        const gArea = (g) => g.reduce((sum, b) => sum + b.a, 0);
+        // the smaller groups run at the nearest continent of another group
+        const indent = [];
+        for (const g of groups.slice().sort((x, y) => gArea(x) - gArea(y))) {
+          if (indent.length >= (r() < 0.5 ? 1 : 2) || groups.length < 2 || g === groups.reduce((x, y) => (gArea(y) > gArea(x) ? y : x))) break;   // any but the largest
+          const mv = g.slice().sort((x, y) => y.a - x.a)[0];
+          const tg = blocks.filter((b) => root(b.id) !== root(mv.id) && !indent.some((x) => x.target === b.id || x.mover === b.id)).sort((x, y) => angle(x.c, mv.c) - angle(y.c, mv.c))[0];
+          if (tg && angle(tg.c, mv.c) < 120) indent.push({ mover: mv.id, target: tg.id });
+        }
+        run(indent.length ? 'indent' : 'together', sep, 0, { indent, keep: bu.keep });
+        events.push(...indent.map((x) => ({ age: sep, kind: 'indent', a: x.mover, b: x.target })));
+      }
     }
     // the marks (Logs 12, 15-18), the hotspot tracks being drawn from the hotspots (Log 19)
     P = { ...P, features: P.features.concat(markSubduction(P, { seed, every: 50, minPoints: 7, radiusKm: R, to: 0 })) };
@@ -957,7 +1125,7 @@
     return { ...P, events: events.sort((a, b) => b.age - a.age) };
   }
 
-  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift, divideLines, microcontinent, markCollisions, markOrogens, addHotspots, hotspotTrack, riftContacts, makeWorld };
+  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift, divideLines, microcontinent, markCollisions, markOrogens, addHotspots, hotspotTrack, riftContacts, breakup, makeWorld };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.supercontinent = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

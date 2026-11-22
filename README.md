@@ -143,11 +143,24 @@ each starting with a flood basalt or oceanic plateau, and LIPs heralding some br
 tracks** (taken as Log 19, whose title could not be found): the chains of volcanoes the plates carry
 away from each hotspot, coloured by age.
 
-**Make a world** does all of it with one click (`makeWorld` in `js/supercontinent.js`, seeded): a
-supercontinent, its breakup, a second rift, a microcontinent, wandering, a gathering with collisions, a
-supercontinent that holds a while, the modern breakup (rifts near the old sutures) to the present,
-then the trenches, arcs, collisions, mountain belts, hotspots and LIPs. It ends at 0 Ma, ready to draw
-on. The same steps are under **Step by step**.
+**Make a world** does all of it with one click (`makeWorld` in `js/supercontinent.js`, seeded):
+1. a supercontinent and its breakup;
+2. a second rift and a microcontinent or two;
+3. wandering, then a gathering with collisions;
+4. a supercontinent that holds a while;
+5. the modern breakup;
+6. a last stretch in which one or two smaller continents run into larger ones, as India into Asia;
+7. then the trenches, arcs, collisions, mountain belts, hotspots and LIPs.
+
+The modern breakup rifts only some of the old contacts; the rest stay welded, as Eurasia across the
+Urals. A rift runs a few degrees inside the leaving continent, so a sliver stays behind with the
+suture inland, as the Appalachians in North America.
+
+Collisions are not kisses: the blocks keep converging a few steps, then the front zips shut. A
+collision range on the suture has a plateau behind it on the larger side. On the map, welded continents
+are one landmass, and the ranges stand above the sea. Ranges erode with age: Alpine when young,
+Appalachian after some 250 Myr, low hills after a billion years. It ends at 0 Ma, ready to draw on. The
+same steps are under **Step by step**.
 
 The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
 (`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection
