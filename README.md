@@ -35,11 +35,12 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
 | 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–19: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, microcontinents, arc and continent collisions, mountain belts, hotspots and LIPs, a land estimate for Population, GPlates export/import |
 | 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity and radius; map or globe, a brush to raise and lower, colour and 16-bit height PNGs |
-| 11 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
-| 12 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
-| 13 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
-| 14 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 15 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
+| 12 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
+| 13 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
+| 14 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
+| 15 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 16 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -193,6 +194,32 @@ Not only Earth: as on the Tectonics step, heights and widths are divided by g^sc
 in km and turned into degrees by the planet's radius. Brush strokes are kept with the world and applied
 on top. Exports are an equirectangular colour map and a 16-bit heightmap PNG; the file name gives the
 height range and sea level.
+
+## Climate
+
+The Climate step (`js/climate.js`, `js/steps/climate.js`) works out the climate of the world map for
+the two solstices, following Worldbuilder's Log 28–34. It works for any planet; some worlds come out
+nothing like Earth, and that is fine.
+- **Temperature:** from the sunlight by latitude and season (the star's flux, the orbit, the tilt),
+  tied to the planet's mean temperature. The pole-to-equator gradient is gentler on slow rotators
+  (one broad cell) and under thick air, steeper on fast rotators. Large seasonal swings are damped.
+  Land far from the sea has wider seasons, and it gets colder with height by 6.5 °C × g per km. The
+  sea cannot fall below −1.8 °C: below that it is sea ice.
+- **Pressure and winds:** belts from the planet's circulation cells (set by its day), shifted with
+  the seasons. Continents are low in summer and high in winter (monsoons). The wind blows down the
+  pressure gradient, turned by the spin; a retrograde world is mirrored.
+- **Ocean currents:** each gyre runs poleward and warm along its basin's western side, and
+  equatorward and cold along its eastern side; the subpolar gyres the other way round. Currents warm
+  or cool the sea and the coasts downwind.
+- **Upwelling and reefs:** cold eastern-boundary coasts and the equator well up (rich fishing, as on
+  shelves and in subpolar seas). Coral reefs grow on warm, shallow seas away from them.
+- **Precipitation:** moisture is taken up from warm seas (and some from warm land), carried along
+  the winds, and rained out in low-pressure belts, by summer convection, on windward slopes and as
+  the air cools. That leaves rain shadows and dry interiors. The total follows the planet's warmth and
+  how much sea it has.
+- **Köppen zones:** from the warm and cold season's temperature and rain.
+- **Tidally locked worlds** (a day as long as the year): a hot spot under the star, winds converging
+  on it, no seasons, an icy night side.
 
 ## Data
 

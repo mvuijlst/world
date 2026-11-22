@@ -24,6 +24,15 @@
   // the map of a world, kept while nothing it depends on changes
   let cached = null;
   const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, d.planet.gravity, d.planet.radiusKm, w.tectonics.scaling, w.tectonics.ridgeDepth]);
+  /* The map of a world (built if need be, synchronously): shared with the Climate step. */
+  WS.currentMap = (w, d) => {
+    if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
+    const key = keyOf(w, d);
+    if (cached && cached.key === key && cached.strokes === w.map.strokes.length) return cached;
+    const map = M.build(w.plates, { ...settingsOf(w, d), strokes: w.map.strokes });
+    cached = { key, map, strokes: w.map.strokes.length };
+    return cached;
+  };
   const settingsOf = (w, d) => ({
     res: w.map.res || 720, land: (w.map.land ?? w.population.land) / 100, shelf: w.map.shelf, relief: w.map.relief, seed: w.plates.seed,
     gravity: d.planet.gravity, scaling: w.tectonics.scaling, radiusKm: d.planet.radiusKm, ridgeDepth: w.tectonics.ridgeDepth,
