@@ -500,10 +500,10 @@
     const r = rng(((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x5ab) >>> 0), U = (a, b) => a + (b - a) * r();
     const zones = [], arcs = [];
     let nz = P.features.filter((f) => f.kind === 'subduction').length, na = P.features.filter((f) => f.kind === 'arc').length;
-    const tag = `s${Date.now().toString(36)}`;
+    const tag = `s${((opts.seed ?? 1) >>> 0).toString(36)}-${Math.round(from)}`;
     const toLL = (vs) => vs.map(ll);
     for (let age = from; age >= to - 1e-9; age -= every) {
-      const runs = leadingCoasts(P, m, age, R).filter((rn) => rn.points.length >= 5);
+      const runs = leadingCoasts(P, m, age, R).filter((rn) => rn.points.length >= (opts.minPoints ?? 5));
       const used = new Set();
       for (const z of zones) {
         if (z.end !== undefined) continue;
@@ -533,52 +533,7 @@
     return [...zones, ...arcs];
   }
 
-  /*
-   * A second rifting event at an age (Log 12): a rift across the largest plate's largest piece of
-   * crust, roughly across its long axis and clear of its cratons. The piece is split; the smaller
-   * part becomes a new plate moving with the old one until then (fixed to it, no rotation of its
-   * own), so the two can part from that age. Returns {plates, features, nextPlate, rift} or null.
-   */
-  function secondRift(P, age, opts = {}) {
-    const start = P.start ?? 1000;
-    const r = rng((((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x2e1f) + Math.round(age)) >>> 0), U = (a, b) => a + (b - a) * r();
-    const crusts = P.features.filter((f) => f.kind === 'crust' && f.coords.length >= 3 && (f.begin ?? start) >= age);
-    const area = (id) => crusts.filter((f) => f.plateId === id).reduce((s, f) => s + S.areaFraction(f.coords), 0);
-    const plateIds = [...new Set(crusts.map((f) => f.plateId))].sort((a, b) => area(b) - area(a));
-    for (const pid of plateIds) {
-      const f = crusts.filter((x) => x.plateId === pid).sort((a, b) => S.areaFraction(b.coords) - S.areaFraction(a.coords))[0];
-      const cratons = P.features.filter((c) => c.kind === 'craton' && c.plateId === pid);
-      const inside = S.within(f.coords), c = S.centroid(f.coords);
-      const far = f.coords.map(S.vec).reduce((a, v) => (angle(c, v) > angle(c, a) ? v : a), S.vec(f.coords[0]));
-      for (let tries = 0; tries < 30; tries++) {
-        const centre = dest(c, U(0, 360), U(0, 6)), b = bearingTo(centre, far) + 90 + U(-25, 25), w = wander(r, 7, 8);
-        const arm = (sg) => { const pts = []; for (let s = 2; s < 120; s += 2) { const v = dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s); pts.push(v); if (!inside(v)) { pts.push(dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s + 2.5)); break; } } return pts; };
-        const line = [...arm(-1).reverse(), centre, ...arm(1)];
-        const lineLL = line.map(S.latLon);
-        if (cratons.some((k) => lineLL.some((p) => S.contains(k.coords, p)) || S.distanceToLine(S.latLon(S.centroid(k.coords)), lineLL) < 3)) continue;
-        const parts = S.splitPolygon(f.coords, lineLL);
-        if (!parts) continue;
-        const sizes = parts.map((q) => S.areaFraction(q)), small = sizes[0] < sizes[1] ? 0 : 1;
-        if (sizes[small] < 0.25 * (sizes[0] + sizes[1])) continue;
-        const newId = Math.max(P.nextPlate ?? 0, ...P.plates.map((p) => p.id + 1));
-        const inSmall = S.within(parts[small]);
-        const moves = (x) => x.plateId === pid && x.coords.length && inSmall(S.vec(KIND_CLOSED.has(x.kind) ? S.latLon(S.centroid(x.coords)) : x.coords[Math.floor(x.coords.length / 2)]));
-        let features = P.features.flatMap((x) => {
-          if (x === f) return parts.map((ring, i) => ({ ...x, id: `${x.id}-${i ? 'b' : 'a'}`, name: `${x.name} ${i === small ? 'B' : 'A'}`, plateId: i === small ? newId : pid, coords: ring.map(([la, lo]) => [+la.toFixed(4), +lo.toFixed(4)]) }));
-          return [KIND_CLOSED.has(x.kind) && x.kind !== 'crust' && moves(x) ? { ...x, plateId: newId } : x];
-        });
-        features = divideLines(features, pid, inSmall, newId);
-        const mid = Math.floor(line.length / 2), n = norm(cross(line[mid], [line[mid + 1][0] - line[mid][0], line[mid + 1][1] - line[mid][1], line[mid + 1][2] - line[mid][2]]));
-        const leftIsSmall = inSmall(norm(line[mid].map((x, q) => x + 0.03 * n[q])));
-        const rift = { id: `r${Date.now().toString(36)}`, kind: 'rift', plateId: pid, name: `Rift ${P.features.filter((x) => x.kind === 'rift').length + 1}`, coords: lineLL.map(([la, lo]) => [+la.toFixed(4), +lo.toFixed(4)]), left: leftIsSmall ? newId : pid, right: leftIsSmall ? pid : newId, begin: +age.toFixed(3) };
-        features.push(rift);
-        const plates = [...P.plates.map((p) => ({ ...p })), { id: newId, name: `Plate ${newId}`, colour: opts.colour, fixed: pid, rotations: [] }];
-        return { plates, features, nextPlate: newId + 1, rift };
-      }
-    }
-    return null;
-  }
-  const KIND_CLOSED = new Set(['crust', 'craton', 'arc']);
+  const KIND_CLOSED = new Set(['crust', 'craton', 'arc', 'orogen', 'lip']);
 
   /*
    * Lines of a plate that is splitting (trenches, failed rifts), cut where they cross into the part
@@ -602,7 +557,382 @@
     });
   }
 
-  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift, divideLines };
+  // ── Logs 14-19: microcontinents, collisions, orogens, hotspots, and the whole history at once ─
+
+  const fix4 = (p) => [+p[0].toFixed(4), +p[1].toFixed(4)];
+  /* Points along a line round a ring-like chain: order loose points by walking to the nearest. */
+  function chain(vs) {
+    if (vs.length < 2) return vs;
+    // start at one end: the point farthest from the middle
+    const c = norm(vs.reduce((s, v) => s.map((x, k) => x + v[k]), [0, 0, 0]));
+    let cur = vs.reduce((a, v) => (angle(c, v) > angle(c, a) ? v : a), vs[0]);
+    const left = vs.filter((v) => v !== cur), out = [cur];
+    while (left.length) {
+      let bi = 0;
+      for (let i = 1; i < left.length; i++) if (dot(left[i], cur) > dot(left[bi], cur)) bi = i;
+      if (angle(left[bi], cur) > 6) break;                        // a gap: keep the first stretch
+      cur = left.splice(bi, 1)[0];
+      out.push(cur);
+    }
+    return out;
+  }
+  /* A belt either side of a line (unit vectors), half-width w degrees, tapering at the ends. */
+  function belt(line, w, lump) {
+    if (line.length < 2) return null;
+    const side = (sg) => line.map((v, j) => {
+      const a = line[Math.max(0, j - 1)], b = line[Math.min(line.length - 1, j + 1)];
+      const n = norm(cross(v, [b[0] - a[0], b[1] - a[1], b[2] - a[2]]));
+      const t = j / (line.length - 1), wj = w * Math.max(0.3, Math.sin(Math.PI * t) ** 0.4) * (1 + (lump ? lump(j) : 0));
+      return norm(v.map((x, k) => x + sg * wj * D2R * n[k]));
+    });
+    return [...side(1), ...side(-1).reverse()];
+  }
+
+  /*
+   * Split one piece of crust along a line (in its plate's frame) at an age: the chosen part becomes a
+   * new plate riding the old one (fixed to it) until then, with a rift between them that opens then.
+   * Shapes inside the new part go with it; lines crossing are cut. Returns {plates, features, nextPlate, rift}.
+   */
+  function splitWith(P, age, f, lineLL, pick, opts = {}) {
+    const parts = S.splitPolygon(f.coords, lineLL);
+    if (!parts) return null;
+    const sizes = parts.map((q) => S.areaFraction(q)), small = pick(parts, sizes);
+    if (small === null) return null;
+    const pid = f.plateId, newId = Math.max(P.nextPlate ?? 0, ...P.plates.map((p) => p.id + 1));
+    const inSmall = S.within(parts[small]);
+    const moves = (x) => x.plateId === pid && x.coords.length && inSmall(S.vec(KIND_CLOSED.has(x.kind) ? S.latLon(S.centroid(x.coords)) : x.coords[Math.floor(x.coords.length / 2)]));
+    let features = P.features.flatMap((x) => {
+      if (x === f) return parts.map((ring, i) => ({ ...x, id: `${x.id}-${i ? 'b' : 'a'}`, name: `${x.name} ${i === small ? 'B' : 'A'}`, plateId: i === small ? newId : pid, coords: ring.map(fix4) }));
+      return [KIND_CLOSED.has(x.kind) && x.kind !== 'crust' && moves(x) ? { ...x, plateId: newId } : x];
+    });
+    features = divideLines(features, pid, inSmall, newId);
+    const line = lineLL.map(S.vec), mid = Math.floor(line.length / 2), nx = Math.min(line.length - 1, mid + 1), m0 = nx === mid ? mid - 1 : mid;
+    const n = norm(cross(line[m0], [line[nx][0] - line[m0][0], line[nx][1] - line[m0][1], line[nx][2] - line[m0][2]]));
+    const leftIsSmall = inSmall(norm(line[m0].map((x, q) => x + 0.03 * n[q])));
+    const rift = { id: `r${pid}-${newId}-${Math.round(age)}`, kind: 'rift', plateId: pid, name: opts.name || `Rift ${P.features.filter((x) => x.kind === 'rift').length + 1}`, coords: lineLL.map(fix4), left: leftIsSmall ? newId : pid, right: leftIsSmall ? pid : newId, begin: +age.toFixed(3), ...(opts.auto ? { auto: true } : {}) };
+    features.push(rift);
+    const plates = [...P.plates.map((p) => ({ ...p })), { id: newId, name: opts.plateName || `Plate ${newId}`, colour: opts.colour, fixed: pid, rotations: [] }];
+    return { plates, features, nextPlate: newId + 1, rift };
+  }
+
+  /*
+   * Log 14, microcontinents: a sliver of a continent's margin rifts off at an age and becomes a plate
+   * of its own (as Madagascar, Japan, the Lord Howe Rise). Preferably behind a coast that leads its
+   * plate (back-arc rifting), otherwise along any coast: the cut runs 3-7° inland, parallel to it,
+   * clear of cratons. Returns as splitWith, or null.
+   */
+  function microcontinent(P, age, opts = {}) {
+    const start = P.start ?? 1000, m = Q.model(P.plates, start);
+    const r = rng((((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x31c0) + Math.round(age)) >>> 0), U = (a, b) => a + (b - a) * r();
+    const runs = leadingCoasts(P, m, age, opts.radiusKm ?? 6371).filter((rn) => rn.points.length >= 8).sort((a, b) => b.points.length - a.points.length);
+    const crusts = P.features.filter((f) => f.kind === 'crust' && f.coords.length >= 3 && (f.begin ?? start) >= age).sort((a, b) => S.areaFraction(b.coords) - S.areaFraction(a.coords));
+    // candidate stretches of coast: leading ones first, then 12-25° of the largest pieces' coasts
+    const cands = runs.map((rn) => ({ f: rn.feature, pts: rn.points }));
+    for (const f of crusts.slice(0, 4)) {
+      const mg = margins(f), len = Math.min(mg.length - 1, Math.round(U(8, 16)));
+      const at = Math.floor(r() * mg.length);
+      cands.push({ f, pts: Array.from({ length: len }, (_, k) => mg[(at + k) % mg.length]) });
+    }
+    for (const { f, pts } of cands) {
+      const cratons = P.features.filter((c) => c.kind === 'craton' && c.plateId === f.plateId);
+      for (let tries = 0; tries < 6; tries++) {
+        const take = pts.length > 16 ? pts.slice(Math.floor(r() * (pts.length - 14)), undefined).slice(0, 14) : pts;
+        const d = U(3, 7);
+        const inland = offshore(take, -d), out0 = offshore([take[0]], 2.5)[0], out1 = offshore([take[take.length - 1]], 2.5)[0];
+        const lineLL = [out0, ...inland, out1].map(S.latLon);
+        if (cratons.some((k) => lineLL.some((p) => S.contains(k.coords, p)) || lineLL.some((p) => S.distanceToLine(p, [...k.coords, k.coords[0]]) < 1))) continue;
+        const coastMid = take[Math.floor(take.length / 2)].v;
+        const res = splitWith(P, age, f, lineLL, (parts, sizes) => {
+          const i = S.within(parts[0])(coastMid) ? 0 : 1;
+          const share = sizes[i] / (sizes[0] + sizes[1]);
+          return share > 0.02 && share < 0.35 ? i : null;
+        }, { ...opts, name: `Rift ${P.features.filter((x) => x.kind === 'rift').length + 1} (microcontinent)` });
+        if (res) return res;
+      }
+    }
+    return null;
+  }
+
+  /*
+   * A second rifting event, Log 12's way: a rift across the largest plate's largest piece of crust,
+   * roughly across its long axis and clear of its cratons, the smaller part riding the old plate
+   * until then. Returns as splitWith, or null.
+   */
+  function secondRift(P, age, opts = {}) {
+    const start = P.start ?? 1000;
+    const r = rng((((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x2e1f) + Math.round(age)) >>> 0), U = (a, b) => a + (b - a) * r();
+    const crusts = P.features.filter((f) => f.kind === 'crust' && f.coords.length >= 3 && (f.begin ?? start) >= age);
+    const area = (id) => crusts.filter((f) => f.plateId === id).reduce((s, f) => s + S.areaFraction(f.coords), 0);
+    const plateIds = [...new Set(crusts.map((f) => f.plateId))].sort((a, b) => area(b) - area(a));
+    for (const pid of plateIds) {
+      const f = crusts.filter((x) => x.plateId === pid).sort((a, b) => S.areaFraction(b.coords) - S.areaFraction(a.coords))[0];
+      const cratons = P.features.filter((c) => c.kind === 'craton' && c.plateId === pid);
+      const inside = S.within(f.coords), c = S.centroid(f.coords);
+      const far = f.coords.map(S.vec).reduce((a, v) => (angle(c, v) > angle(c, a) ? v : a), S.vec(f.coords[0]));
+      for (let tries = 0; tries < 30; tries++) {
+        const centre = dest(c, U(0, 360), U(0, 6)), b = bearingTo(centre, far) + 90 + U(-25, 25), w = wander(r, 7, 8);
+        const arm = (sg) => { const pts = []; for (let s = 2; s < 120; s += 2) { const v = dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s); pts.push(v); if (!inside(v)) { pts.push(dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s + 2.5)); break; } } return pts; };
+        const lineLL = [...arm(-1).reverse(), centre, ...arm(1)].map(S.latLon);
+        if (cratons.some((k) => lineLL.some((p) => S.contains(k.coords, p)) || S.distanceToLine(S.latLon(S.centroid(k.coords)), lineLL) < 3)) continue;
+        const res = splitWith(P, age, f, lineLL, (parts, sizes) => { const s = sizes[0] < sizes[1] ? 0 : 1; return sizes[s] >= 0.25 * (sizes[0] + sizes[1]) ? s : null; }, opts);
+        if (res) return res;
+      }
+    }
+    return null;
+  }
+
+  /* Each plate's coast at an age, as unit vectors placed then, with quick tests. */
+  function coastsAt(P, m, age) {
+    const start = P.start ?? 1000, out = new Map();
+    for (const f of P.features) {
+      if (f.kind !== 'crust' || f.coords.length < 3 || (f.begin ?? start) < age) continue;
+      const A = m.absolute(f.plateId, age), placed = f.coords.map((c) => Q.rotate(A, S.vec(c)));
+      const e = out.get(f.plateId) || { plateId: f.plateId, pieces: [], pts: [] };
+      e.pieces.push({ f, inside: S.within(placed.map(S.latLon)), coast: margins(f).map(({ v }) => Q.rotate(A, v)) });
+      e.pts.push(...e.pieces[e.pieces.length - 1].coast.filter((_, i) => i % 2 === 0));
+      out.set(f.plateId, e);
+    }
+    for (const e of out.values()) { e.c = norm(e.pts.reduce((s, v) => s.map((x, k) => x + v[k]), [0, 0, 0])); e.rad = Math.max(...e.pts.map((v) => angle(e.c, v))); }
+    return out;
+  }
+  const touching = (A, B, gap = 1.2) => {
+    if (angle(A.c, B.c) > A.rad + B.rad + gap + 1) return false;
+    const near = Math.cos(gap * D2R);
+    return A.pts.some((s) => B.pieces.some((p) => p.inside(s))) || B.pts.some((s) => A.pieces.some((p) => p.inside(s))) || A.pts.some((s) => B.pts.some((t) => dot(s, t) > near));
+  };
+
+  /*
+   * Logs 15 and 16: what happens when things meet, found by stepping through the history.
+   *  - An island arc that runs into another plate's continent is accreted to it: from then on it
+   *    rides that plate (a terrane), and its trench stops.
+   *  - Two continents that meet (after having been apart) collide: a suture where they touch, on the
+   *    larger plate, and the trenches between them stop: the ocean between them has closed.
+   * Returns {features} (the input's, changed and added to) and the events [{age, kind, a, b}].
+   */
+  function markCollisions(P, opts = {}) {
+    const start = P.start ?? 1000, step = opts.every ?? 10, m = Q.model(P.plates, start);
+    const features = P.features.map((f) => ({ ...f }));
+    const events = [], area = new Map();
+    for (const f of features) if (f.kind === 'crust') area.set(f.plateId, (area.get(f.plateId) || 0) + S.areaFraction(f.coords));
+    let prev = null, n = features.filter((f) => f.kind === 'suture').length;
+    const parted = new Set();
+    const end = Math.max(0, opts.to ?? 0);
+    for (let age = start - step; age >= end - 1e-9; age -= step) {
+      const live = (f) => (f.begin ?? start) >= age && (f.end == null || f.end < age);
+      const coasts = coastsAt({ ...P, features }, m, age), ids = [...coasts.keys()];
+      const now = new Map();
+      for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+        const key = `${ids[i]}:${ids[j]}`, A = coasts.get(ids[i]), B = coasts.get(ids[j]);
+        const touch = touching(A, B);
+        now.set(key, touch);
+        // a meeting counts only after the two have been clearly apart (3°), not a graze while parting
+        if (!touch && !touching(A, B, 3)) parted.add(key);
+      }
+      // arcs that hit another plate's continent
+      for (const a of features.filter((x) => x.kind === 'arc' && live(x) && !x.accreted)) {
+        const A = m.absolute(a.plateId, age), pts = a.coords.map((c) => Q.rotate(A, S.vec(c)));
+        const hit = [...coasts.values()].find((e) => e.plateId !== a.plateId && angle(e.c, pts[0]) < e.rad + 3 && (pts.some((p) => e.pieces.some((q) => q.inside(p))) || pts.some((p) => e.pts.some((t) => dot(p, t) > Math.cos(D2R)))));
+        if (!hit) continue;
+        a.end = +age.toFixed(3);
+        const B = Q.inverse(m.absolute(hit.plateId, age));
+        features.push({ ...a, id: `${a.id}-t${hit.plateId}`, name: `${a.name} (accreted)`, plateId: hit.plateId, coords: pts.map((p) => fix4(S.latLon(Q.rotate(B, p)))), begin: +age.toFixed(3), end: undefined, accreted: true });
+        for (const z of features.filter((x) => x.kind === 'subduction' && x.plateId === a.plateId && live(x) && Math.min(...a.coords.map((q) => S.distanceToLine(q, x.coords))) < 8)) z.end = +age.toFixed(3);
+        events.push({ age, kind: 'arc', a: a.plateId, b: hit.plateId, name: a.name });
+      }
+      // continents that meet
+      if (prev) for (const [key, touch] of now) {
+        if (!touch || !parted.has(key)) continue;
+        parted.delete(key);
+        const [ia, ib] = key.split(':').map(Number), big = (area.get(ia) || 0) >= (area.get(ib) || 0) ? ia : ib, other = big === ia ? ib : ia;
+        const A = coasts.get(big), B = coasts.get(other), near = Math.cos(2 * D2R);
+        const contact = chain(A.pieces.flatMap((p) => p.coast).filter((s) => B.pts.some((t) => dot(s, t) > near) || B.pieces.some((q) => q.inside(s))));
+        if (contact.length < 3) continue;
+        const back = Q.inverse(m.absolute(big, age));
+        features.push({ id: `u${big}-${other}-${Math.round(age)}`, kind: 'suture', plateId: big, partner: other, name: `Suture ${++n}`, coords: contact.map((v) => fix4(S.latLon(Q.rotate(back, v)))), begin: +age.toFixed(3), auto: true });
+        for (const z of features.filter((x) => x.kind === 'subduction' && (x.plateId === big || x.plateId === other) && live(x))) {
+          const Z = m.absolute(z.plateId, age), zs = z.coords.map((c) => Q.rotate(Z, S.vec(c)));
+          if (zs.some((p) => contact.some((q) => angle(p, q) < 8))) z.end = +age.toFixed(3);
+        }
+        events.push({ age, kind: 'continent', a: big, b: other });
+      }
+      prev = now;
+    }
+    return { features, events };
+  }
+
+  /*
+   * Log 17, orogeny: the mountain belts, each from its cause, and when it was last pushed up.
+   *  - cordillera: behind a subduction zone off a continent, 1.5-5° inland, for as long as it subducts;
+   *  - collision: on a suture, 2-4° either side, pushed up for 30-60 Myr after the collision;
+   *  - accretion: where an island arc was accreted, for 20-40 Myr after.
+   * Old belts are worn down: their `active` age says until when they grew.
+   */
+  function markOrogens(P, opts = {}) {
+    const start = P.start ?? 1000;
+    const r = rng(((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x0606) >>> 0), U = (a, b) => a + (b - a) * r();
+    const out = [];
+    let n = P.features.filter((f) => f.kind === 'orogen').length;
+    const crustOf = (id) => P.features.filter((f) => f.kind === 'crust' && f.plateId === id).map((f) => S.within(f.coords));
+    for (const z of P.features.filter((f) => f.kind === 'subduction' && f.coords.length >= 2)) {
+      const line = S.densify(z.coords, false, 1.5).map(S.vec), inC = crustOf(z.plateId), sg = z.side === 'right' ? -1 : 1;
+      const inward = (d) => line.map((v, j) => {
+        const a = line[Math.max(0, j - 1)], b = line[Math.min(line.length - 1, j + 1)];
+        const nn = norm(cross(v, [b[0] - a[0], b[1] - a[1], b[2] - a[2]]));
+        return norm(v.map((x, k) => Math.cos(d * D2R) * x + sg * Math.sin(d * D2R) * nn[k]));
+      });
+      const d0 = U(1.5, 2.5), d1 = d0 + U(2, 3.5);
+      const a = inward(d0), b = inward(d1);
+      const onLand = b.filter((v) => inC.some((f) => f(v))).length / b.length;
+      if (onLand < 0.6) continue;                                   // an island-arc margin: the arc is its mountains
+      out.push({ id: `o${z.id}`, kind: 'orogen', type: 'cordillera', plateId: z.plateId, name: `${['Cordillera', 'Range', 'Sierra'][n % 3]} ${++n}`, coords: [...a, ...b.reverse()].map((v) => fix4(S.latLon(v))), begin: z.begin ?? start, active: z.end ?? 0, auto: true });
+    }
+    for (const s of P.features.filter((f) => f.kind === 'suture' && f.coords.length >= 2)) {
+      const ring = belt(S.densify(s.coords, false, 1.5).map(S.vec), U(2, 4), wander(r, 0.25, 2));
+      if (ring) out.push({ id: `o${s.id}`, kind: 'orogen', type: 'collision', plateId: s.plateId, name: `Mountains ${++n}`, coords: ring.map((v) => fix4(S.latLon(v))), begin: s.begin, active: Math.max(0, s.begin - U(30, 60)), auto: true });
+    }
+    for (const a of P.features.filter((f) => f.kind === 'arc' && f.accreted)) {
+      out.push({ id: `o${a.id}`, kind: 'orogen', type: 'accretion', plateId: a.plateId, name: `Highlands ${++n}`, coords: a.coords, begin: a.begin, active: Math.max(0, a.begin - U(20, 40)), auto: true });
+    }
+    return out;
+  }
+
+  /*
+   * Log 18: hotspots, plumes fixed in the mantle (plate 0), each starting with a large igneous
+   * province where its plume head first reaches the surface: a flood basalt on a continent, or a
+   * plateau on the ocean floor beside one. Some breakups are heralded by one (as the Atlantic by the
+   * CAMP): a LIP and a hotspot at the rift as it opens.
+   */
+  function addHotspots(P, opts = {}) {
+    const start = P.start ?? 1000, m = Q.model(P.plates, start);
+    const r = rng(((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x4075) >>> 0), U = (a, b) => a + (b - a) * r();
+    const out = [];
+    let nh = P.features.filter((f) => f.kind === 'hotspot').length, nl = P.features.filter((f) => f.kind === 'lip').length;
+    const blob = (c, rad) => { const sh = periodic(r, 0.2, 2, 5), k = 12, turn = U(0, 360); return Array.from({ length: k }, (_, j) => fix4(S.latLon(dest(c, turn + (j * 360) / k, rad * (1 + sh((j * 360) / k)))))); };
+    const lipAt = (v, age, name) => {
+      const co = coastsAt(P, m, age);
+      let host = [...co.values()].find((e) => e.pieces.some((p) => p.inside(v))), kind = 'flood basalt';
+      if (!host) { host = [...co.values()].map((e) => [Math.min(...e.pts.map((t) => angle(v, t))), e]).filter(([d]) => d < 12).sort((a, b) => a[0] - b[0])[0]?.[1]; kind = 'oceanic plateau'; }
+      if (!host) return;
+      const back = Q.inverse(m.absolute(host.plateId, age));
+      out.push({ id: `l${++nl}-${Math.round(age)}`, kind: 'lip', type: kind, plateId: host.plateId, name: name || `LIP ${nl}`, coords: blob(Q.rotate(back, v), kind === 'flood basalt' ? U(3, 6) : U(4, 8)), begin: +age.toFixed(3), auto: true });
+    };
+    const count = opts.count ?? Math.round(U(8, 14));
+    for (let i = 0; i < count; i++) {
+      const v = S.vec([Math.asin(2 * r() - 1) * R2D, U(-180, 180)]);
+      const begin = Math.round(U(0.05, 0.7) * start), life = U(80, 400), end = begin - life > 0 ? Math.round(begin - life) : undefined;
+      out.push({ id: `h${++nh}`, kind: 'hotspot', plateId: 0, name: `Hotspot ${nh}`, coords: [fix4(S.latLon(v))], begin, ...(end ? { end } : {}), auto: true });
+      lipAt(v, begin);
+    }
+    for (const rf of P.features.filter((f) => f.kind === 'rift' && (f.begin ?? start) < start && f.left && f.right)) {
+      if (r() > 0.6) continue;
+      const age = Math.min(start, Math.round((rf.begin ?? start) + U(1, 8)));
+      const v = Q.rotate(m.absolute(rf.plateId, age), S.vec(rf.coords[Math.floor(rf.coords.length / 2)]));
+      out.push({ id: `h${++nh}`, kind: 'hotspot', plateId: 0, name: `Hotspot ${nh}`, coords: [fix4(S.latLon(v))], begin: age, end: Math.max(1, Math.round(age - U(60, 200))), auto: true });
+      lipAt(v, age, `LIP ${nl + 1} (${rf.name})`);
+    }
+    return out;
+  }
+
+  /*
+   * Log 19 (as we read it): a hotspot's track, the chain of volcanoes it leaves on the plates moving
+   * over it, as seen at `age`: for every `step` Myr since it began (back to `span` Myr), the point
+   * above the plume, carried on the plate it lay on (the continent there, or the one whose ocean floor
+   * it was, taken as the nearest within 15°). Returns [{age, at: [lat, lon]}], youngest first.
+   */
+  function hotspotTrack(P, m, h, age, opts = {}) {
+    const start = P.start ?? 1000, step = opts.step ?? 5, span = opts.span ?? 150, v = S.vec(h.coords[0]);
+    const from = Math.min(h.begin ?? start, age + span), to = Math.max(age, h.end ?? 0), out = [];
+    const cache = opts.cache || new Map();
+    for (let a = Math.floor(to / step) * step; a <= from; a += step) {
+      if (a < to) continue;
+      if (!cache.has(a)) cache.set(a, coastsAt(P, m, a));
+      const co = cache.get(a);
+      let host = [...co.values()].find((e) => e.pieces.some((p) => p.inside(v)));
+      if (!host) host = [...co.values()].map((e) => [Math.min(...e.pts.map((t) => angle(v, t))), e]).filter(([d]) => d < 15).sort((x, y) => x[0] - y[0])[0]?.[1];
+      if (!host) continue;
+      const q = Q.mul(m.absolute(host.plateId, age), Q.inverse(m.absolute(host.plateId, a)));
+      out.push({ age: a, plateId: host.plateId, at: S.latLon(Q.rotate(q, v)) });
+    }
+    return out;
+  }
+
+  /*
+   * Rifts along every contact between plates that are about to part (a breakup of an assembled
+   * supercontinent: new rifts form close to the old sutures). Each in its left plate's frame.
+   */
+  function riftContacts(P, age, opts = {}) {
+    const start = P.start ?? 1000, m = Q.model(P.plates, start), co = coastsAt(P, m, age), ids = [...co.keys()], out = [];
+    let n = P.features.filter((f) => f.kind === 'rift').length;
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+      const A = co.get(ids[i]), B = co.get(ids[j]);
+      if (!touching(A, B, 1.5)) continue;
+      const near = Math.cos(2 * D2R);
+      const line = chain(A.pieces.flatMap((p) => p.coast).filter((s) => B.pts.some((t) => dot(s, t) > near) || B.pieces.some((q) => q.inside(s))));
+      if (line.length < 3) continue;
+      const mid = Math.floor(line.length / 2), nx = Math.min(line.length - 1, mid + 1), m0 = nx === mid ? mid - 1 : mid;
+      const nn = norm(cross(line[m0], [line[nx][0] - line[m0][0], line[nx][1] - line[m0][1], line[nx][2] - line[m0][2]]));
+      const probe = norm(line[m0].map((x, k) => x + 0.03 * nn[k]));
+      const leftIsA = A.pieces.some((p) => p.inside(probe)) || !B.pieces.some((p) => p.inside(probe));
+      const left = leftIsA ? A.plateId : B.plateId, right = leftIsA ? B.plateId : A.plateId;
+      const back = Q.inverse(m.absolute(left, age));
+      out.push({ id: `c${left}-${right}-${Math.round(age)}`, kind: 'rift', plateId: left, left, right, name: `Rift ${++n}`, coords: line.map((v) => fix4(S.latLon(Q.rotate(back, v)))), begin: +age.toFixed(3), auto: true });
+    }
+    void opts;
+    return out;
+  }
+
+  /*
+   * The whole history at once, Logs 10-19: a supercontinent, its breakup, a second rift, a
+   * microcontinent, wandering, a gathering with collisions, a long-lived supercontinent, then the
+   * modern breakup to the present; then the subduction zones and island arcs, accretions and
+   * collisions, the mountain belts, hotspots and LIPs. The end state at 0 Ma is ready to draw on.
+   * opts: seed, plates (3-5), crust, start (Ma), maxSpeed, radiusKm. Returns {plates, features,
+   * nextPlate, start, step, seed, events}.
+   */
+  function makeWorld(opts = {}) {
+    const seed = Number.isFinite(opts.seed) ? opts.seed >>> 0 : (Math.random() * 2 ** 31) | 0;
+    const start = clamp(Math.round(opts.start ?? 1000), 300, 4000), R = opts.radiusKm ?? 6371, speed = opts.maxSpeed ?? 4;
+    const r = rng((seed ^ 0x7e57) >>> 0);
+    const g = generate({ seed, plates: opts.plates ?? 4, crust: opts.crust ?? 0.33 });
+    let P = { plates: g.plates, features: g.features, nextPlate: g.nextPlate, start, step: 10, seed };
+    const events = [];
+    const at = (f) => Math.round((start * f) / 5) * 5;                  // ages as fractions of the history
+    const run = (mode, from, to, extra = {}) => {
+      if (from <= to) return from;
+      const res = simulate(P, { seed: seed + from, mode, from, duration: from - to, interval: 25, minSpeed: Math.min(1.5, speed), maxSpeed: speed, radiusKm: R, ...extra });
+      P = { ...P, plates: res.plates };
+      events.push(...res.welds.map((w) => ({ ...w, kind: 'weld' })));
+      return res.end;
+    };
+    const split = (res, what, age) => { if (res) { P = { ...P, ...res }; events.push({ age, kind: what, a: res.rift.plateId, b: res.nextPlate - 1 }); } };
+    // the first breakup (Log 11)
+    run('apart', start, at(0.85));
+    // a second rifting event (Logs 12-13)
+    split(secondRift(P, at(0.85), { seed: seed + 1 }), 'rift', at(0.85));
+    run('apart', at(0.85), at(0.75));
+    // a microcontinent (Log 14), and the continents wander
+    split(microcontinent(P, at(0.75), { seed: seed + 2, radiusKm: R }), 'microcontinent', at(0.75));
+    run('wander', at(0.75), at(0.62));
+    // they come together again: arcs and continents collide (Logs 15-16)
+    let gathered = run('together', at(0.62), Math.max(at(0.3), 0));
+    // the supercontinent holds a while, then the modern breakup: rifts near the old sutures
+    const breakup = Math.max(Math.min(gathered, at(0.2 + 0.08 * r())), 0);
+    gathered = run('wander', gathered, breakup);
+    if (breakup > 0) {
+      P = { ...P, features: P.features.concat(riftContacts(P, breakup)) };
+      split(secondRift(P, breakup, { seed: seed + 3 }), 'rift', breakup);
+      run('apart', breakup, 0);
+    }
+    // the marks (Logs 12, 15-18), the hotspot tracks being drawn from the hotspots (Log 19)
+    P = { ...P, features: P.features.concat(markSubduction(P, { seed, every: 50, minPoints: 7, radiusKm: R, to: 0 })) };
+    const col = markCollisions(P, { every: 10 });
+    P = { ...P, features: col.features };
+    events.push(...col.events);
+    P = { ...P, features: P.features.concat(markOrogens(P, { seed }), addHotspots(P, { seed })) };
+    return { ...P, events: events.sort((a, b) => b.age - a.age) };
+  }
+
+  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift, divideLines, microcontinent, markCollisions, markOrogens, addHotspots, hotspotTrack, riftContacts, makeWorld };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.supercontinent = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

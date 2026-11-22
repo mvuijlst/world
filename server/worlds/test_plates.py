@@ -199,3 +199,30 @@ class CrossoverTests(TestCase):
         self.assertAlmostEqual(lon(900), 20, places=6)
         self.assertAlmostEqual(lon(850), 15, places=6)   # its own way
         self.assertAlmostEqual(lon(500), 10, places=6)   # held after its last pole
+
+
+class LaterTests(TestCase):
+    @skipUnless(HAVE, 'pyGPlates not installed')
+    def test_sutures_belts_lips_and_hotspots_round_trip(self):
+        world = json.loads(json.dumps(DRIFT))
+        world['features'] += [
+            {'kind': 'suture', 'plateId': 1, 'name': 'Old scar', 'coords': [[-10, -5], [0, -4], [10, -5]], 'begin': 700},
+            {'kind': 'orogen', 'plateId': 1, 'name': 'Range', 'coords': [[-10, -8], [10, -8], [10, -6], [-10, -6]], 'begin': 700, 'type': 'collision', 'active': 650},
+            {'kind': 'lip', 'plateId': 2, 'name': 'Traps', 'coords': [[5, 10], [10, 10], [10, 15]], 'begin': 300, 'type': 'flood basalt'},
+            {'kind': 'hotspot', 'plateId': 0, 'name': 'Plume', 'coords': [[19.5, -155.5]], 'begin': 300, 'end': 100},
+            {'kind': 'arc', 'plateId': 1, 'name': 'Terrane', 'coords': [[1, 1], [2, 1], [2, 2]], 'begin': 500, 'accreted': True},
+        ]
+        c = Client()
+        r = c.post('/api/plates/export', json.dumps(world), content_type='application/json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        gpml = zipfile.ZipFile(io.BytesIO(r.content)).read('Drift.gpml')
+        for t in (b'gpml:Suture', b'gpml:OrogenicBelt', b'gpml:LargeIgneousProvince', b'gpml:HotSpot'):
+            self.assertIn(t, gpml)
+        r = c.post('/api/plates/import', {'file': SimpleUploadedFile('Drift.gpml', gpml, content_type='application/xml')})
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        got = {f['name']: f for f in r.json()['features']}
+        self.assertEqual((got['Range']['kind'], got['Range']['type'], got['Range']['active']), ('orogen', 'collision', 650.0))
+        self.assertEqual((got['Traps']['kind'], got['Traps']['type']), ('lip', 'flood basalt'))
+        self.assertEqual((got['Plume']['kind'], got['Plume']['plateId'], got['Plume']['coords'], got['Plume']['begin'], got['Plume']['end']), ('hotspot', 0, [[19.5, -155.5]], 300.0, 100.0))
+        self.assertTrue(got['Terrane']['accreted'])
+        self.assertEqual(got['Old scar']['kind'], 'suture')

@@ -35,8 +35,12 @@ MAX_BODY = 4 * 1024 * 1024
 MAX_FEATURES = 2000
 MAX_POINTS = 20000
 KINDS = {'craton': 'Craton', 'crust': 'ContinentalCrust', 'rift': 'ContinentalRift', 'failed': 'ContinentalRift',
-         'subduction': 'SubductionZone', 'arc': 'IslandArc'}
-CLOSED = ('craton', 'crust', 'arc')
+         'subduction': 'SubductionZone', 'arc': 'IslandArc', 'suture': 'Suture', 'orogen': 'OrogenicBelt',
+         'lip': 'LargeIgneousProvince', 'hotspot': 'HotSpot'}
+CLOSED = ('craton', 'crust', 'arc', 'orogen', 'lip')
+POINTS = ('hotspot',)                       # fixed in the mantle: plate 0
+# what a mountain belt, LIP or accreted arc is, kept in its description: "cordillera; rising until 120 Ma"
+NOTE = re.compile(r'^(?P<type>[a-z ]+?)(?:; rising until (?P<active>[\d.]+) ma)?$')            # matched lowercased
 POLARITY = 'subductionPolarity'
 FAILED = 'failed rift'
 OLDEST = 4000.0
@@ -61,7 +65,7 @@ def status(request):
     return JsonResponse({'available': pg is not None, 'version': getattr(pg, '__version__', None) if pg else None})
 
 
-def _clean_coords(coords, closed):
+def _clean_coords(coords, closed, least=None):
     if not isinstance(coords, list):
         return None
     pts = []
@@ -72,7 +76,7 @@ def _clean_coords(coords, closed):
         if not all(isinstance(v, (int, float)) for v in (lat, lon)) or not (-90 <= lat <= 90) or not (-360 <= lon <= 360):
             return None
         pts.append((float(lat), float(lon)))
-    return pts if len(pts) >= (3 if closed else 2) else None
+    return pts if len(pts) >= (least or (3 if closed else 2)) else None
 
 
 def _number(v):
@@ -155,8 +159,8 @@ def export(request):
     for f in feats:
         if not isinstance(f, dict) or f.get('kind') not in KINDS:
             continue
-        closed = f['kind'] in CLOSED
-        coords = _clean_coords(f.get('coords'), closed)
+        closed, point = f['kind'] in CLOSED, f['kind'] in POINTS
+        coords = _clean_coords(f.get('coords'), closed, 1 if point else None)
         if coords is None:
             continue
         points += len(coords)
@@ -164,7 +168,9 @@ def export(request):
             return error('Too many points.', 413)
         plate_id = _plate_id(f.get('plateId')) or 0
         plate_ids.add(plate_id)
-        geometry = pg.PolygonOnSphere(coords) if closed else pg.PolylineOnSphere(coords)
+        geometry = pg.PointOnSphere(coords[0]) if point else pg.PolygonOnSphere(coords) if closed else pg.PolylineOnSphere(coords)
+        if point:
+            plate_id = 0
         # when it exists: a rift, trench or arc can begin after the start, and a trench end before the present
         begin = float(f['begin']) if _number(f.get('begin')) and 0 < f['begin'] < start else start
         end = float(f['end']) if _number(f.get('end')) and 0 < f['end'] < begin else pg.GeoTimeInstant.create_distant_future()
@@ -173,6 +179,11 @@ def export(request):
             name=str(f.get('name') or '')[:120], valid_time=(begin, end), reconstruction_plate_id=plate_id)
         if f['kind'] == 'failed':
             feature.set_description(FAILED)
+        note = str(f.get('type') or ('accreted' if f.get('accreted') else ''))[:40]
+        if note and re.fullmatch(r'[a-z ]+', note):
+            if _number(f.get('active')) and f['active'] > 0:
+                note += f"; rising until {float(f['active']):g} Ma"
+            feature.set_description(note)
         if f['kind'] == 'subduction':                              # the side of the overriding plate, as drawn
             feature.set_enumeration(pg.PropertyName.create_gpml(POLARITY), 'Right' if f.get('side') == 'right' else 'Left')
         out.append(feature)
@@ -270,7 +281,7 @@ def import_(request):
     features, plates, skipped, points = [], {}, 0, 0
     for feature in collection:
         ftype = feature.get_feature_type().get_name()
-        kind = {'Craton': 'craton', 'ContinentalCrust': 'crust', 'ContinentalRift': 'rift', 'SubductionZone': 'subduction', 'IslandArc': 'arc'}.get(ftype)
+        kind = {v: k for k, v in KINDS.items() if k != 'failed'}.get(ftype)
         if kind is None:
             skipped += 1
             continue
@@ -279,9 +290,12 @@ def import_(request):
         plate_id = feature.get_reconstruction_plate_id(0)
         for geometry in feature.get_geometries():
             closed = isinstance(geometry, pg.PolygonOnSphere)
-            if kind in CLOSED and not closed:
+            if kind in POINTS:
+                if not isinstance(geometry, pg.PointOnSphere):
+                    continue
+            elif kind in CLOSED and not closed:
                 continue
-            if kind not in CLOSED and not isinstance(geometry, pg.PolylineOnSphere):
+            elif kind not in CLOSED and not isinstance(geometry, pg.PolylineOnSphere):
                 continue
             coords = [[round(lat, 4), round(lon, 4)] for lat, lon in geometry.to_lat_lon_list()]
             if closed and len(coords) > 3 and coords[0] == coords[-1]:
@@ -295,6 +309,14 @@ def import_(request):
                 item['begin'] = round(begin, 3)
             if math.isfinite(end) and end > 0:
                 item['end'] = round(end, 3)
+            note = NOTE.match((feature.get_description() or '').strip().lower())
+            if note and kind in ('orogen', 'lip', 'arc') and note['type'].strip():
+                if note['type'].strip() == 'accreted':
+                    item['accreted'] = True
+                else:
+                    item['type'] = note['type'].strip()
+                if note['active']:
+                    item['active'] = float(note['active'])
             if kind == 'subduction':
                 polarity = feature.get_enumeration(pg.PropertyName.create_gpml(POLARITY), 'Left')
                 item['side'] = 'right' if str(polarity).lower() == 'right' else 'left'

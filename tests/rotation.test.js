@@ -98,3 +98,13 @@ test('a crossover at the youngest pole: the plate’s own fixed plate is the you
   near(m.reconstruct(3, [[0, 0]], 950)[0][1], 10, 1e-9, 'riding on 2 halfway');
   near(m.reconstruct(3, [[0, 0]], 500)[0][1], 20, 1e-9, 'held after');
 });
+
+test('spreading from a rift between plates that moved apart before (frames differ)', () => {
+  // 2 turned 30° by 900 Ma; at 900 a rift opens between 1 and 2 along their contact then
+  const m = R.model([{ id: 1, fixed: 0, rotations: [] }, { id: 2, fixed: 0, rotations: [{ age: 900, lat: 90, lon: 0, angle: 30 }, { age: 800, lat: 90, lon: 0, angle: 40 }] }], 1000);
+  const rift = [[-20, 5], [0, 5], [20, 5]];                     // in plate 1's frame (= absolute: 1 never moves)
+  const s = R.spreading(m, rift, 1, 2, 900, 800, 10);
+  near(s.edgeL[1][1], 5, 1e-9, 'the left edge stays');
+  near(s.edgeR[1][1], 15, 1e-9, 'the right edge moved 10° since the rift opened, not 40°');
+  near(s.ridge[1][1], 10, 1e-6, 'the ridge halfway');
+});

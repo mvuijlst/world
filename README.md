@@ -33,7 +33,7 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
-| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–13: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, a land estimate for Population, GPlates export/import |
+| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–19: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, microcontinents, arc and continent collisions, mountain belts, hotspots and LIPs, a land estimate for Population, GPlates export/import |
 | 10 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
 | 11 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
 | 12 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
@@ -130,6 +130,23 @@ plate X** writes the crossover by hand at the age on view. Trenches and failed r
 split are cut in two (GPlates' Split Feature), and after a second rift the subduction zones and island
 arcs are marked again for the new motion. The `.rot` export writes one sequence per fixed plate, so
 GPlates reads the crossovers as they are.
+
+Logs 14–19 complete the history. **Microcontinents** (Log 14): a sliver of a margin, preferably
+behind a leading coast, rifts off as a plate of its own. **Island arc collisions** (Log 15): an arc
+that runs into another plate's continent is accreted to it, and its trench stops. **Continent
+collisions** (Log 16): continents that meet after having been apart leave a suture, and the trenches
+between them close. **Orogeny** (Log 17): mountain belts from each cause (cordilleras behind
+subduction zones off continents, collision ranges on sutures, highlands of accreted arcs), worn down
+once they stop rising. **Large igneous provinces and hotspots** (Log 18): plumes fixed in the mantle,
+each starting with a flood basalt or oceanic plateau, and LIPs heralding some breakups. **Hotspot
+tracks** (taken as Log 19, whose title could not be found): the chains of volcanoes the plates carry
+away from each hotspot, coloured by age.
+
+**Make a world** does all of it with one click (`makeWorld` in `js/supercontinent.js`, seeded): a
+supercontinent, its breakup, a second rift, a microcontinent, wandering, a gathering with collisions, a
+supercontinent that holds a while, the modern breakup (rifts near the old sutures) to the present,
+then the trenches, arcs, collisions, mountain belts, hotspots and LIPs. It ends at 0 Ma, ready to draw
+on. The same steps are under **Step by step**.
 
 The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
 (`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection

@@ -175,3 +175,39 @@ test('Log 13: lines crossing a split are cut in two, each stretch on its side', 
   assert.equal(out.find((f) => f.name === 'Arm').plateId, 9, 'wholly on the new side');
   assert.equal(out.find((f) => f.name === 'Other').plateId, 2, 'other plates untouched');
 });
+
+test('Logs 14-19: one button makes the whole history, ending at the present', () => {
+  const w = G.makeWorld({ seed: 7, plates: 4 });
+  assert.deepEqual(G.makeWorld({ seed: 7, plates: 4 }), w, 'the same seed makes the same world');
+  const kinds = new Set(w.features.map((f) => f.kind));
+  for (const k of ['crust', 'craton', 'rift', 'subduction', 'arc', 'suture', 'orogen', 'hotspot', 'lip']) assert.ok(kinds.has(k), `has ${k}`);
+  assert.ok(w.plates.length >= 6, `${w.plates.length} plates (a second rift and a microcontinent)`);
+  for (const p of w.plates.filter((q) => q.rotations.length)) assert.equal(Math.min(...p.rotations.map((r) => r.age)), 0, `plate ${p.id} moves to the present`);
+  assert.ok(w.events.some((e) => e.kind === 'microcontinent'), 'a microcontinent');
+  assert.ok(w.events.some((e) => e.kind === 'continent'), 'continents collided');
+  for (const o of w.features.filter((f) => f.kind === 'orogen')) assert.ok(o.begin >= o.active && ['cordillera', 'collision', 'accretion'].includes(o.type), `${o.name}`);
+  for (const h of w.features.filter((f) => f.kind === 'hotspot')) assert.ok(h.plateId === 0 && h.coords.length === 1, 'hotspots fixed in the mantle');
+  const accreted = w.features.filter((f) => f.kind === 'arc' && f.accreted);
+  for (const a of accreted) assert.ok(w.features.some((x) => x.kind === 'arc' && x.end === a.begin && a.id.startsWith(x.id)), `${a.name} continues an arc that ended then`);
+  // a hotspot track: points on plates, youngest first
+  const m = R.model(w.plates, w.start);
+  const h = w.features.find((f) => f.kind === 'hotspot' && f.begin < 300);
+  if (h) {
+    const tr = G.hotspotTrack(w, m, h, 0);
+    for (let i = 1; i < tr.length; i++) assert.ok(tr[i].age > tr[i - 1].age);
+  }
+});
+
+test('Log 14: a microcontinent is a sliver of a margin, riding its plate until it rifts', () => {
+  const w = G.generate({ seed: 2026, plates: 4 });
+  let P = { ...w, start: 1000 };
+  P.plates = G.simulate(P, { seed: 2026, mode: 'apart', duration: 200, interval: 20, maxSpeed: 4 }).plates;
+  const mc = G.microcontinent(P, 900, { seed: 5 });
+  assert.ok(mc, 'found a margin to rift');
+  const nid = mc.nextPlate - 1, pid = mc.rift.plateId;
+  const piece = mc.features.filter((f) => f.kind === 'crust' && f.plateId === nid).reduce((s, f) => s + S.areaFraction(f.coords), 0);
+  const rest = mc.features.filter((f) => f.kind === 'crust' && f.plateId === pid).reduce((s, f) => s + S.areaFraction(f.coords), 0);
+  assert.ok(piece > 0 && piece < 0.4 * (piece + rest), `a sliver: ${piece} of ${piece + rest}`);
+  assert.equal(mc.plates.find((p) => p.id === nid).fixed, pid);
+  assert.equal(mc.rift.begin, 900);
+});

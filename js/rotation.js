@@ -204,8 +204,10 @@
     }
     if (iso.length) ridgeNow = ridgeL.map((v) => latLon(rotate(Lnow, v)));
     const flowlines = rift.map((seed, i) => ({ seed, left: isochrons.map((c) => c.left[i]), right: isochrons.map((c) => c.right[i]) }));
-    // the original rift edge, as it now lies on each plate
-    const edgeL = rift.map((p) => rotatePoint(Lnow, p)), edgeR = rift.map((p) => rotatePoint(Rnow, p));
+    // the original rift edge, as it now lies on each plate (the rift is given in the left plate's frame;
+    // the right plate's frame differs by their relative rotation when the rift opened, if any)
+    const toR = mul(inverse(m.absolute(rightId, start)), m.absolute(leftId, start));
+    const edgeL = rift.map((p) => rotatePoint(Lnow, p)), edgeR = rift.map((p) => rotatePoint(mul(Rnow, toR), p));
     return { ridge: ridgeNow, isochrons, flowlines, edgeL, edgeR };
   }
 
