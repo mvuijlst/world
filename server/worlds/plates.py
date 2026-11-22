@@ -83,8 +83,10 @@ def _plate_id(v):
     return v if isinstance(v, int) and not isinstance(v, bool) and 0 < v < 100000 else None
 
 
-def _samples(rotations, start):
-    """Valid poles younger than the start age, one per age: [(age, lat, lon, angle)], youngest first."""
+def _samples(rotations, start, fixed):
+    """Valid poles younger than the start age, one per age and fixed plate, youngest first:
+    [(age, lat, lon, angle, fixed)]. A pole may name its own fixed plate (a crossover: the plate
+    changes which plate it moves relative to); otherwise it is the plate's."""
     out = {}
     for r in rotations if isinstance(rotations, list) else []:
         if not isinstance(r, dict):
@@ -93,9 +95,30 @@ def _samples(rotations, start):
         if not all(_number(v) for v in vals):
             continue
         age, lat, lon, angle = (float(v) for v in vals)
+        own = 0 if r.get('fixed') == 0 else (_plate_id(r.get('fixed')) or fixed) if 'fixed' in r else fixed
         if 0 <= age < start and -90 <= lat <= 90 and -360 <= lon <= 360 and -360 <= angle <= 360:
-            out[age] = (age, lat, lon, angle)
-    return sorted(out.values())[:500]
+            out[(age, own)] = (age, lat, lon, angle, own)
+    return sorted(out.values(), key=lambda k: k[0])[:500]
+
+
+def _segments(samples, fixed, start):
+    """The poles of one plate, oldest first, in runs by fixed plate: [(fixed, [(age, lat, lon, angle)])].
+    At a crossover both runs hold a pole at the same age; the one continuing the younger run is
+    taken as the younger. The identity at the start age belongs to the oldest run."""
+    ordered = sorted(samples, key=lambda k: k[0])
+    for i in range(len(ordered) - 1):
+        a, b = ordered[i], ordered[i + 1]
+        younger = ordered[i - 1][4] if i > 0 else fixed
+        if a[0] == b[0] and a[4] != b[4] and b[4] == younger:
+            ordered[i], ordered[i + 1] = b, a
+    runs = []
+    for age, lat, lon, angle, own in ordered:
+        if not runs or runs[-1][0] != own:
+            runs.append((own, []))
+        runs[-1][1].append((age, lat, lon, angle))
+    if not runs:
+        runs.append((fixed, []))
+    return runs
 
 
 def _safe(name):
@@ -125,7 +148,8 @@ def export(request):
     for p in data.get('plates') or []:
         if isinstance(p, dict) and _plate_id(p.get('id')):
             plate_names[p['id']] = str(p.get('name') or '')[:80]
-            plate_motion[p['id']] = (_plate_id(p.get('fixed')) or 0, _samples(p.get('rotations'), start))
+            fixed = _plate_id(p.get('fixed')) or 0
+            plate_motion[p['id']] = (fixed, _samples(p.get('rotations'), start, fixed))
 
     out, points, plate_ids, rifts = [], 0, set(), []
     for f in feats:
@@ -159,21 +183,26 @@ def export(request):
     if not out:
         return error('No valid shapes to export.')
 
-    # each plate: the identity at the start age (and before), its poles, its youngest pole held to 0 Ma
+    # each plate: the identity at the start age (and before), its poles, its youngest pole held to 0 Ma;
+    # one sequence per fixed plate it moves with, so a crossover is two lines at the same age (Log 13)
     ident = pg.FiniteRotation.create_identity_rotation()
     rotations = []
-    for pid in sorted((plate_ids | set(plate_motion)) - {0}):
+    for pid in sorted((plate_ids | set(plate_motion) | {s[4] for _, ss in plate_motion.values() for s in ss}) - {0}):
         fixed, samples = plate_motion.get(pid, (0, []))
         label = plate_names.get(pid) or f'Plate {pid}'
-        seq = [(start, ident)] + [(age, pg.FiniteRotation((lat, lon), math.radians(angle))) for age, lat, lon, angle in samples]
-        if start < OLDEST:
-            seq.append((OLDEST, ident))
-        youngest = min(seq, key=lambda s: s[0])
-        if youngest[0] > 0:
-            seq.append((0.0, youngest[1]))
-        seq.sort(key=lambda s: s[0])                                # pyGPlates reads them youngest first
-        rotations.append(pg.Feature.create_total_reconstruction_sequence(fixed, pid, pg.GpmlIrregularSampling(
-            [pg.GpmlTimeSample(pg.GpmlFiniteRotation(r), age, label) for age, r in seq])))
+        runs = _segments(samples, fixed, start)
+        for i, (own, poles) in enumerate(runs):
+            seq = [(age, pg.FiniteRotation((lat, lon), math.radians(angle))) for age, lat, lon, angle in poles]
+            if i == len(runs) - 1:                                    # the oldest: from the start age back
+                seq.append((start, ident))
+                if start < OLDEST:
+                    seq.append((OLDEST, ident))
+            if i == 0 and min(a for a, _ in seq) > 0:                 # the youngest: held to the present
+                youngest = min(seq, key=lambda k: k[0])
+                seq.append((0.0, youngest[1]))
+            seq.sort(key=lambda k: k[0])                              # pyGPlates reads them youngest first
+            rotations.append(pg.Feature.create_total_reconstruction_sequence(own, pid, pg.GpmlIrregularSampling(
+                [pg.GpmlTimeSample(pg.GpmlFiniteRotation(r), age, label) for age, r in seq])))
 
     # flowlines: seeded on each opening rift when it opens, where its two plates still touch
     if rifts:

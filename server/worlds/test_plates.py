@@ -164,3 +164,38 @@ class SubductionTests(TestCase):
         self.assertEqual((got['Arc']['kind'], got['Arc']['begin']), ('arc', 950.0))
         self.assertEqual(got['Late rift']['begin'], 900.0)
         self.assertEqual(got['West crust'].get('begin'), 1000.0)                  # from the start: the app keeps it as drawn
+
+
+class CrossoverTests(TestCase):
+    @skipUnless(HAVE, 'pyGPlates not installed')
+    def test_a_plate_riding_another_then_on_its_own(self):
+        """As tests/rotation.test.js: plate 3 rides on 2 until 900 Ma, then moves relative to the frame."""
+        pg = pygplates()
+        world = {
+            'name': 'Cross', 'start': 1000, 'step': 10,
+            'plates': [
+                {'id': 2, 'fixed': 0, 'rotations': [{'age': 900, 'lat': 90, 'lon': 0, 'angle': 20}, {'age': 800, 'lat': 90, 'lon': 0, 'angle': 40}]},
+                {'id': 3, 'fixed': 0, 'rotations': [{'age': 900, 'lat': 90, 'lon': 0, 'angle': 0, 'fixed': 2},
+                                                    {'age': 900, 'lat': 90, 'lon': 0, 'angle': 20},
+                                                    {'age': 800, 'lat': 90, 'lon': 0, 'angle': 10}]},
+            ],
+            'features': [{'kind': 'crust', 'plateId': 3, 'name': 'Piece', 'coords': [[0, 0], [10, 0], [10, 10]]}],
+        }
+        r = Client().post('/api/plates/export', json.dumps(world), content_type='application/json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        rot = zipfile.ZipFile(io.BytesIO(r.content)).read('Cross.rot').decode()
+        lines = [ln.split() for ln in rot.splitlines() if ln.strip().startswith('003')]
+        at900 = sorted(ln[5] for ln in lines if float(ln[1]) == 900.0)
+        self.assertEqual(at900, ['000', '002'], 'a crossover: two lines at 900 Ma')
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'c.rot')
+            with open(path, 'w') as fh:
+                fh.write(rot)
+            model = pg.RotationModel(path)
+        lon = lambda age: (model.get_rotation(age, 3) * pg.PointOnSphere(0, 0)).to_lat_lon()[1]  # noqa: E731
+        self.assertAlmostEqual(lon(950), 10, places=6)   # riding on 2, halfway to its 20°
+        self.assertAlmostEqual(lon(900), 20, places=6)
+        self.assertAlmostEqual(lon(850), 15, places=6)   # its own way
+        self.assertAlmostEqual(lon(500), 10, places=6)   # held after its last pole

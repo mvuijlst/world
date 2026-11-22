@@ -78,30 +78,60 @@
   }
 
   /*
-   * A rotation model over the plates [{id, fixed, rotations: [{age, lat, lon, angle}]}], with the
-   * identity at `start` for every plate (the supercontinent as drawn).
+   * A rotation model over the plates [{id, fixed, rotations: [{age, lat, lon, angle, fixed?}]}], with
+   * the identity at `start` for every plate (the supercontinent as drawn).
+   *
+   * A sample may name its own fixed plate (otherwise the plate's): a plate can change which plate
+   * it moves relative to, as when one plate splits off another (GPlates' crossover). Its samples
+   * then fall into segments by fixed plate, oldest first; where it changes, two samples share an
+   * age, one ending the older segment and one starting the younger, both giving the same position.
+   * The identity at the start belongs to the oldest segment.
    */
   function model(plates, start) {
     const byId = new Map(plates.map((p) => [p.id, p]));
-    const cache = new Map();
-    const samplesOf = (p) => {
-      const r = (p.rotations || []).filter((k) => k.age !== start);
-      return [...r, { age: start, lat: 90, lon: 0, angle: 0 }];
-    };
+    const cache = new Map(), segCache = new Map();
+    function segmentsOf(p) {
+      if (segCache.has(p.id)) return segCache.get(p.id);
+      const own = (p.rotations || []).filter((k) => k.age < start).map((k) => ({ ...k, fixed: k.fixed ?? p.fixed ?? 0 }))
+        .sort((a, b) => a.age - b.age);
+      // at a crossover the sample continuing the younger segment comes first (with nothing younger,
+      // the plate's own fixed plate is the younger one's)
+      for (let i = 0; i < own.length - 1; i++) {
+        if (own[i].age !== own[i + 1].age || own[i].fixed === own[i + 1].fixed) continue;
+        const younger = i > 0 ? own[i - 1].fixed : p.fixed ?? 0;
+        if (own[i + 1].fixed === younger) [own[i], own[i + 1]] = [own[i + 1], own[i]];
+      }
+      own.push({ age: start, lat: 90, lon: 0, angle: 0, fixed: own.length ? own[own.length - 1].fixed : p.fixed || 0 });
+      const segs = [];
+      for (const k of own) {
+        if (!segs.length || segs[segs.length - 1].fixed !== k.fixed) segs.push({ fixed: k.fixed, samples: [] });
+        segs[segs.length - 1].samples.push(k);
+      }
+      segCache.set(p.id, segs);
+      return segs;
+    }
+    /* The segment in force at an age: the younger one at a crossover; past either end, the nearest. */
+    function segmentAt(p, age) {
+      const segs = segmentsOf(p);
+      for (const sg of segs) if (age <= sg.samples[sg.samples.length - 1].age) return sg;
+      return segs[segs.length - 1];
+    }
     function absolute(id, age, depth = 0) {
       if (!id || depth > 50) return IDENTITY;
       const key = `${id}@${age}`;
       if (cache.has(key)) return cache.get(key);
       const p = byId.get(id);
       if (!p) return IDENTITY;
-      const rel = sampleAt(samplesOf(p), age);
-      const out = mul(absolute(p.fixed || 0, age, depth + 1), rel);
+      const sg = segmentAt(p, age);
+      const out = mul(absolute(sg.fixed, age, depth + 1), sampleAt(sg.samples, age));
       cache.set(key, out);
       return out;
     }
     return {
       absolute,
-      relative: (id, age) => { const p = byId.get(id); return p ? sampleAt(samplesOf(p), age) : IDENTITY; },
+      relative: (id, age) => { const p = byId.get(id); return p ? sampleAt(segmentAt(p, age).samples, age) : IDENTITY; },
+      /* the plate it moves relative to at an age */
+      fixedAt: (id, age) => { const p = byId.get(id); return p ? segmentAt(p, age).fixed : 0; },
       reconstruct: (id, coords, age) => { const q = absolute(id, age); return coords.map((c) => rotatePoint(q, c)); },
       /* back from the position at `age` to the reference geometry */
       unreconstruct: (id, coords, age) => { const q = inverse(absolute(id, age)); return coords.map((c) => rotatePoint(q, c)); },

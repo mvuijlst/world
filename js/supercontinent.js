@@ -239,17 +239,41 @@
     const m0 = Q.model(P.plates, start);
     const pole = (q, age) => { const p = Q.toPole(q); return { age: +age.toFixed(3), lat: +p.lat.toFixed(4), lon: +p.lon.toFixed(4), angle: +p.angle.toFixed(4) }; };
 
-    // the continental blocks: each plate's crust (or its cratons, if it has no crust)
-    const bodies = P.plates.map((p) => {
-      const all = P.features.filter((f) => (f.kind === 'crust' || f.kind === 'craton') && f.plateId === p.id && f.coords.length >= 3);
-      const use = all.some((f) => f.kind === 'crust') ? all.filter((f) => f.kind === 'crust') : all;
-      if (!use.length) return null;
-      const rings = use.map((f) => f.coords.map(S.vec));
-      const c0 = S.centroid(use.flatMap((f) => f.coords));
+    // Log 13: a plate split off another rides on it (fixed to it) until their rift opens. Riding,
+    // it is carried in its parent's block; once the rift has opened by `from`, it parts from it here,
+    // and a split that opens during the run cuts the run in two at that age.
+    const between = (f, a, b) => (f.left === a && f.right === b) || (f.left === b && f.right === a);
+    const rides = (a, b, at) => m0.fixedAt(a, at) === b || m0.fixedAt(b, at) === a;
+    const splits = P.features.filter((f) => f.kind === 'rift' && f.left && f.right && (f.begin ?? start) < from - 1e-9 && (f.begin ?? start) > end + 1e-9 && rides(f.left, f.right, f.begin)).map((f) => f.begin);
+    if (splits.length) {
+      const at = Math.max(...splits);
+      const first = simulate(P, { ...opts, from, duration: from - at });
+      const second = simulate({ ...P, plates: first.plates }, { ...opts, from: first.end, duration: first.end - end });
+      return { ...second, welds: [...first.welds, ...second.welds], phases: undefined };
+    }
+    const parentOf = (id) => {
+      const f = m0.fixedAt(id, from);
+      return f && P.plates.some((q) => q.id === f) && !P.features.some((x) => x.kind === 'rift' && between(x, id, f) && (x.begin ?? start) >= from - 1e-9) ? f : 0;
+    };
+    const carrier = (id, depth = 0) => { const f = parentOf(id); return f && depth < 20 ? carrier(f, depth + 1) : id; };
+
+    // the continental blocks: each free plate's crust (or its cratons, if it has no crust), with that
+    // of the plates riding on it, in its own frame
+    const bodies = P.plates.filter((p) => carrier(p.id) === p.id).map((p) => {
+      const toOwn = Q.mul(Q.inverse(m0.absolute(p.id, from)), Q.IDENTITY);
+      const all = P.plates.filter((q) => carrier(q.id) === p.id).flatMap((q) => {
+        const fs = P.features.filter((f) => (f.kind === 'crust' || f.kind === 'craton') && f.plateId === q.id && f.coords.length >= 3 && (f.begin ?? start) >= from);
+        const use = fs.some((f) => f.kind === 'crust') ? fs.filter((f) => f.kind === 'crust') : fs;
+        const turn = Q.mul(toOwn, m0.absolute(q.id, from));
+        return use.map((f) => ({ ring: f.coords.map((c) => Q.rotate(turn, S.vec(c))), area: S.areaFraction(f.coords) }));
+      });
+      if (!all.length) return null;
+      const rings = all.map((x) => x.ring);
+      const c0 = norm(rings.flat().reduce((acc, v) => acc.map((x, k) => x + v[k]), [0, 0, 0]));
       const samples = rings.flatMap((rg) => rg.filter((_, i) => i % Math.max(1, Math.round(rg.length / 36)) === 0));
       return {
         id: p.id, rings, samples, c0, rad: Math.max(...rings.flat().map((v) => angle(c0, v))),
-        area: use.reduce((s, f) => s + S.areaFraction(f.coords), 0),
+        area: all.reduce((sum, x) => sum + x.area, 0),
         tot: from >= start ? Q.IDENTITY : m0.absolute(p.id, from), poles: [],
       };
     }).filter(Boolean);
@@ -312,8 +336,10 @@
         } else {
           const h = clamp((heading.get(g) || 0) + U(-6, 6), -25, 25);
           heading.set(g, h);
-          // breaking apart: away from the middle of the other blocks; gathering: toward the middle of all
-          const others = norm(bodies.reduce((acc, bb, i) => (find(i) === g ? acc : acc.map((v, q) => v + bb.area * bb.now.c[q])), [0, 0, 0]));
+          // breaking apart: away from the middle of the other blocks, those it is rifting from (touched at
+          // first) counting three times; gathering: toward the middle of all
+          const weight = (i) => (members.some((mm) => !apart[Math.min(i, mm)][Math.max(i, mm)]) ? 3 : 1) * bodies[i].area;
+          const others = norm(bodies.reduce((acc, bb, i) => (find(i) === g ? acc : acc.map((v, q) => v + weight(i) * bb.now.c[q])), [0, 0, 0]));
           axis = mode === 'apart' ? cross(Math.hypot(...others) > 0.5 ? others : C0, c) : cross(c, G);
           if (Math.hypot(...axis) < 0.03) {                    // at the middle: no way to go
             if (mode === 'together') speed = 0;
@@ -349,14 +375,18 @@
       if (assembled) break;                                    // one supercontinent: the gathering is over
     }
 
-    const priorAges = [...new Set(P.plates.flatMap((q) => (q.rotations || []).map((x) => x.age)).filter((a) => a > from && a < start))].sort((x, y) => y - x);
     const plates = P.plates.map((p) => {
       const b = bodies.find((x) => x.id === p.id);
-      if (!b) return keep(p);
-      // the poles before `from`, as rotations relative to plate 0 like the new ones
-      // (a plate riding on another, such as half of a newly split plate, takes its poles at every age any plate has one)
-      const older = from >= start ? [] : p.fixed ? priorAges.map((a) => pole(m0.absolute(p.id, a), a)) : (p.rotations || []).filter((x) => x.age > from).map((x) => ({ ...x }));
-      return { ...p, fixed: 0, rotations: [...older, ...b.poles] };
+      if (!b) return keep(p);                                   // riding: its parent carries it
+      if (from >= start) return { ...p, fixed: 0, rotations: b.poles };
+      // the poles before `from` stay as they were, each with the plate it was relative to; if that
+      // was another plate (it rode on it), a crossover: the same position, relative to that plate,
+      // ends the old segment at `from`, and the new poles, relative to plate 0, begin there
+      const was = m0.fixedAt(p.id, from);
+      const older = (p.rotations || []).filter((x) => x.age > from).map((x) => ({ ...x, fixed: x.fixed ?? p.fixed ?? 0 }));
+      const cross = was ? [{ ...pole(m0.relative(p.id, from), from), fixed: was }] : [];
+      const rotations = [...older, ...cross, ...b.poles].map((x) => { const { fixed, ...rest } = x; return fixed ? { ...rest, fixed } : rest; });
+      return { ...p, fixed: 0, rotations };
     });
     return { plates, welds, end: +Math.max(0, age).toFixed(3), assembled: mode === 'together' && bodies.every((_, i) => find(i) === find(0)) };
   }
@@ -533,10 +563,11 @@
         const newId = Math.max(P.nextPlate ?? 0, ...P.plates.map((p) => p.id + 1));
         const inSmall = S.within(parts[small]);
         const moves = (x) => x.plateId === pid && x.coords.length && inSmall(S.vec(KIND_CLOSED.has(x.kind) ? S.latLon(S.centroid(x.coords)) : x.coords[Math.floor(x.coords.length / 2)]));
-        const features = P.features.flatMap((x) => {
+        let features = P.features.flatMap((x) => {
           if (x === f) return parts.map((ring, i) => ({ ...x, id: `${x.id}-${i ? 'b' : 'a'}`, name: `${x.name} ${i === small ? 'B' : 'A'}`, plateId: i === small ? newId : pid, coords: ring.map(([la, lo]) => [+la.toFixed(4), +lo.toFixed(4)]) }));
-          return [x.kind !== 'rift' && x.kind !== 'crust' && moves(x) ? { ...x, plateId: newId } : x];
+          return [KIND_CLOSED.has(x.kind) && x.kind !== 'crust' && moves(x) ? { ...x, plateId: newId } : x];
         });
+        features = divideLines(features, pid, inSmall, newId);
         const mid = Math.floor(line.length / 2), n = norm(cross(line[mid], [line[mid + 1][0] - line[mid][0], line[mid + 1][1] - line[mid][1], line[mid + 1][2] - line[mid][2]]));
         const leftIsSmall = inSmall(norm(line[mid].map((x, q) => x + 0.03 * n[q])));
         const rift = { id: `r${Date.now().toString(36)}`, kind: 'rift', plateId: pid, name: `Rift ${P.features.filter((x) => x.kind === 'rift').length + 1}`, coords: lineLL.map(([la, lo]) => [+la.toFixed(4), +lo.toFixed(4)]), left: leftIsSmall ? newId : pid, right: leftIsSmall ? pid : newId, begin: +age.toFixed(3) };
@@ -549,7 +580,29 @@
   }
   const KIND_CLOSED = new Set(['crust', 'craton', 'arc']);
 
-  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift };
+  /*
+   * Lines of a plate that is splitting (trenches, failed rifts), cut where they cross into the part
+   * that becomes the new plate (Log 13; GPlates' Split Feature): each stretch goes with its side.
+   * inSide(v) tells whether a unit vector (in the plate's frame) lies in the new plate's part.
+   */
+  function divideLines(features, plateId, inSide, newId, skipId) {
+    return features.flatMap((f) => {
+      if (f.plateId !== plateId || f.id === skipId || KIND_CLOSED.has(f.kind) || f.kind === 'rift' || f.coords.length < 2) return [f];
+      const side = f.coords.map((c) => inSide(S.vec(c)));
+      if (side.every((x) => !x)) return [f];
+      if (side.every(Boolean)) return [{ ...f, plateId: newId }];
+      const runs = [];
+      side.forEach((x, i) => { if (!i || x !== side[i - 1]) runs.push({ x, pts: [] }); runs[runs.length - 1].pts.push(f.coords[i]); });
+      // each stretch reaches halfway to the next, so the two meet at the rift
+      for (let i = 0; i < runs.length - 1; i++) {
+        const a = runs[i].pts[runs[i].pts.length - 1], b = runs[i + 1].pts[0], mid = S.latLon(norm(S.vec(a).map((v, k) => v + S.vec(b)[k])));
+        runs[i].pts.push(mid); runs[i + 1].pts.unshift(mid);
+      }
+      return runs.filter((r) => r.pts.length >= 2).map((r, i) => ({ ...f, id: `${f.id}-${i}`, name: `${f.name} ${String.fromCharCode(65 + i)}`, plateId: r.x ? newId : plateId, coords: r.pts.map(([la, lo]) => [+la.toFixed(4), +lo.toFixed(4)]) }));
+    });
+  }
+
+  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift, divideLines };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.supercontinent = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

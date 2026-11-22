@@ -33,7 +33,7 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
-| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–12: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event, a land estimate for Population, GPlates export/import |
+| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–13: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, a land estimate for Population, GPlates export/import |
 | 10 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
 | 11 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
 | 12 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
@@ -120,6 +120,16 @@ shows where they belong at any age. A **second rifting event** is a rift drawn a
 splitting its plate along it makes a new plate that moves with the old one until then; the console
 can also cut the largest plate across, clear of its cratons, and simulate the parts breaking apart
 from that age.
+
+Log 13 ("GPlates: Splitting Comoving Plates") parts them properly. A pole can name its own fixed
+plate, so a plate can change which plate it moves with (GPlates' crossover: two poles at the same
+age, one ending the old segment, one starting the new, `js/rotation.js`). A split-off plate rides on
+its parent until their rift opens; the simulation runs up to that age, then parts them there with a
+crossover, even when the history is simulated again from the start. In Plate motion, **Part from
+plate X** writes the crossover by hand at the age on view. Trenches and failed rifts crossing the
+split are cut in two (GPlates' Split Feature), and after a second rift the subduction zones and island
+arcs are marked again for the new motion. The `.rot` export writes one sequence per fixed plate, so
+GPlates reads the crossovers as they are.
 
 The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
 (`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection

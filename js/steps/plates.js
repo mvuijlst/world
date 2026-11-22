@@ -92,6 +92,7 @@
       'Following Artifexian’s Worldbuilder’s Log 10 and 11 (GPlates: the Supercontinent, the First 100 Million Years). Begin with one supercontinent: its cratons, the ancient stable cores, and the younger continental crust that welds them together (Earth’s covers about 40 % of the planet). Draw the rifts where it will tear apart, and a few failed rifts branching off them.',
       'Then split the crust along the rifts, so each side rides its own plate, and move the plates through time: at an age, drag a plate to where it should be, and the console writes the rotation pole GPlates would. Keep them to believable speeds (most plates 1–10 cm a year). New ocean floor opens behind them, coloured by age, with the mid-ocean ridge and flowlines. Everything goes to and from GPlates desktop.',
       'Then Log 12 (GPlates: Subduction Zones & Island Arcs). Ocean floor is consumed where a plate overrides it: mark subduction zones off the coasts that lead their plate’s motion, each on its overriding plate, with chains of island arcs behind some of them. And set up a second rifting event: a new rift, at a later age, that splits a plate in two.',
+      'Log 13 (GPlates: Splitting Comoving Plates) parts them. The split-off plate rides on the old one until the rift opens; there its rotation changes parent, a crossover: two poles at the same age, one ending the ride, one starting its own motion. Lines crossing the rift are cut in two, and the new motion needs new subduction zones and island arcs.',
     ],
     build(ctx) {
       const P = () => ctx.world.plates;
@@ -416,8 +417,8 @@
       function splitLater(rift) {
         let made = [];
         ctx.mutate((w) => {
-          const Pw = w.plates, out = [];
-          for (const f of Pw.features) {
+          const Pw = w.plates, out = [], cuts = [];
+          for (const f of Pw.features.slice()) {
             const parts = f.kind === 'crust' && f.plateId === rift.plateId ? S.splitPolygon(f.coords, rift.coords) : null;
             if (!parts) { out.push(f); continue; }
             const sizes = parts.map((q) => S.areaFraction(q)), small = sizes[0] < sizes[1] ? 0 : 1, id = Pw.nextPlate++;
@@ -425,16 +426,18 @@
             made.push(id);
             const inSmall = S.within(parts[small]);
             for (const x of Pw.features) {
-              if (x.plateId !== rift.plateId || x === f || x.kind === 'crust' || x === rift || !x.coords.length) continue;
-              const at = KINDS[x.kind].closed ? S.latLon(S.centroid(x.coords)) : x.coords[Math.floor(x.coords.length / 2)];
-              if (inSmall(S.vec(at))) x.plateId = id;
+              if (x.plateId !== rift.plateId || x === f || x.kind === 'crust' || x === rift || !x.coords.length || !KINDS[x.kind].closed) continue;
+              if (inSmall(S.vec(S.latLon(S.centroid(x.coords))))) x.plateId = id;
             }
+            cuts.push([inSmall, id]);
             parts.forEach((ring, i) => out.push({ id: newId(), kind: 'crust', plateId: i === small ? id : f.plateId, name: `${f.name} ${i === small ? 'B' : 'A'}`, coords: ring.map(([a, b]) => [+a.toFixed(4), +b.toFixed(4)]) }));
           }
           Pw.features = out;
+          // lines crossing the rift (trenches, failed rifts) are cut in two, like GPlates' Split Feature
+          for (const [inSmall, id] of cuts) Pw.features = WS.supercontinent.divideLines(Pw.features, rift.plateId, inSmall, id, rift.id);
           const r = Pw.features.find((x) => x.id === rift.id);
           if (r) Object.assign(r, sidesOf(Pw, r));
-        }, { structural: false });
+        });
         toast(made.length ? `${rift.name} splits off plate ${made.join(', ')}, moving with plate ${rift.plateId} until ${fmt.int(rift.begin)} Ma: simulate from then, or move it by hand` : `${rift.name} doesn’t cross its plate’s crust from edge to edge`);
         renderSide(); draw();
       }
@@ -460,7 +463,8 @@
           if (hit && start) {
             u.selected = hit.id;
             const pl = P().plates.find((p) => p.id === hit.plateId);
-            if (pl) gesture.plate = { id: pl.id, from: start, base: modelOf(P()).absolute(pl.id, u.age), fixedAbs: modelOf(P()).absolute(pl.fixed || 0, u.age), original: JSON.parse(JSON.stringify(pl.rotations || [])) };
+            const m0 = modelOf(P()), fx = pl ? m0.fixedAt(pl.id, u.age) : 0;
+            if (pl) gesture.plate = { id: pl.id, from: start, fixed: fx, base: m0.absolute(pl.id, u.age), fixedAbs: m0.absolute(fx, u.age), original: JSON.parse(JSON.stringify(pl.rotations || [])) };
           }
         }
       });
@@ -482,7 +486,7 @@
           const drag = ang > 1e-9 ? Q.fromAxisAngle(axis, ang) : Q.IDENTITY;
           const rel = Q.toPole(Q.mul(Q.inverse(gesture.plate.fixedAbs), Q.mul(drag, gesture.plate.base)));
           const pl = P().plates.find((p) => p.id === gesture.plate.id);
-          pl.rotations = gesture.plate.original.filter((r) => r.age !== u.age).concat([{ age: u.age, lat: +rel.lat.toFixed(4), lon: +rel.lon.toFixed(4), angle: +rel.angle.toFixed(4) }]);
+          setPole(pl, gesture.plate.original, u.age, rel, gesture.plate.fixed);
           draw();
           return;
         }
@@ -622,14 +626,19 @@
           // keep the plate where it is: re-express each sample relative to the new fixed plate
           const m = modelOf(Pw), nf = Number(fixedSel.value);
           if (nf && Q.model(Pw.plates.map((p) => (p.id === pl.id ? { ...p, fixed: nf } : p)), Pw.start).absolute(nf, Pw.start) && wouldLoop(Pw, pl.id, nf)) { toast('That would make the plates move relative to each other in a loop'); fixedSel.value = pl.fixed || 0; return; }
-          const rots = (pl.rotations || []).map((r) => { const abs = m.absolute(pl.id, r.age); const rel = Q.toPole(Q.mul(Q.inverse(m.absolute(nf, r.age)), abs)); return { age: r.age, lat: +rel.lat.toFixed(4), lon: +rel.lon.toFixed(4), angle: +rel.angle.toFixed(4) }; });
+          // (one plate for the whole history: crossovers merge into single poles)
+          const ages = [...new Set((pl.rotations || []).map((r) => r.age))];
+          const rots = ages.map((age) => { const abs = m.absolute(pl.id, age); const rel = Q.toPole(Q.mul(Q.inverse(m.absolute(nf, age)), abs)); return { age, lat: +rel.lat.toFixed(4), lon: +rel.lon.toFixed(4), angle: +rel.angle.toFixed(4) }; });
           ctx.mutate(() => { pl.fixed = nf; pl.rotations = rots; });
           renderMotion(); draw();
         });
-        const rows = (pl.rotations || []).slice().sort((a, b) => b.age - a.age).map((r) => {
+        const mm = modelOf(Pw), rides = !atStart() ? mm.fixedAt(pl.id, u.age) : 0;
+        const crossed = (pl.rotations || []).some((r) => (r.fixed ?? pl.fixed ?? 0) !== (pl.fixed ?? 0));
+        const rows = (pl.rotations || []).slice().sort((a, b) => b.age - a.age || ((a.fixed ?? pl.fixed ?? 0) === (pl.fixed ?? 0) ? -1 : 1)).map((r) => {
           const num = (key, step, label) => { const i = h('input', { class: 'txt num', type: 'number', step, value: r[key], 'aria-label': `${label} at ${r.age} Ma` }); i.addEventListener('change', () => { const v = Number(i.value); if (!Number.isFinite(v)) return; r[key] = key === 'age' ? clamp(Math.round(v), 0, Pw.start - 1) : v; ctx.set('plates.plates', Pw.plates); renderMotion(); draw(); }); return i; };
           const sp = speeds.find((s) => s.to === r.age);
           return h('tr', null, h('td', null, num('age', 1, 'Age')), h('td', null, num('lat', 0.1, 'Pole latitude')), h('td', null, num('lon', 0.1, 'Pole longitude')), h('td', null, num('angle', 0.1, 'Angle')),
+            crossed ? h('td', { class: 'num mono' }, String(r.fixed ?? pl.fixed ?? 0)) : null,
             h('td', { class: ['num', sp && (sp.cm > SPEED_MAX ? 't-red' : sp.cm > SPEED_OK ? 't-amber' : 't-teal')] }, sp ? fmt.num(sp.cm, 1) : '—'),
             h('td', null, h('button', { type: 'button', class: 'btn small danger', 'aria-label': `Delete the pole at ${r.age} Ma`, onclick: () => { pl.rotations = pl.rotations.filter((x) => x !== r); ctx.set('plates.plates', Pw.plates); renderMotion(); draw(); } }, icon('x'))));
         });
@@ -637,14 +646,40 @@
           h('div', { class: 'plate-head', style: { marginBottom: '8px' } }, h('i', { class: 'plate-chip', style: { background: colourOf(Pw.plates, pl.id) } }), h('b', null, `${pl.id} · ${pl.name}`)),
           h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Moves relative to', info('Plate 0 is the fixed reference frame. Choose another plate to move this one along with it (as GPlates’ fixed plate).')), fixedSel),
           h('div', { class: 'table-wrap', style: { marginTop: '10px' } }, h('table', { class: 'data poles' },
-            h('thead', null, h('tr', null, h('th', null, 'Age Ma'), h('th', null, 'Pole lat'), h('th', null, 'Pole lon'), h('th', null, 'Angle °'), h('th', null, ['cm/yr ', info(`Speed of the plate’s centre since the previous pole. Earth’s plates move 1–${SPEED_OK} cm a year; above ${SPEED_MAX} is implausibly fast.`)]), h('th'))),
-            h('tbody', null, h('tr', { class: 'hz' }, h('td', { class: 'num' }, fmt.int(Pw.start)), h('td', { class: 'txtcell', colspan: 3 }, 'as drawn (no rotation)'), h('td'), h('td')), rows))),
+            h('thead', null, h('tr', null, h('th', null, 'Age Ma'), h('th', null, 'Pole lat'), h('th', null, 'Pole lon'), h('th', null, 'Angle °'), crossed ? h('th', null, ['Rel. to ', info('The plate this pole is relative to. Where it changes, two poles share an age (a crossover): the end of riding on the old plate, the start of moving on its own.')]) : null, h('th', null, ['cm/yr ', info(`Speed of the plate’s centre since the previous pole. Earth’s plates move 1–${SPEED_OK} cm a year; above ${SPEED_MAX} is implausibly fast.`)]), h('th'))),
+            h('tbody', null, h('tr', { class: 'hz' }, h('td', { class: 'num' }, fmt.int(Pw.start)), h('td', { class: 'txtcell', colspan: crossed ? 4 : 3 }, 'as drawn (no rotation)'), h('td'), h('td')), rows))),
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             h('button', { class: 'btn small', type: 'button', disabled: atStart(), onclick: () => {
-              const rel = Q.toPole(modelOf(Pw).relative(pl.id, u.age));
-              pl.rotations = (pl.rotations || []).filter((r) => r.age !== u.age).concat([{ age: u.age, lat: +rel.lat.toFixed(4), lon: +rel.lon.toFixed(4), angle: +rel.angle.toFixed(4) }]);
+              const m = modelOf(Pw), fx = m.fixedAt(pl.id, u.age);
+              setPole(pl, pl.rotations || [], u.age, Q.toPole(m.relative(pl.id, u.age)), fx);
               ctx.set('plates.plates', Pw.plates); renderMotion();
-            } }, icon('plus'), `Pole at ${fmt.int(u.age)} Ma`)));
+            } }, icon('plus'), `Pole at ${fmt.int(u.age)} Ma`),
+            rides ? h('button', { class: 'btn small primary', type: 'button', onclick: () => partAt(pl, rides) }, `Part from plate ${rides} at ${fmt.int(u.age)} Ma`) : null),
+          rides ? h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, `At ${fmt.int(u.age)} Ma this plate rides on plate ${rides}. Parting writes a crossover: from then on it moves relative to the frame, and you can drag it away with Move plate.`) : null);
+      }
+      /* Set the pole of a plate at an age, relative to the plate it moves with there (crossovers kept). */
+      function setPole(pl, rotations, age, rel, fixed) {
+        const own = (r) => r.age === age && (r.fixed ?? pl.fixed ?? 0) === fixed;
+        const k = { age, lat: +rel.lat.toFixed(4), lon: +rel.lon.toFixed(4), angle: +rel.angle.toFixed(4) };
+        if (fixed !== (pl.fixed ?? 0)) k.fixed = fixed;
+        pl.rotations = rotations.filter((r) => !own(r)).concat([k]);
+      }
+      /*
+       * Log 13: part a riding plate from the plate it rides on, at the age on view: a crossover, the
+       * same position twice, relative to the old plate (ending its segment) and to the frame (starting
+       * the new one); younger poles relative to the old plate are dropped.
+       */
+      function partAt(pl, parent) {
+        const Pw = P(), m = modelOf(Pw), age = Math.round(u.age);
+        ctx.mutate(() => {
+          const keep = (pl.rotations || []).filter((r) => r.age > age).map((r) => ({ ...r, fixed: r.fixed ?? pl.fixed ?? 0 }));
+          const rel = Q.toPole(m.relative(pl.id, age)), abs = Q.toPole(m.absolute(pl.id, age));
+          const k = (q, fixed) => ({ age, lat: +q.lat.toFixed(4), lon: +q.lon.toFixed(4), angle: +q.angle.toFixed(4), ...(fixed ? { fixed } : {}) });
+          pl.fixed = 0;
+          pl.rotations = [...keep.map((r) => { const { fixed, ...rest } = r; return fixed ? { ...rest, fixed } : rest; }), k(rel, parent), k(abs, 0)];
+        });
+        toast(`Plate ${pl.id} moves on its own from ${fmt.int(age)} Ma: drag it with Move plate, or continue the simulation`);
+        renderMotion(); renderLog12(); draw();
       }
       function wouldLoop(Pw, id, fixed) { let f = fixed, n = 0; while (f && n++ < 60) { if (f === id) return true; const p = Pw.plates.find((x) => x.id === f); f = p ? p.fixed : 0; } return false; }
 
@@ -741,9 +776,15 @@
           if (!m) continue;
           const [, id, age, lat, lon, ang, fixed, note] = m;
           if (+id === 999) continue;                                             // GPlates' comment plate
-          const s = seqs.get(+id) || { id: +id, fixed: +fixed, name: (note || '').trim(), rotations: [] };
-          s.rotations.push({ age: +age, lat: +lat, lon: +lon, angle: +ang });
+          const s = seqs.get(+id) || { id: +id, name: (note || '').trim(), rotations: [] };
+          s.rotations.push({ age: +age, lat: +lat, lon: +lon, angle: +ang, fixed: +fixed });
           seqs.set(+id, s);
+        }
+        // the plate's fixed plate is that of its youngest pole; older ones name theirs where it differs (crossovers)
+        for (const s of seqs.values()) {
+          const youngest = s.rotations.reduce((a, b) => (b.age < a.age ? b : a));
+          s.fixed = youngest.fixed;
+          s.rotations = s.rotations.map((r) => { const { fixed, ...rest } = r; return fixed === s.fixed ? rest : { ...rest, fixed }; });
         }
         return [...seqs.values()];
       }
@@ -922,11 +963,15 @@
         const sr = WS.supercontinent.secondRift(Pw, age, { seed: (a.seed ?? Pw.seed ?? 1) + age, colour: PALETTE[Pw.plates.length % PALETTE.length] });
         if (!sr) { toast('No plate has crust wide enough to rift clear of its cratons at this age'); return; }
         const res = WS.supercontinent.simulate({ ...Pw, ...sr }, { seed: (a.seed ?? 1) + age, mode: 'apart', from: age, duration, interval: Math.min(a.every || 20, duration), minSpeed: Math.min(1.5, a.speed || 4), maxSpeed: a.speed || 4, radiusKm: ctx.d.planet.radiusKm });
-        ctx.mutate((w) => {
-          w.plates.features = sr.features.filter((f) => !(f.auto && (f.begin ?? Pw.start) < age));   // marks after the rift no longer hold
-          w.plates.plates = res.plates; w.plates.nextPlate = sr.nextPlate;
-        });
-        toast(`${sr.rift.name} splits plate ${sr.rift.plateId} at ${fmt.int(age)} Ma; breaking apart to ${fmt.int(res.end)} Ma. Mark the subduction zones again for the new motion.`);
+        // Log 13: new subduction zones and island arcs for the new motion, if they were marked before
+        const remark = Pw.features.some((f) => f.auto);
+        let features = sr.features;
+        if (remark) {
+          const drawn = features.filter((f) => !f.auto);
+          features = drawn.concat(WS.supercontinent.markSubduction({ ...Pw, features: drawn, plates: res.plates }, { seed: (a.seed ?? 1) + age, every: Math.max(25, a.every || 25), radiusKm: ctx.d.planet.radiusKm }));
+        }
+        ctx.mutate((w) => { w.plates.features = features; w.plates.plates = res.plates; w.plates.nextPlate = sr.nextPlate; });
+        toast(`${sr.rift.name} splits plate ${sr.rift.plateId} at ${fmt.int(age)} Ma; breaking apart to ${fmt.int(res.end)} Ma${remark ? '; subduction zones marked again' : ': mark the subduction zones for the new motion'}`);
         u.selected = sr.rift.id; renderAuto(); renderLog12(); renderSide(); startPlay();
       }
 
@@ -978,6 +1023,12 @@
       for (const a of P.features.filter((f) => f.kind === 'arc')) {
         const near = zones.some((z) => z.plateId === a.plateId && S.distanceToLine(S.latLon(S.centroid(a.coords)), z.coords) < 8);
         if (!near) out.push({ level: 'warn', text: `${a.name} has no subduction zone on its plate nearby: island arcs rise a little behind a trench.` });
+      }
+      // Log 13: a rift that opens between a plate and the one it rides on, which it never leaves
+      const mdl = Q.model(P.plates, P.start);
+      for (const r of rifts) {
+        const b = r.begin ?? P.start, after = Math.max(0, b - 10);
+        if (r.left && r.right && b < P.start && (mdl.fixedAt(r.left, after) === r.right || mdl.fixedAt(r.right, after) === r.left)) out.push({ level: 'warn', text: `${r.name} opens at ${fmt.int(b)} Ma, but plates ${r.left} and ${r.right} still move as one after it: part them there (Plate motion) or simulate from that age.` });
       }
       for (const z of zones) if (z.end != null && z.begin != null && z.end >= z.begin) out.push({ level: 'warn', text: `${z.name} ends (${z.end} Ma) before it begins (${z.begin} Ma).` });
       return out;

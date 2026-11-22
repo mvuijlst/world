@@ -70,3 +70,31 @@ test('spreading stops while the plates close again', () => {
   near(s.ridge[1][1], 10, 1e-6, 'the ridge stays where it stopped');
   near(s.edgeR[1][1], 10, 1e-6, 'the right plate has come back to 10°');
 });
+
+test('a crossover: a plate rides another, then moves on its own from an age', () => {
+  // 2 turns 20° about the pole by 900 Ma and on to 40° by 800; 3 rides on 2 until 900 Ma,
+  // then moves relative to the frame, held where it was at 900 Ma and turned back 10° by 800
+  const plates = [
+    { id: 2, fixed: 0, rotations: [{ age: 900, lat: 90, lon: 0, angle: 20 }, { age: 800, lat: 90, lon: 0, angle: 40 }] },
+    { id: 3, fixed: 0, rotations: [{ age: 900, lat: 90, lon: 0, angle: 0, fixed: 2 }, { age: 900, lat: 90, lon: 0, angle: 20 }, { age: 800, lat: 90, lon: 0, angle: 10 }] },
+  ];
+  const m = R.model(plates, 1000);
+  const lon = (id, age) => m.reconstruct(id, [[0, 0]], age)[0][1];
+  near(lon(3, 950), lon(2, 950), 1e-9, 'rides with 2 before the split');
+  near(lon(3, 900), 20, 1e-9, 'at the crossover both lines agree');
+  near(lon(3, 850), 15, 1e-9, 'then its own way');
+  near(lon(2, 850), 30, 1e-9, 'while 2 goes on');
+  assert.equal(m.fixedAt(3, 950), 2);
+  assert.equal(m.fixedAt(3, 850), 0);
+  assert.equal(m.fixedAt(3, 900), 0, 'the younger segment at the crossover itself');
+});
+
+test('a crossover at the youngest pole: the plate’s own fixed plate is the younger segment', () => {
+  const plates = [
+    { id: 2, fixed: 0, rotations: [{ age: 900, lat: 90, lon: 0, angle: 20 }] },
+    { id: 3, fixed: 0, rotations: [{ age: 900, lat: 90, lon: 0, angle: 20 }, { age: 900, lat: 90, lon: 0, angle: 0, fixed: 2 }] },
+  ];
+  const m = R.model(plates, 1000);
+  near(m.reconstruct(3, [[0, 0]], 950)[0][1], 10, 1e-9, 'riding on 2 halfway');
+  near(m.reconstruct(3, [[0, 0]], 500)[0][1], 20, 1e-9, 'held after');
+});

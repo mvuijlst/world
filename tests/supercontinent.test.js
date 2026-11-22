@@ -112,7 +112,7 @@ test('Log 12: subduction zones on leading coasts, island arcs behind them', () =
     assert.ok(dist(at(over)) < dist(at(-over)), `${z.name}: teeth towards its plate`);
     void m;
   }
-  for (const a of arcs) assert.ok(zones.some((z) => z.plateId === a.plateId && z.begin === a.begin && S.distanceToLine(S.latLon(S.centroid(a.coords)), z.coords) < 3), `${a.name} behind its trench`);
+  for (const a of arcs) assert.ok(zones.some((z) => z.plateId === a.plateId && z.begin === a.begin && Math.min(...a.coords.map((q) => S.distanceToLine(q, z.coords))) < 3), `${a.name} behind its trench`);
 });
 
 test('Log 12: a second rifting event splits a plate that moves as one until then', () => {
@@ -133,4 +133,45 @@ test('Log 12: a second rifting event splits a plate that moves as one until then
   const gap = (a) => S.distance(m.reconstruct(nid, [c], a)[0], m.reconstruct(pid, [c], a)[0]);
   for (const a of [1000, 960, 920, 900]) assert.ok(gap(a) < 1e-6, `together at ${a} Ma`);
   assert.ok(gap(800) > 5, `apart by 800 Ma: ${gap(800)}`);
+});
+
+test('Log 13: a split-off plate rides its parent until its rift opens, even re-simulated from the start', () => {
+  const w = G.generate({ seed: 2026, plates: 4 });
+  let P = { ...w, start: 1000 };
+  P.plates = G.simulate(P, { seed: 2026, mode: 'apart', duration: 200, interval: 20, maxSpeed: 4 }).plates;
+  const sr = G.secondRift(P, 900, { seed: 3 });
+  P = { ...P, ...sr };
+  const pid = sr.rift.plateId, nid = sr.nextPlate - 1;
+  const c = S.latLon(S.centroid(sr.features.find((f) => f.plateId === nid && f.kind === 'crust').coords));
+  for (const seed of [7, 8]) {
+    // the whole history again, from the start: the run is cut at 900 Ma, where the rift opens
+    const run = G.simulate(P, { seed, mode: 'apart', duration: 300, interval: 20, maxSpeed: 4 });
+    const m = R.model(run.plates, 1000);
+    const gap = (a) => S.distance(m.reconstruct(nid, [c], a)[0], m.reconstruct(pid, [c], a)[0]);
+    for (const a of [990, 950, 920, 900]) assert.ok(gap(a) < 1e-6, `seed ${seed}: together at ${a} Ma (${gap(a)})`);
+    assert.ok(gap(750) > 5, `seed ${seed}: apart by 750 Ma (${gap(750)})`);
+    const child = run.plates.find((p) => p.id === nid);
+    const at900 = child.rotations.filter((r) => r.age === 900);
+    assert.equal(at900.length, 2, 'a crossover at 900 Ma');
+    assert.deepEqual(at900.map((r) => r.fixed ?? 0).sort(), [0, pid].sort());
+    assert.equal(m.fixedAt(nid, 950), pid);
+    assert.equal(m.fixedAt(nid, 850), 0);
+  }
+});
+
+test('Log 13: lines crossing a split are cut in two, each stretch on its side', () => {
+  const inEast = (v) => v[1] > 0;                       // lon > 0
+  const fs = [
+    { id: 't', kind: 'subduction', plateId: 1, name: 'Trench', coords: [[0, -20], [0, -10], [0, 10], [0, 20]], side: 'left' },
+    { id: 'f', kind: 'failed', plateId: 1, name: 'Arm', coords: [[10, 5], [20, 15]] },
+    { id: 'o', kind: 'subduction', plateId: 2, name: 'Other', coords: [[0, -20], [0, 20]] },
+  ];
+  const out = G.divideLines(fs, 1, inEast, 9);
+  const t = out.filter((f) => f.name.startsWith('Trench'));
+  assert.equal(t.length, 2);
+  assert.deepEqual(t.map((f) => f.plateId).sort(), [1, 9]);
+  assert.ok(t.every((f) => f.side === 'left'), 'the polarity carries over');
+  assert.deepEqual(t[0].coords[t[0].coords.length - 1], t[1].coords[0], 'the two stretches meet');
+  assert.equal(out.find((f) => f.name === 'Arm').plateId, 9, 'wholly on the new side');
+  assert.equal(out.find((f) => f.name === 'Other').plateId, 2, 'other plates untouched');
 });
