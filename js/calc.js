@@ -424,10 +424,18 @@
   }
 
   function bodyFromHome(b, aHome, st, homeStarSize) {
-    const a = b.a, F = b.distance;
+    const a = b.a;
     const type = bodyType(b.radius, b.atmosphere);
     const H = 5 * log10(1329 / st.luminosity / ((b.radius * 12742) * Math.sqrt(b.albedo)));
     const dMin = Math.abs(a - aHome), dMax = a + aHome;
+    // A saved distance outside the range (an orbit moved since, or a new body) is meaningless:
+    // show the planet where it is best seen instead (greatest elongation inside, opposition outside).
+    const distanceValid = Number.isFinite(b.distance) && b.distance >= dMin - 1e-9 && b.distance <= dMax + 1e-9;
+    let F = b.distance;
+    if (!distanceValid) {
+      F = a < aHome ? Math.sqrt(aHome ** 2 - a ** 2) : dMin;
+      if (!(F > 0)) F = (dMin + dMax) / 2;
+    }
     const near = (x, y) => Math.abs(x - y) < 1e-9;
     let phase, elong;
     if (near(F, dMin) && a > aHome) phase = 0;
@@ -463,7 +471,7 @@
     else visibility = 'Naked eye (very bright)';
     const ang = rad(180 - phase - elong);
     return {
-      type, H, dMin, dMax, distanceValid: F >= dMin - 1e-9 && F <= dMax + 1e-9,
+      type, H, dMin, dMax, distance: F, distanceValid,
       phase, elong, phaseTerm: pt, nakedEye, magnitude: mag, observable, visibility,
       x: Math.cos(ang) * a, y: Math.sin(ang) * a,
     };

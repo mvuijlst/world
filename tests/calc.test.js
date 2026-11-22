@@ -118,6 +118,19 @@ test('APPARENT SIZE & BRIGHTNESS sheet', () => {
   assert.equal(s.moon.totalEclipses, true);
 });
 
+test('a saved distance the orbits no longer allow falls back to the best view', () => {
+  const st = d.star;
+  const inner = C.bodyFromHome({ a: 0.44, distance: 0.44, radius: 0.4, albedo: 0.1, atmosphere: false }, 1.2, st, 1);
+  assert.equal(inner.distanceValid, false);
+  close(inner.distance, Math.sqrt(1.2 ** 2 - 0.44 ** 2), 1e-12, 'greatest elongation');
+  assert.ok(inner.distance >= inner.dMin && inner.distance <= inner.dMax);
+  assert.ok(inner.elong > 20 && inner.magnitude !== null, `seen in the sky (${inner.elong}°)`);
+  const outer = C.bodyFromHome({ a: 5, distance: 1, radius: 11, albedo: 0.5, atmosphere: true }, 1, st, 1);
+  assert.equal(outer.distanceValid, false);
+  close(outer.distance, 4, 1e-12, 'opposition');
+  close(outer.elong, 180, 1e-9);
+});
+
 test('TECTONICS sheet', () => {
   const t = d.tectonics;
   // the sheet's gravity input is 1 g; the app links the planet's gravity (1.00028 g)

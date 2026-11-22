@@ -309,11 +309,10 @@
       const renderPlanetTable = (c) => {
         const bodies = c.world.system.bodies;
         const rows = c.d.sky.bodies.map((b, i) => {
-          const src = bodies[i];
           const fh = b.fromHome;
           const span = fh.dMax - fh.dMin;
-          const slider = h('input', { type: 'range', min: fh.dMin, max: fh.dMax, step: span / 400 || 0.001, value: src.distance, 'aria-label': `${b.name} current distance`, style: { width: '140px', flex: '1 1 140px', minWidth: 0 } });
-          const num = h('input', { class: 'txt num', type: 'number', step: 'any', value: +src.distance.toFixed(4), 'aria-label': `${b.name} current distance (AU)`, style: { width: '96px', flex: '0 0 96px' } });
+          const slider = h('input', { type: 'range', min: fh.dMin, max: fh.dMax, step: span / 400 || 0.001, value: fh.distance, 'aria-label': `${b.name} current distance`, style: { width: '140px', flex: '1 1 140px', minWidth: 0 } });
+          const num = h('input', { class: 'txt num', type: 'number', step: 'any', value: +fh.distance.toFixed(4), 'aria-label': `${b.name} current distance (AU)`, style: { width: '96px', flex: '0 0 96px' } });
           const commit = (v) => { if (!Number.isFinite(v)) return; ctx.set(`system.bodies.${i}.distance`, v); };
           slider.addEventListener('input', () => { num.value = (+slider.value).toFixed(4); commit(Number(slider.value)); });
           num.addEventListener('input', () => { if (num.value !== '') { slider.value = num.value; commit(Number(num.value)); } });
@@ -323,7 +322,8 @@
             cells.phase, cells.elong, cells.mag, cells.naked, cells.obs, cells.vis);
           tr._update = (cc) => {
             const f2 = cc.d.sky.bodies[i].fromHome;
-            num.classList.toggle('bad', !f2.distanceValid);
+            const v = Number(num.value);
+            num.classList.toggle('bad', !(v >= f2.dMin - 1e-9 && v <= f2.dMax + 1e-9));
             cells.phase.textContent = fmt.num(f2.phase, 1);
             cells.elong.textContent = fmt.num(f2.elong, 1);
             cells.mag.textContent = f2.magnitude === null ? 'NA' : fmt.num(f2.magnitude, 2);
@@ -364,7 +364,6 @@
     },
     checks(w, d) {
       const out = [];
-      d.sky.bodies.forEach((b) => { if (!b.fromHome.distanceValid) out.push({ level: 'fail', text: `${b.name}: current distance is outside its possible range (${fmt.num(b.fromHome.dMin, 3)}–${fmt.num(b.fromHome.dMax, 3)} AU).` }); });
       const naked = d.sky.bodies.filter((b) => b.fromHome.nakedEye === 'Yes').map((b) => b.name);
       out.push({ level: 'info', text: naked.length ? `Known since antiquity: ${naked.join(', ')}.` : 'No other planet is visible to the naked eye.' });
       if (w.moon.enabled && d.sky.moon) out.push({ level: 'info', text: d.sky.moon.totalEclipses ? 'Total solar eclipses are possible.' : 'Only annular solar eclipses occur.' });
