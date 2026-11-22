@@ -273,10 +273,42 @@
     const oro = new Float32Array(N), plat = new Float32Array(N);
     const PEAK = { collision: 6600, cordillera: 4600, accretion: 2600, plateau: 3800 };
     const worn = (since) => 0.12 + 0.88 * Math.exp(-since / 110);
+    // A belt is not a flat-topped block: it rises from its edges to a crest along its middle, has peaks
+    // and passes along its length, and parallel ranges within it. So each belt's height follows the
+    // distance in from its edge (relative to its half-width), times a slow variation along it, times
+    // parallel ridges at that distance (a few hundred km apart, wandering). Plateaus stay flat-topped.
+    const inBelt = new Int32Array(N).fill(-1), dEdge = new Float32Array(N);
+    const dyDeg = 180 / gr.H;
+    let beltNo = 0;
     for (const o of P.features.filter((x) => x.kind === 'orogen' && live(x) && x.coords.length >= 3)) {
       const since = Math.max(0, (o.active ?? 0) - age), into = o.type === 'plateau' ? plat : oro;
       const h = (PEAK[o.type] ?? 3000) * (o.type === 'plateau' ? Math.exp(-since / 60) : worn(since) * (since > 500 ? Math.exp(-(since - 500) / 500) : 1)) * relief;
-      fillPolygon(gr, placed(o), (k) => { if (h > into[k]) into[k] = h; });
+      const cells = [], id = beltNo++;
+      fillPolygon(gr, placed(o), (k) => { if (inBelt[k] !== id) { inBelt[k] = id; cells.push(k); } });
+      if (!cells.length) continue;
+      if (o.type === 'plateau') { for (const k of cells) if (h > into[k]) into[k] = h; continue; }
+      // distance in from the edge (degrees), by relaxing over the belt's cells
+      const nbr = (k, f) => {
+        const j = Math.floor(k / W), i = k - j * W, dx = dyDeg * Math.max(0.05, gr.cosl[j]);
+        f(j * W + ((i + 1) % W), dx); f(j * W + ((i - 1 + W) % W), dx);
+        if (j > 0) f(k - W, dyDeg); if (j + 1 < gr.H) f(k + W, dyDeg);
+      };
+      for (const k of cells) { let edge = false; nbr(k, (n) => { if (inBelt[n] !== id) edge = true; }); dEdge[k] = edge ? 0.5 * dyDeg : 1e9; }
+      for (let pass = 0, moved = true; moved && pass < 400; pass++) {
+        moved = false;
+        for (const k of cells) nbr(k, (n, step) => { if (inBelt[n] === id && dEdge[n] + step < dEdge[k] - 1e-6) { dEdge[k] = dEdge[n] + step; moved = true; } });
+      }
+      let half = 0; for (const k of cells) half = Math.max(half, dEdge[k]);
+      const lam = km(260);
+      for (const k of cells) {
+        // edges to crest, the foothills fading out along a ragged line rather than the outline
+        const t = clamp(dEdge[k] / Math.max(half, 1e-6) + 0.3 * fbm(k, 8, 3), 0, 1);
+        const profile = 0.05 + 0.95 * Math.pow(smooth(t * 1.25), 0.85);
+        const along = clamp(1.05 + 0.9 * fbm(k, 3.2, 3), 0.45, 1.2);         // peaks and passes
+        const par = 0.5 + 0.5 * Math.cos((2 * Math.PI * (dEdge[k] + 0.6 * lam * fbm(k, 5, 2))) / lam);
+        const v = h * profile * along * (0.88 + 0.17 * par);
+        if (v > into[k]) into[k] = v;
+      }
     }
     const oroS = blur(gr, oro, Math.max(1, Math.round(km(65) / gr.dx)), 2), platS = blur(gr, plat, Math.max(1, Math.round(km(120) / gr.dx)), 2);
 

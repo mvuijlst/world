@@ -837,7 +837,7 @@
   /*
    * Log 17, orogeny: the mountain belts, each from its cause, and when it was last pushed up.
    *  - cordillera: behind a subduction zone off a continent, 1.5-5° inland, for as long as it subducts;
-   *  - collision: on a suture, 250-450 km either side, pushed up for 40-80 Myr after the collision,
+   *  - collision: on a suture, 150-260 km either side, pushed up for 40-80 Myr after the collision,
    *    with a high plateau behind it on the larger plate's side when it lasted long enough;
    *  - accretion: where an island arc was accreted, for 20-40 Myr after.
    * Old belts are worn down: their `active` age says until when they grew.
@@ -865,7 +865,7 @@
     }
     for (const s of P.features.filter((f) => f.kind === 'suture' && f.coords.length >= 2)) {
       // a collision range astride the suture (the Himalaya, the Alps), pushed up for 40-80 Myr
-      const line = S.densify(s.coords, false, 1.5).map(S.vec), w = km(U(250, 450)), active = Math.max(0, s.begin - U(40, 80));
+      const line = S.densify(s.coords, false, 1.5).map(S.vec), w = km(U(150, 260)), active = Math.max(0, s.begin - U(40, 80));
       const ring = belt(line, w, wander(r, 0.25, 2));
       if (ring) out.push({ id: `o${s.id}`, kind: 'orogen', type: 'collision', plateId: s.plateId, name: `Mountains ${++n}`, coords: ring.map((v) => fix4(S.latLon(v))), begin: s.begin, active, auto: true });
       // behind it, on the larger plate's side, a high plateau of thickened crust (Tibet), if the

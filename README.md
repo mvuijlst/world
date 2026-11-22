@@ -186,7 +186,9 @@ following Worldbuilder's Log 20–26:
   150 km wide on quiet coasts and 40 km on active ones. Sea level is set so land covers the share asked
   for (by default the Population step's).
 - **Land topography** (Log 24): mountain belts, from 5.2 km for collisions to 4 km for cordilleras and
-  2.4 km for accreted arcs, worn down after they stop rising. Large igneous provinces are basalt plateaus.
+  2.4 km for accreted arcs, worn down after they stop rising. Each belt rises from foothills at a ragged
+  edge to a crest along its middle, with peaks and passes along its length and parallel ranges within
+  it (plateaus stay flat-topped). Large igneous provinces are basalt plateaus.
 - **Islands** (Log 22): island arcs, and hotspot volcanoes that sink into seamounts as they age.
 - **Sea topography** (Log 26): the world's depth curve from its ridge depth (ridge + 350·√age, flattening
   on old floor), continental slopes, trenches and oceanic plateaus.
