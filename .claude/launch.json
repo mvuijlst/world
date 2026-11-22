@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "worldsmith",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["tools/serve.py", "5178"],
+      "port": 5178
+    }
+  ]
+}

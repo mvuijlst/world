@@ -1,0 +1,10 @@
+{
+  "name": "worldsmith",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Client-side planetary design console following Artifexian's WorldSmith method",
+  "scripts": {
+    "start": "python tools/serve.py",
+    "test": "node --test tests/calc.test.js"
+  }
+}

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WorldSmith · Planetary Design Console</title>
+  <meta name="description" content="A guided, client-side world-building console following Artifexian's WorldSmith method: galaxy, star, planetary system, planet, moon, sky, tectonics, climate, population and calendar.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 54 34'%3E%3Crect width='54' height='34' fill='%230b0806'/%3E%3Cpath d='M2 31 L14 13 L20 21 L30 4 L40 19 L45 13 L52 31 Z' fill='none' stroke='%23ffb238' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&family=VT323&display=swap">
+  <script>
+    // apply the saved theme before first paint
+    try { if (localStorage.getItem('worldsmith.theme') === 'pulp') document.documentElement.setAttribute('data-theme', 'pulp'); } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="sr-only" href="#stage">Skip to content</a>
+  <div class="app">
+    <header class="topbar" id="topbar"></header>
+    <div class="shell">
+      <nav class="sidebar" id="sidebar" aria-label="Build sequence"></nav>
+      <div class="scrim" id="scrim"></div>
+      <main class="stage" id="stage" tabindex="-1"></main>
+    </div>
+  </div>
+  <noscript><p style="padding:2rem">WorldSmith runs entirely in your browser and needs JavaScript enabled.</p></noscript>
+
+  <!-- classic scripts, in dependency order: works from file:// and any static host -->
+  <script src="js/calc.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/viz.js"></script>
+  <script src="js/generator.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/steps/cosmos.js"></script>
+  <script src="js/steps/world.js"></script>
+  <script src="js/steps/surface.js"></script>
+</body>
+</html>
