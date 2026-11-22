@@ -309,6 +309,13 @@
       const renderBodies = (c) => {
         const w = c.world;
         const orbitOpts = c.d.system.orbits.filter((o) => o.a < 200);
+        // move the home world onto one of the stable orbits, as the other bodies (habitable ones marked)
+        const homeSnap = () => {
+          const sel = h('select', { class: 'sel', 'aria-label': `Move ${w.planet.name} to an orbit`, style: { width: '86px' } },
+            h('option', { value: '' }, 'orbit…'), orbitOpts.map((o) => h('option', { value: o.a }, `#${o.n} · ${fmt.num(o.a, 3)}${o.habitable ? ' ✓' : ''}`)));
+          sel.addEventListener('change', () => { if (sel.value) ctx.set('planet.a', Number(sel.value), { structural: true }); });
+          return sel;
+        };
         const row = (b, i) => {
           const num = (key, step, label) => {
             const inp = h('input', { class: 'txt num', type: 'number', step, value: b[key], 'aria-label': `${b.name} ${label}` });
@@ -334,9 +341,9 @@
           h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Type'), h('th', null, 'Orbit (AU)'), h('th', null, 'Radius R⊕'), h('th', null, 'Albedo (geom.)'), h('th', null, 'Atmosphere'), h('th'))),
           h('tbody', null,
             h('tr', { class: 'hz' }, h('td', { class: 'txtcell' }, h('b', { class: 't-amber' }, w.planet.name), ' ', h('span', { class: 'pill amber' }, 'home')), h('td', { class: 'txtcell' }, 'Terrestrial'),
-              h('td', { class: 'num' }, h('a', { href: '#/planet', class: 'link-chip' }, `${fmt.num(w.planet.a, 3)} ↗`)), h('td', { class: 'num' }, fmt.num(c.d.planet.radius, 3)), h('td', { class: 'num' }, '—'), h('td', null, '✓'), h('td')),
+              h('td', null, h('div', { style: { display: 'flex', gap: '4px', alignItems: 'center' } }, h('a', { href: '#/planet', class: 'link-chip', title: 'Set it exactly on the Planet step' }, `${fmt.num(w.planet.a, 3)} ↗`), homeSnap())), h('td', { class: 'num' }, fmt.num(c.d.planet.radius, 3)), h('td', { class: 'num' }, '—'), h('td', null, '✓'), h('td')),
             w.system.bodies.map(row))))),
-        h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, 'Remove a body with the × at the end of its row. Radius, geometric albedo and atmosphere feed the brightness calculations on the Sky step. The home world is edited on the Planet step.'));
+        h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, 'Remove a body with the × at the end of its row. Move the home world with its orbit menu (✓ marks habitable orbits), or set its distance exactly on the Planet step. Radius, geometric albedo and atmosphere feed the brightness calculations on the Sky step.'));
       };
 
       const renderOrbits = (c) => {
