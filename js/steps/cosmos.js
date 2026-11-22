@@ -330,13 +330,13 @@
           return h('tr', null, h('td', null, nameIn), h('td', null, kindSel), h('td', null, h('div', { style: { display: 'flex', gap: '4px' } }, aIn, snap)),
             h('td', null, num('radius', 'any', 'radius')), h('td', null, num('albedo', 'any', 'geometric albedo')), h('td', null, h('label', { class: 'check' }, atm)), h('td', { class: 'actions', 'data-label': '' }, del));
         };
-        replace(bodyHost, cardify(h('table', { class: 'data' },
+        replace(bodyHost, h('div', { class: 'table-wrap' }, cardify(h('table', { class: 'data bodies' },
           h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Type'), h('th', null, 'Orbit (AU)'), h('th', null, 'Radius R⊕'), h('th', null, 'Albedo (geom.)'), h('th', null, 'Atmosphere'), h('th'))),
           h('tbody', null,
             h('tr', { class: 'hz' }, h('td', { class: 'txtcell' }, h('b', { class: 't-amber' }, w.planet.name), ' ', h('span', { class: 'pill amber' }, 'home')), h('td', { class: 'txtcell' }, 'Terrestrial'),
               h('td', { class: 'num' }, h('a', { href: '#/planet', class: 'link-chip' }, `${fmt.num(w.planet.a, 3)} ↗`)), h('td', { class: 'num' }, fmt.num(c.d.planet.radius, 3)), h('td', { class: 'num' }, '—'), h('td', null, '✓'), h('td')),
-            w.system.bodies.map(row)))),
-        h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, 'Radius, geometric albedo and atmosphere feed the brightness calculations on the Sky step. The home world is edited on the Planet step.'));
+            w.system.bodies.map(row))))),
+        h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, 'Remove a body with the × at the end of its row. Radius, geometric albedo and atmosphere feed the brightness calculations on the Sky step. The home world is edited on the Planet step.'));
       };
 
       const renderOrbits = (c) => {
