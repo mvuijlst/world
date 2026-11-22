@@ -69,7 +69,7 @@
         for (let k = 0; k < W * H; k++) {
           const i = k % W, j = (k - i) / W;
           let c;
-          if (z[k] <= 0) c = clim && clim.ice[Math.min(clim.H - 1, Math.floor((j * clim.H) / H)) * clim.W + Math.floor((i * clim.W) / W)] ? ICE : z[k] > -200 ? SHELF : SEA;
+          if (z[k] <= 0) c = bio.seaIce && bio.seaIce[k] ? ICE : z[k] > -200 ? SHELF : SEA;
           else if (bio.lake[k]) c = bio.lake[k] === 1 ? FRESH : SALT;
           else if (u.layer === 'biomes') c = hex(bio.biomes[bio.biome[k] - 1]?.[2] || '#888888');
           // (ice sheets shed no running water, but they are not dry land: shown as ice)
@@ -182,7 +182,7 @@
           items = order.map(([i, v]) => [hex(bio.biomes[i][2]), `${bio.biomes[i][1]} ${fmt.int(v * 100) === '0' ? '<1' : fmt.int(v * 100)} %`]);
         } else items = WATER.map(([t, c]) => [c, `${t} mm/yr`]).concat([[[226, 190, 140], 'drains inland'], [ICE, 'ice sheet']]);
         items.push([FRESH, 'fresh lake'], [SALT, 'salt lake']);
-        if (clim && clim.ice.some((v) => v)) items.push([ICE, 'sea ice (winter)']);
+        if (bio && bio.seaIce && bio.seaIce.some((v) => v)) items.push([ICE, 'sea ice (winter)']);
         replace(keyHost, panel('Key', { tag: LAYERS.find((l) => l[0] === u.layer)[1].toUpperCase() }, h('div', { class: 'map-key mono', style: { marginLeft: 0 } }, items.map(([c, t]) => h('span', null, sw(c), t)),
           h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '3px', background: RIVER, verticalAlign: 'middle', marginRight: '6px' } }), `river (from ${fmt.int(bio ? bio.minFlow : 600)} m³/s)`))));
       }

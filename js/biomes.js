@@ -17,6 +17,7 @@
   'use strict';
   const node = typeof module !== 'undefined' && module.exports;
   const M = node ? require('./worldmap.js') : root.WS.worldmap;
+  const K = node ? require('./climate.js') : root.WS.climate;
   const D2R = Math.PI / 180;
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const YEAR_S = 3.156e7;
@@ -115,6 +116,31 @@
         P[k] = Math.max(0, ((pj + pl2 + 2 * pe) / 2) * nP);
         const sea3 = [[tj3, pj], [tl3, pl2], [te3, pe]], wm = sea3.reduce((a, b) => (b[0] > a[0] ? b : a)), cd = sea3.reduce((a, b) => (b[0] < a[0] ? b : a));
         Pw[k] = wm === cd || wm[1] + cd[1] <= 0 ? P[k] / 2 : (P[k] * wm[1]) / (wm[1] + cd[1]);
+      }
+    }
+
+    // ── winter sea ice, on the map's own cells: the climate's coldest-season sea temperature, smoothly
+    // between its cells, with the same wandering edge ──
+    const seaIce = new Uint8Array(N);
+    if (clim.seaCold) {
+      const wob = K.iceWobble(planet.seed ?? 1), sc = clim.seaCold;
+      for (let j = 0; j < H; j++) {
+        const fj = clamp(((j + 0.5) / H) * cH - 0.5, 0, cH - 1), j0 = Math.floor(fj), j1 = Math.min(cH - 1, j0 + 1), tj = fj - j0;
+        for (let i = 0; i < W; i++) {
+          const k = j * W + i;
+          if (land[k]) continue;
+          const fi = ((i + 0.5) / W) * cW - 0.5, i0 = Math.floor(fi), ti = fi - i0, wrap = (q) => ((q % cW) + cW) % cW;
+          let sw = 0, v = 0;
+          for (const [q, wt] of [[j0 * cW + wrap(i0), (1 - ti) * (1 - tj)], [j0 * cW + wrap(i0 + 1), ti * (1 - tj)], [j1 * cW + wrap(i0), (1 - ti) * tj], [j1 * cW + wrap(i0 + 1), ti * tj]]) {
+            if (Number.isNaN(sc[q])) continue;
+            sw += wt; v += wt * sc[q];
+          }
+          if (sw <= 0) {                                                       // a sea the climate's cells call land
+            for (let r = 1; r <= 2 && sw <= 0; r++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) { const jj = Math.round(fj) + dj; if (jj < 0 || jj >= cH) continue; const q = jj * cW + wrap(Math.round(fi) + di); if (!Number.isNaN(sc[q])) { sw += 1; v += sc[q]; } }
+            if (sw <= 0) continue;
+          }
+          if (v / sw + wob(gr.xyz[k * 3], gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2]) < -1.8) seaIce[k] = 1;
+        }
       }
     }
 
@@ -308,7 +334,7 @@
     let wet = false; for (let k = 0; k < N && !wet; k++) if (runoff[k] > 0) wet = true;
     const lakes = comps.filter((c) => !c.gone).length, salt = comps.filter((c) => !c.gone && c.salt).length;
     return {
-      W, H, grid: gr, biome, biomes: BIOMES, lake: lakeOf, flow: Float32Array.from(flow), runoff, rivers, minFlow,
+      W, H, grid: gr, biome, biomes: BIOMES, lake: lakeOf, seaIce, flow: Float32Array.from(flow), runoff, rivers, minFlow,
       inland: Uint8Array.from(toSea, (v) => (v < 0 ? 1 : 0)),
       liquid: liquid && tBoil > -50,
       stats: {

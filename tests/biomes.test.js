@@ -75,3 +75,19 @@ test('land use for the Population step, from the biomes', () => {
   const snowball = { ...EARTH, flux: 0.8, meanC: -25 };
   assert.ok(B.landUse(B.build(map, K.build(map, snowball), snowball), map).uninhabitable > 90, 'a snowball is uninhabitable');
 });
+
+test('sea ice: where the sea freezes, with an edge that wanders rather than follows a parallel', () => {
+  const tilted = { ...EARTH, tilt: 68.6, meanC: 2, flux: 0.86 };
+  const b = B.build(map, K.build(map, tilted), tilted);
+  let eq = 0, eqSea = 0; const edgeLats = [];
+  for (let k = 0; k < b.W * b.H; k++) {
+    if (map.z[k] > 0) continue;
+    const j = Math.floor(k / b.W), la = map.grid.lat[j];
+    if (Math.abs(la) < 5) { eqSea++; eq += b.seaIce[k]; }
+    // an edge: ice next to open sea
+    if (b.seaIce[k] && j + 1 < b.H && map.z[k + b.W] <= 0 && !b.seaIce[k + b.W]) edgeLats.push(la);
+  }
+  assert.ok(eq / eqSea > 0.5, `a cold, much tilted world freezes its equatorial sea (${eq}/${eqSea})`);
+  const spread = Math.max(...edgeLats) - Math.min(...edgeLats);
+  assert.ok(spread > 15, `the ice edge spans many parallels (${spread.toFixed(1)}°)`);
+});

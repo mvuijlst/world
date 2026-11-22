@@ -137,20 +137,22 @@
     const seasons = {};
     // the two solstices and the equinoxes (both alike): on a much tilted world the low latitudes have
     // their warm, wet season at the equinoxes, when the sun is overhead
+    // (the sea's temperature before it is held at freezing: how far below it a sea would be, for ice)
+    const seaRaw = {};
     for (const [name, dec] of [['jan', -tilt], ['jul', tilt], ['equ', 0]]) {
       // ── temperature (before currents) ──
-      const T = new Float32Array(N), Tzon = new Float32Array(H);
+      const T = new Float32Array(N), Tzon = new Float32Array(H), raw = (seaRaw[name] = new Float32Array(N));
       if (locked) {
         for (let k = 0; k < N; k++) T[k] = Tg + dayNight * (face[k] - fm) * (land[k] ? 1 : 0.7) - (land[k] ? (lapse * belowTropo(zs[k])) / 1000 : 0);
-        for (let k = 0; k < N; k++) if (!land[k]) T[k] = Math.max(-1.8, T[k]);
+        for (let k = 0; k < N; k++) if (!land[k]) { raw[k] = T[k]; T[k] = Math.max(-1.8, T[k]); }
       }
       for (let j = 0; j < H && !locked; j++) {
         const Qs = insolation(lat[j], dec, S0), base = Tg + kT * (Qann[j] - qm), swing = damp(kT * (Qs - Qann[j]));
-        const seaT = Math.max(-1.8, Tg + 4 + kO * (Qann[j] - qm) + 0.2 * swing);
+        const seaR = Tg + 4 + kO * (Qann[j] - qm) + 0.2 * swing, seaT = Math.max(-1.8, seaR);
         Tzon[j] = seaT;
         for (let i = 0; i < W; i++) {
           const k = j * W + i;
-          if (!land[k]) { T[k] = seaT; continue; }
+          if (!land[k]) { T[k] = seaT; raw[k] = seaR; continue; }
           const cont = 1 - Math.exp(-(toSea[k] * kmDeg) / 900);            // continentality
           T[k] = base + (0.3 + 0.5 * cont) * swing - (lapse * belowTropo(zs[k])) / 1000;
         }
@@ -275,6 +277,12 @@
 
     // ── reefs, fishing grounds, sea ice, and the climate zones ──
     const zone = new Uint8Array(N), reef = new Uint8Array(N), ice = new Uint8Array(N), fish = new Float32Array(N);
+    const seaCold = new Float32Array(N).fill(NaN), wobble = iceWobble(planet.seed ?? 1);
+    // how far each sea cell is from land, and the coldest season of the land round about
+    const toLand = M.distance(grid, land).d;
+    const coldL = Float32Array.from(land, (l, k) => (l ? Math.min(seasons.jan.T[k], seasons.jul.T[k], seasons.equ.T[k]) : 0));
+    const rr = Math.max(1, Math.round(6 / grid.dx)), sumL = blurField(grid, coldL, rr), fracL = blurField(grid, Float32Array.from(land), rr);
+    const landCold = Float32Array.from(sumL, (v, k) => (fracL[k] > 0.01 ? v / fracL[k] : 0));
     const J = seasons.jan, L = seasons.jul, E = seasons.equ, SS = [J, L, E];
     for (let k = 0; k < N; k++) {
       const Tw = Math.max(J.T[k], L.T[k], eqT[k]), Tc = Math.min(J.T[k], L.T[k], eqT[k]);
@@ -285,13 +293,26 @@
         const Pw = pw0 + pc0 > 0 ? pw0 * f : rainYear[k] / 2, Pc = pw0 + pc0 > 0 ? pc0 * f : rainYear[k] / 2;
         zone[k] = ZI[koppen(Tw, Tc, Pw, Pc)] || 0;
       } else {
-        if (Tc <= -1.7) ice[k] = 1;
+        // sea ice where the coldest season's sea would be below freezing, give or take the eddies and
+        // wind that make a real ice edge wander
+        seaCold[k] = Math.min(seaRaw.jan[k], seaRaw.jul[k], seaRaw.equ[k]) + sstS[k];
+        // cold coasts: winter air off frozen land chills the sea near it (ice grows out from such shores)
+        const near = Math.exp(-(toLand[k] * kmDeg) / 450);
+        if (near > 0.02 && landCold[k] < seaCold[k]) seaCold[k] += 0.45 * near * (landCold[k] - seaCold[k]);
+        if (seaCold[k] + wobble(grid.xyz[k * 3], grid.xyz[k * 3 + 1], grid.xyz[k * 3 + 2]) < -1.8) ice[k] = 1;
         const shallow = z[k] > -150, j = Math.floor(k / W);
         fish[k] = clamp(upwell[k] + (shallow ? 0.5 : 0) + (Math.abs(lat[j]) > 40 && Math.abs(lat[j]) < 65 ? 0.35 : 0), 0, 2);
         if (z[k] > -80 && Tc >= 20 && upwell[k] < 0.4) reef[k] = 1;
       }
     }
-    return { W, H, lat, z, land, seasons, equinoxT: eqT, rainYear, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
+    return { W, H, lat, z, land, seasons, equinoxT: eqT, rainYear, seaCold, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
+  }
+
+  /* A sea-ice edge's wander (°C) at a point on the unit sphere: eddies a few hundred km across. */
+  function iceWobble(seed) {
+    const n = M.noise3(seed * 13 + 5);
+    // large slow meanders, and a smaller fringe
+    return (x, y, z) => 7 * n(x, y, z, 2.2, 3) + 1.2 * n(z, x, y, 9, 2);
   }
 
   const S2vec = (la, lo) => [Math.cos(la * D2R) * Math.cos(lo * D2R), Math.cos(la * D2R) * Math.sin(lo * D2R), Math.sin(la * D2R)];
@@ -319,11 +340,11 @@
     return {
       tilt: p.tilt, rotation: p.rotation, retrograde: p.tilt > 90, flux: st.luminosity / (p.a * p.a), pressure: p.pressure,
       meanC: pl.temperatureC, gravity: pl.gravity, radiusKm: pl.radiusKm, cells: (pl.cells && pl.cells.bands) || [],
-      locked, subsolarLon: p.subsolarLon ?? 0,
+      locked, subsolarLon: p.subsolarLon ?? 0, seed: w.plates.seed ?? 1,
     };
   }
 
-  const api = { build, insolation, koppen, ZONES, planetOf };
+  const api = { build, insolation, koppen, ZONES, planetOf, iceWobble };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.climate = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
