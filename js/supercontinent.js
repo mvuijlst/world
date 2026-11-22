@@ -770,6 +770,8 @@
   function markOrogens(P, opts = {}) {
     const start = P.start ?? 1000;
     const r = rng(((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0x0606) >>> 0), U = (a, b) => a + (b - a) * r();
+    // widths as on Earth in km, ÷ g^scaling, in degrees of this planet
+    const fg = Math.max(0.05, opts.gravity ?? 1) ** (opts.scaling ?? 2), km = (k) => ((k / fg) * 180) / (Math.PI * (opts.radiusKm ?? 6371));
     const out = [];
     let n = P.features.filter((f) => f.kind === 'orogen').length;
     const crustOf = (id) => P.features.filter((f) => f.kind === 'crust' && f.plateId === id).map((f) => S.within(f.coords));
@@ -780,14 +782,14 @@
         const nn = norm(cross(v, [b[0] - a[0], b[1] - a[1], b[2] - a[2]]));
         return norm(v.map((x, k) => Math.cos(d * D2R) * x + sg * Math.sin(d * D2R) * nn[k]));
       });
-      const d0 = U(1.5, 2.5), d1 = d0 + U(2, 3.5);
+      const d0 = km(U(170, 280)), d1 = d0 + km(U(220, 390));
       const a = inward(d0), b = inward(d1);
-      const onLand = b.filter((v) => inC.some((f) => f(v))).length / b.length;
+      const onLand = b.filter((v) => inC.some((fn) => fn(v))).length / b.length;
       if (onLand < 0.6) continue;                                   // an island-arc margin: the arc is its mountains
       out.push({ id: `o${z.id}`, kind: 'orogen', type: 'cordillera', plateId: z.plateId, name: `${['Cordillera', 'Range', 'Sierra'][n % 3]} ${++n}`, coords: [...a, ...b.reverse()].map((v) => fix4(S.latLon(v))), begin: z.begin ?? start, active: z.end ?? 0, auto: true });
     }
     for (const s of P.features.filter((f) => f.kind === 'suture' && f.coords.length >= 2)) {
-      const ring = belt(S.densify(s.coords, false, 1.5).map(S.vec), U(2, 4), wander(r, 0.25, 2));
+      const ring = belt(S.densify(s.coords, false, 1.5).map(S.vec), km(U(220, 450)), wander(r, 0.25, 2));
       if (ring) out.push({ id: `o${s.id}`, kind: 'orogen', type: 'collision', plateId: s.plateId, name: `Mountains ${++n}`, coords: ring.map((v) => fix4(S.latLon(v))), begin: s.begin, active: Math.max(0, s.begin - U(30, 60)), auto: true });
     }
     for (const a of P.features.filter((f) => f.kind === 'arc' && f.accreted)) {
@@ -886,7 +888,7 @@
    * microcontinent, wandering, a gathering with collisions, a long-lived supercontinent, then the
    * modern breakup to the present; then the subduction zones and island arcs, accretions and
    * collisions, the mountain belts, hotspots and LIPs. The end state at 0 Ma is ready to draw on.
-   * opts: seed, plates (3-5), crust, start (Ma), maxSpeed, radiusKm. Returns {plates, features,
+   * opts: seed, plates (3-5), crust, start (Ma), maxSpeed, radiusKm, gravity, scaling. Returns {plates, features,
    * nextPlate, start, step, seed, events}.
    */
   function makeWorld(opts = {}) {
@@ -928,7 +930,7 @@
     const col = markCollisions(P, { every: 10 });
     P = { ...P, features: col.features };
     events.push(...col.events);
-    P = { ...P, features: P.features.concat(markOrogens(P, { seed }), addHotspots(P, { seed })) };
+    P = { ...P, features: P.features.concat(markOrogens(P, { seed, radiusKm: R, gravity: opts.gravity, scaling: opts.scaling }), addHotspots(P, { seed })) };
     return { ...P, events: events.sort((a, b) => b.age - a.age) };
   }
 

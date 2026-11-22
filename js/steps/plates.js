@@ -957,7 +957,7 @@
         if (Pw.features.length && !await WS.ui.ask('Replace everything on this globe with a new world? The plates, shapes and poles there now are lost.', { title: 'Make a new world', ok: 'Make it', danger: true })) return;
         toast('Making a world…');
         await new Promise((r) => setTimeout(r, 30));
-        const w = WS.supercontinent.makeWorld({ seed: a.seed, plates: a.plates, crust: a.crust / 100, start: Pw.start, maxSpeed: a.speed, radiusKm: ctx.d.planet.radiusKm });
+        const w = WS.supercontinent.makeWorld({ seed: a.seed, plates: a.plates, crust: a.crust / 100, start: Pw.start, maxSpeed: a.speed, radiusKm: ctx.d.planet.radiusKm, gravity: ctx.d.planet.gravity, scaling: ctx.world.tectonics.scaling });
         ctx.mutate((wd) => {
           wd.plates.plates = w.plates.map((p, i) => ({ ...p, colour: p.colour || PALETTE[i % PALETTE.length] }));
           wd.plates.features = w.features; wd.plates.nextPlate = w.nextPlate; wd.plates.seed = w.seed; wd.plates.step = w.step;
@@ -1030,7 +1030,7 @@
       function markMountains() {
         const Pw = P(), a = u.auto || {};
         const keep = Pw.features.filter((f) => !auto(['orogen'])(f));
-        const made = WS.supercontinent.markOrogens({ ...Pw, features: keep }, { seed: a.seed ?? Pw.seed });
+        const made = WS.supercontinent.markOrogens({ ...Pw, features: keep }, { seed: a.seed ?? Pw.seed, radiusKm: ctx.d.planet.radiusKm, gravity: ctx.d.planet.gravity, scaling: ctx.world.tectonics.scaling });
         ctx.mutate((w) => { w.plates.features = keep.concat(made); });
         toast(`${made.length} mountain belts: ${['cordillera', 'collision', 'accretion'].map((t) => `${made.filter((o) => o.type === t).length} ${t}`).join(', ')}`);
         renderAuto(); renderSide(); draw();

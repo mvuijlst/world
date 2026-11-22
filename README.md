@@ -34,11 +34,12 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
 | 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–19: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, microcontinents, arc and continent collisions, mountain belts, hotspots and LIPs, a land estimate for Population, GPlates export/import |
-| 10 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
-| 11 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
-| 12 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
-| 13 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 14 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity and radius; map or globe, a brush to raise and lower, colour and 16-bit height PNGs |
+| 11 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
+| 12 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
+| 13 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
+| 14 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 15 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -155,6 +156,27 @@ opening rift) and a `.rot` rotation file with every plate's poles. The shapes ar
 at the start age, where every rotation is zero. **Import** reads a `.gpml`/`.gpmlz` back through the
 server, and a `.rot` file or GeoJSON in the browser. pyGPlates needs the system library libGL
 (`apt install libgl1`); it is GPL-2 and runs only on the server.
+
+## World map
+
+The World map step (`js/worldmap.js`, `js/steps/worldmap.js`) turns the plates at 0 Ma into a surface,
+following Worldbuilder's Log 20–26:
+- **Plates and boundaries** (Log 20, topologies): continental crust and dated ocean floor on their
+  plates, the rest on the nearest. Boundaries are convergent near an active trench, divergent on a young
+  ridge, otherwise transform.
+- **Continents and shelves** (Log 23): the crust rises gently inland. Its rim is flooded shelf, about
+  150 km wide on quiet coasts and 40 km on active ones. Sea level is set so land covers the share asked
+  for (by default the Population step's).
+- **Land topography** (Log 24): mountain belts, from 5.2 km for collisions to 4 km for cordilleras and
+  2.4 km for accreted arcs, worn down after they stop rising. Large igneous provinces are basalt plateaus.
+- **Islands** (Log 22): island arcs, and hotspot volcanoes that sink into seamounts as they age.
+- **Sea topography** (Log 26): the world's depth curve from its ridge depth (ridge + 350·√age, flattening
+  on old floor), continental slopes, trenches and oceanic plateaus.
+
+Not only Earth: as on the Tectonics step, heights and widths are divided by g^scaling. Widths are set
+in km and turned into degrees by the planet's radius. Brush strokes are kept with the world and applied
+on top. Exports are an equirectangular colour map and a 16-bit heightmap PNG; the file name gives the
+height range and sea level.
 
 ## Data
 

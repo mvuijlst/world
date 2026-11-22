@@ -1,0 +1,64 @@
+/* The world map: rasterizing on the sphere, and the map built from a whole history. Run with: npm test */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const S = require('../js/sphere.js');
+const G = require('../js/supercontinent.js');
+const M = require('../js/worldmap.js');
+
+const cap = (lat, lon, r, n = 72) => {
+  const c = S.vec([lat, lon]), e = [-Math.sin(lon * Math.PI / 180), Math.cos(lon * Math.PI / 180), 0];
+  const nn = [-c[2] * Math.cos(lon * Math.PI / 180), -c[2] * Math.sin(lon * Math.PI / 180), Math.cos(lat * Math.PI / 180)];
+  return Array.from({ length: n }, (_, k) => { const b = (k * 2 * Math.PI) / n, d = (r * Math.PI) / 180; return S.latLon(c.map((v, i) => Math.cos(d) * v + Math.sin(d) * (Math.cos(b) * nn[i] + Math.sin(b) * e[i]))); });
+};
+
+test('filling polygons on the grid: right area, across the dateline and round the poles', () => {
+  const gr = M.makeGrid(360);
+  const area = (ring) => { const hit = new Uint8Array(gr.N); M.fillPolygon(gr, ring, (k) => { hit[k] = 1; }); return M.shareAbove(gr, Float32Array.from(hit), 0.5); };
+  for (const [lat, lon, r] of [[10, 40, 20], [0, 179, 25], [-30, -175, 15], [75, 0, 30], [-80, 100, 25]]) {
+    const ring = cap(lat, lon, r), got = area(ring), want = S.areaFraction(ring);
+    assert.ok(Math.abs(got - want) < 0.01 * want + 0.0015, `cap at ${lat},${lon} r ${r}: ${got} vs ${want}`);
+  }
+});
+
+test('distances on the grid are in degrees along the sphere', () => {
+  const gr = M.makeGrid(360), seed = new Uint8Array(gr.N);
+  seed[M.cellOf(gr, 0, 0)] = 1;
+  const { d } = M.distance(gr, seed);
+  for (const [la, lo, want] of [[0, 20, 20], [20, 0, 20], [60, 0, 60], [0, 90, 90]]) {
+    const got = d[M.cellOf(gr, la, lo)];
+    assert.ok(Math.abs(got - want) < 0.06 * want + 1, `to ${la},${lo}: ${got} vs ${want}`);
+  }
+});
+
+test('a map of a whole history: land share, mountains, deep sea, plates everywhere', () => {
+  const w = G.makeWorld({ seed: 7, plates: 4 });
+  const map = M.build(w, { res: 360 });
+  assert.equal(map.z.length, 360 * 180);
+  assert.ok(Math.abs(map.land - map.target) < 0.03, `land ${map.land} vs ${map.target}`);
+  assert.ok(map.highest.m > 2500 && map.highest.m < 9500, `highest ${map.highest.m}`);
+  assert.ok(map.deepest.m < -6500 && map.deepest.m > -12000, `deepest ${map.deepest.m}`);
+  assert.ok(!map.plate.some((p) => !p), 'every cell is on a plate');
+  // young ocean floor is shallower than old
+  let young = 0, ny = 0, old = 0, no = 0;
+  for (let k = 0; k < map.z.length; k++) { const a = map.oceanAge[k]; if (a >= 0 && a < 20 && map.z[k] < -1500) { young += map.z[k]; ny++; } if (a > 120 && map.z[k] < -1500) { old += map.z[k]; no++; } }
+  if (ny && no) assert.ok(young / ny > old / no + 800, `ridges ${young / ny} vs old floor ${old / no}`);
+  // asking for more land raises it
+  const more = M.build(w, { res: 180, land: map.target + 0.08 });
+  assert.ok(more.land > map.land + 0.05, `${more.land} vs ${map.land}`);
+  // a brush stroke raises the ground where it is
+  const at = [map.deepest.at[0], map.deepest.at[1]];
+  const raised = M.build(w, { res: 180, strokes: [{ lat: at[0], lon: at[1], r: 3, dz: 3000 }] });
+  const base = M.build(w, { res: 180 });
+  assert.ok(M.sample(raised, ...at) > M.sample(base, ...at) + 2000);
+});
+
+test('not only Earth: heavier gravity, lower mountains and shallower trenches (÷ g^scaling)', () => {
+  const w = G.makeWorld({ seed: 7, plates: 4 });
+  const earth = M.build(w, { res: 180, gravity: 1, scaling: 2 }), heavy = M.build(w, { res: 180, gravity: 1.5, scaling: 2 }), light = M.build(w, { res: 180, gravity: 0.5, scaling: 1 });
+  const ratio = (a, b) => a.highest.m / b.highest.m;
+  // (widths change with gravity too, so the heights are not exactly in proportion)
+  assert.ok(Math.abs(ratio(earth, heavy) - 2.25) < 0.8, `1.5 g: ${ratio(earth, heavy)} times lower (2.25 expected)`);
+  assert.ok(Math.abs(ratio(light, earth) - 2) < 0.8, `0.5 g, scaling 1: ${ratio(light, earth)} times higher (2 expected)`);
+  assert.ok(heavy.deepest.m > earth.deepest.m, 'trenches shallower under more gravity');
+  assert.deepEqual(heavy.planet, { gravity: 1.5, factor: 2.25, radiusKm: 6371, ridgeDepth: 2600 });
+});

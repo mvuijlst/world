@@ -576,3 +576,5 @@ table.data.poles td:first-child input.txt.num { max-width: 64px; }
 .auto-grid .txt.num { width: 100%; }
 .time-slider { position: relative; }
 .time-slider .sim-span { position: absolute; left: 0; top: 9px; height: 4px; background: var(--teal); opacity: .55; pointer-events: none; }
+.map-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--line-faint); }
+.map-key { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; margin-left: auto; }
