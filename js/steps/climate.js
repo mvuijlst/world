@@ -31,7 +31,7 @@
   };
 
   WS.defineStep({
-    id: 'climate', title: 'Climate', code: '00_SURFACE/CLIMATE', strip: 'Winds, rain, zones',
+    id: 'climate-map', title: 'Climate', code: '00_SURFACE/CLIMATE', strip: 'Winds, rain, zones',
     blurb: 'Winds, currents, temperature, rain and the climate zones of the world map.',
     lede: ['The climate of your world from its map, its star and its spin: winds and pressure, ocean currents, upwelling and reefs, temperature, precipitation, and the climate zones that follow. Any planet will do; some will be nothing like Earth.'],
     build(ctx) {
@@ -53,7 +53,7 @@
         if (!w.plates.features.some((f) => f.kind === 'crust')) { clim = null; return; }
         if (busy) return;
         const pl = K.planetOf(w, d), have = WS.currentClimate(w, d, { peek: true });
-        if (have) { if (clim !== have.clim || !off) { clim = have.clim; paint(); } return; }   // nothing changed
+        if (have) { if (clim !== have.clim || !off) { clim = have.clim; paint(); renderStats(); renderKey(); hint.textContent = `${clim.W} × ${clim.H} cells · hover for a place${pl.locked ? ' · tidally locked' : ''}`; } return; }   // nothing changed
         busy = true; hint.textContent = 'Working out the climate…';
         setTimeout(() => {
           const t0 = performance.now();

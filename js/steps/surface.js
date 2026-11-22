@@ -143,13 +143,18 @@
       const stripHost = h('div', { class: 'viz-frame' });
       const cards = h('div', { class: 'cards' });
       const groupTabs = h('div');
+      const mapHost = h('div');
       const groups = [['all', 'All'], ...Object.entries(WS.data.CLIMATE_GROUPS).map(([k2, v]) => [k2, `${k2} · ${v}`])];
+      let shares = null;                                     // Köppen code → share of the map's land
+      const shareOf = (z) => (shares ? String(z.code).split(/\s*\/\s*/).reduce((s, c) => s + (shares[c] || 0), 0) : null);
+      const pct = (v) => (v >= 0.005 ? `${fmt.int(v * 100)} %` : '<1 %');
       const drawCards = () => {
         replace(groupTabs, tabs(groups, ctx.ui.climateGroup, (g) => { ctx.ui.climateGroup = g; drawCards(); }));
         replace(cards, WS.data.CLIMATE_ZONES.filter((z) => ctx.ui.climateGroup === 'all' || z.group === ctx.ui.climateGroup).map((z) => h('details', { class: 'card', open: window.matchMedia('(min-width: 700px)').matches },
           h('summary', null,
             h('div', { class: 'swatch', style: { background: z.color } }),
             h('h3', null, h('span', null, z.name), h('span', { class: 'code' }, z.code)),
+            shares ? h('p', { class: 'mono', style: { fontSize: '12px', margin: '2px 0' } }, shareOf(z) > 0 ? `${pct(shareOf(z))} of your land` : 'not on your map') : null,
             h('p', { class: 'muted', style: { fontSize: '12.5px' } }, z.key),
             h('span', { class: 'chev' }, `${z.rainfall.split(',')[0]} rain · ${z.examples} ▾`)),
           h('dl', null,
@@ -172,10 +177,37 @@
               h('li', null, h('div', null, h('b', null, 'Bend for coasts'), h('div', { class: 'muted' }, 'Warm currents (east coasts) favour Cfa / Cfb; cold currents (west coasts) favour Csa / Csb and fog deserts.'))),
               h('li', null, h('div', null, h('b', null, 'Bend for terrain'), h('div', { class: 'muted' }, 'Mountains cast rain shadows (BWk / BSk behind them) and stack highland climates (Cwb, Cfb, ET) at elevation.')))),
             h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '12px' } }, 'Belt positions are indicative for a 3-cell, Earth-like circulation. With 1, 5 or 7 cells the method gives no zone placement; use the cell boundaries as your guide.'))),
+        panel('On your map', { tag: 'FROM THE CLIMATE' }, mapHost),
         panel('Köppen reference', { tag: `${WS.data.CLIMATE_ZONES.length} ZONES` }, groupTabs, cards));
+      let busy = false, sharesOf = null;
+      /* The share of each Köppen zone on the map's land, from the Climate step's work. */
+      const renderMap = (c) => {
+        const w = c.world;
+        if (!w.plates.features.some((f) => f.kind === 'crust')) { shares = null; replace(mapHost, h('p', { class: 'muted' }, 'Make a world on the Plates step and its climate zones show here.')); return; }
+        const have = WS.currentClimate(w, c.d, { peek: true });
+        if (!have) {
+          replace(mapHost, h('button', { class: 'btn small primary', type: 'button', disabled: busy, onclick: () => { busy = true; renderMap(c); setTimeout(() => { WS.currentClimate(ctx.world, ctx.d); busy = false; renderMap(ctx); }, 30); } }, busy ? 'Working out the climate…' : 'Work out the climate zones'));
+          if (shares) { shares = null; drawCards(); }
+          return;
+        }
+        if (sharesOf !== have.clim) {
+          const cl = have.clim, s = {}; let all = 0;
+          for (let k = 0; k < cl.W * cl.H; k++) if (cl.land[k]) { const a = Math.cos((cl.lat[Math.floor(k / cl.W)] * Math.PI) / 180), code = cl.zones[cl.zone[k] - 1]?.[0]; all += a; if (code) s[code] = (s[code] || 0) + a; }
+          for (const k2 of Object.keys(s)) s[k2] /= all || 1;
+          shares = s; sharesOf = have.clim; drawCards();
+        }
+        const byGroup = {}; for (const [code, v] of Object.entries(shares)) byGroup[code[0]] = (byGroup[code[0]] || 0) + v;
+        const top = Object.entries(shares).sort((a, b) => b[1] - a[1]).slice(0, 6);
+        const color = (code) => (have.clim.zones.find((z) => z[0] === code) || [])[1] || '#888';
+        replace(mapHost,
+          h('div', { class: 'readouts' }, Object.entries(WS.data.CLIMATE_GROUPS).map(([g, name]) => h('div', { class: 'readout' }, h('div', { class: 'lbl' }, `${g} · ${name}`), h('div', { class: 'val' }, pct(byGroup[g] || 0)), h('div', { class: 'sub' }, 'of the land')))),
+          h('div', { class: 'map-key mono', style: { marginLeft: 0, marginTop: '10px' } }, top.map(([code, v]) => h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '10px', background: color(code), verticalAlign: 'middle', marginRight: '6px' } }), `${code} ${pct(v)}`))),
+          h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } }, h('a', { href: '#/climate-map' }, 'See them on the Climate map ↗')));
+      };
       return {
         el,
         update(c) {
+          renderMap(c);
           const p = c.d.planet;
           let zones = null;
           if (p.cells.count === 3) {
@@ -258,9 +290,45 @@
       regP.querySelector('.panel-body').prepend(regHead);
       subP.querySelector('.panel-body').prepend(subHead);
 
+      // ── from the world map: land use worked out from its biomes ──
+      const fromHost = h('div');
+      const fromMap = panel('From your map', { tag: 'RIVERS & BIOMES' }, fromHost);
+      let busy = false, luOf = null, lu = null;
+      const renderFrom = (c) => {
+        const w = c.world;
+        if (!w.plates.features.some((f) => f.kind === 'crust')) { replace(fromHost, h('p', { class: 'muted' }, 'Make a world on the Plates step to fill these in from its map.')); return; }
+        const have = WS.currentBiomes(w, c.d, { peek: true });
+        if (!have) {
+          replace(fromHost, h('button', { class: 'btn small primary', type: 'button', disabled: busy, onclick: () => { busy = true; renderFrom(c); setTimeout(() => { WS.currentBiomes(ctx.world, ctx.d); busy = false; renderFrom(ctx); }, 30); } }, busy ? 'Working out the biomes…' : 'Work it out from the map'));
+          return;
+        }
+        if (luOf !== have.bio) { lu = WS.biomes.landUse(have.bio, have.climRef.mapRef.map); luOf = have.bio; }
+        // the map's sea level follows the land share here unless it is set on the World map step
+        const ownLand = w.map.land != null;
+        const rows = [
+          ownLand ? ['Land', 'land', lu.land, '%', 'of the surface (set on the World map step)'] : null,
+          ['Uninhabitable', 'uninhabitable', lu.uninhabitable, '%', 'of the land: ice, deserts, bare rock, high ground'],
+          ['Productive', 'productive', lu.productive, '%', 'of the habitable land, by how well each biome feeds people'],
+          ['Continents', 'continents.n', lu.continents.length, '', 'landmasses of 1 % of the land or more'],
+        ].filter(Boolean);
+        const val = (path) => path.split('.').reduce((o, p) => o[p], w.population);
+        const same = rows.every(([, path, v]) => Math.abs(val(path) - (path === 'continents.n' ? v : Math.round(v * 10) / 10)) < 0.05);
+        replace(fromHost,
+          h('div', { class: 'readouts' }, rows.map(([l, , v, unit, sub]) => h('div', { class: 'readout' }, h('div', { class: 'lbl' }, l), h('div', { class: 'val' }, unit ? `${fmt.num(v, 1)} ${unit}` : fmt.int(v)), h('div', { class: 'sub' }, sub)))),
+          h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+            same ? h('span', { class: 'muted' }, 'In use.')
+              : h('button', { class: 'btn small primary', type: 'button', onclick: () => ctx.mutate((ww) => {
+                const P2 = ww.population;
+                if (ownLand) P2.land = Math.round(lu.land * 10) / 10;
+                P2.uninhabitable = Math.round(lu.uninhabitable * 10) / 10;
+                P2.productive = Math.round(lu.productive * 10) / 10;
+                if (lu.continents.length) { P2.continents.n = lu.continents.length; P2.chosenContinent = Math.min(P2.chosenContinent, P2.continents.n); }
+              }, { structural: true }) }, 'Use these')));
+      };
+
       const el = h('div', { class: 'stack-gap' },
         h('div', { class: 'grid two' },
-          h('div', { class: 'stack-gap' }, land, growth),
+          h('div', { class: 'stack-gap' }, land, fromMap, growth),
           h('div', { class: 'stack-gap' }, panel('Land budget', { tag: 'MILLION km²' }, stackHost), ro,
             panel('World population over time', { tag: 'LOGISTIC', flush: true }, curveHost))),
         h('div', { class: 'grid two-even' }, contP, regP, h('div', { class: 'span-2' }, subP)));
@@ -270,6 +338,7 @@
         el,
         update(c) {
           k.update(c);
+          renderFrom(c);
           const pd = c.d.population;
           const bar = (cap, a, b, la, lb) => h('div', { class: 'stack-row' },
             h('div', { class: 'cap' }, h('span', null, cap), h('span', null, `${fmt.num(a + b, 1)}`)),

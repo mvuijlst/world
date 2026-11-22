@@ -38,8 +38,8 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
 | 12 | Rivers & biomes | from the map and its climate: rivers down to the sea, fresh and salt lakes, basins that drain inland, and biomes; map or globe, a PNG of the map and the rivers as SVG |
 | 13 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
-| 14 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
-| 15 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
+| 14 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
+| 15 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
 | 16 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
 | 17 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
@@ -243,6 +243,10 @@ with the Climate step's seasons.
   height. The classes are ice sheet, barren rock, tundra, boreal forest, temperate forest, temperate
   rainforest, Mediterranean scrub, grassland and steppe, cold and hot desert, savanna, tropical dry
   forest, tropical rainforest and wetland. Their edges wander a little, as real ones do.
+- **For Population:** the uninhabitable share of the land (ice, deserts, bare rock, and land above
+  4 km ÷ g) and the productive share of the rest (each biome weighted by how well it feeds people), and
+  the continents (landmasses of at least 1 % of the land). The land share is offered only when it is set
+  on the World map step, since otherwise the map's sea level follows Population's.
 
 ## Data
 

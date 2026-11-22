@@ -324,10 +324,50 @@
   }
   const resample = (q, n) => Array.from({ length: n }, (_, i) => q[Math.min(q.length - 1, Math.round((i / Math.max(1, n - 1)) * (q.length - 1)))]);
 
+  /*
+   * Land use for the Population step, from the biomes: the land's share of the surface; the
+   * uninhabitable share of the land (ice, barren rock, deserts, and land high enough to be hard to
+   * live on, 4 km at 1 g); how much of the habitable land can feed people; and the landmasses of at
+   * least 1 % of the land (continents), largest first.
+   */
+  const FERTILE = { tundra: 0.05, boreal: 0.15, temperate: 0.8, temprain: 0.4, medit: 0.6, grass: 0.8, savanna: 0.55, tropdry: 0.6, rainforest: 0.3, wetland: 0.35 };
+  function landUse(bio, map) {
+    const { W, H } = bio, gr = map.grid, z = map.z, N = W * H, high = 4000 / (map.planet?.gravity ?? 1);
+    let all = 0, land = 0, bad = 0, hab = 0, good = 0;
+    for (let k = 0; k < N; k++) {
+      const a = gr.cosl[Math.floor(k / W)]; all += a;
+      if (!(z[k] > 0)) continue;
+      land += a;
+      if (bio.lake[k]) continue;
+      const id = BIOMES[bio.biome[k] - 1]?.[0];
+      if (!id || id === 'ice' || id === 'barren' || id === 'hotdesert' || id === 'colddesert' || z[k] > high) { bad += a; continue; }
+      hab += a; good += a * (FERTILE[id] ?? 0);
+    }
+    // landmasses: connected land (8 neighbours, longitude wraps)
+    const seen = new Uint8Array(N), masses = [];
+    for (let k = 0; k < N; k++) {
+      if (seen[k] || !(z[k] > 0)) continue;
+      let a = 0; const st = [k]; seen[k] = 1;
+      while (st.length) {
+        const c = st.pop(), j = Math.floor(c / W), i = c - j * W; a += gr.cosl[j];
+        for (let dj = -1; dj <= 1; dj++) { const jj = j + dj; if (jj < 0 || jj >= H) continue; for (let di = -1; di <= 1; di++) { const n = jj * W + ((i + di + W) % W); if (!seen[n] && z[n] > 0) { seen[n] = 1; st.push(n); } } }
+      }
+      masses.push(a);
+    }
+    masses.sort((a, b) => b - a);
+    const continents = masses.filter((a) => a >= 0.01 * land).map((a) => a / land);
+    return {
+      land: (100 * land) / all,
+      uninhabitable: land ? (100 * bad) / land : 0,
+      productive: hab ? (100 * good) / hab : 0,
+      continents,
+    };
+  }
+
   /* The planet's inputs for this from the app's world and derived values. */
   const planetOf = (w, d) => ({ pressure: w.planet.pressure, seed: w.plates.seed ?? 1, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity });
 
-  const api = { build, BIOMES, planetOf, pet, budyko, boiling };
+  const api = { build, BIOMES, planetOf, pet, budyko, boiling, landUse };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.biomes = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

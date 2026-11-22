@@ -64,3 +64,14 @@ test('a hot wet world has more water in its rivers than a cool one', () => {
   assert.ok(large.stats.biggest.flow > small.stats.biggest.flow, 'more land to drain, more water');
   assert.ok(C);
 });
+
+test('land use for the Population step, from the biomes', () => {
+  const b = B.build(map, climate, { ...EARTH, seed: 7 });
+  const u = B.landUse(b, map);
+  assert.ok(Math.abs(u.land - map.land * 100) < 0.5, `land share matches the map (${u.land} vs ${map.land * 100})`);
+  assert.ok(u.uninhabitable > 3 && u.uninhabitable < 60, `some land is uninhabitable (${u.uninhabitable.toFixed(1)} %)`);
+  assert.ok(u.productive > 20 && u.productive < 80, `about half the habitable land is productive (${u.productive.toFixed(1)} %)`);
+  assert.ok(u.continents.length >= 1 && u.continents.every((s, i) => i === 0 || s <= u.continents[i - 1]), 'continents, largest first');
+  const snowball = { ...EARTH, flux: 0.8, meanC: -25 };
+  assert.ok(B.landUse(B.build(map, K.build(map, snowball), snowball), map).uninhabitable > 90, 'a snowball is uninhabitable');
+});
