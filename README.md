@@ -36,11 +36,12 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–19: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, microcontinents, arc and continent collisions, mountain belts, hotspots and LIPs, a land estimate for Population, GPlates export/import |
 | 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity and radius; map or globe, a brush to raise and lower, colour and 16-bit height PNGs |
 | 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
-| 12 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
-| 13 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
-| 14 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
-| 15 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 16 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 12 | Rivers & biomes | from the map and its climate: rivers down to the sea, fresh and salt lakes, basins that drain inland, and biomes; map or globe, a PNG of the map and the rivers as SVG |
+| 13 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
+| 14 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet |
+| 15 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution |
+| 16 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 17 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -220,6 +221,28 @@ nothing like Earth, and that is fine.
 - **Köppen zones:** from the warm and cold season's temperature and rain.
 - **Tidally locked worlds** (a day as long as the year): a hot spot under the star, winds converging
   on it, no seasons, an icy night side.
+
+## Rivers & biomes
+
+The Rivers & biomes step (`js/biomes.js`, `js/steps/biomes.js`) works on the world map's own cells,
+with the Climate step's seasons.
+- **Water:** the year's rain less what evaporates (a Budyko curve, against a potential evaporation
+  from the seasons' temperatures). There is none where water cannot stay liquid: below its triple
+  point (about 0.006 atm), or hotter than it boils at that pressure. Ice sheets (summers below
+  freezing) give none either.
+- **Drainage:** each land cell drains the lowest way to the sea, found by flooding the map up from the
+  coast (priority flood). The water is routed over the heights plus a gentle unevenness, so streams
+  gather into valleys rather than running down smooth slopes in parallel.
+- **Lakes:** a hollow fills with water. If what reaches it is more than its surface can evaporate, it
+  spills: a fresh lake. If not, it is a salt lake covering only the part it can keep wet, and its
+  basin never drains to the sea.
+- **Rivers:** drawn where the flow reaches 600 m³/s and the river drains at least eight cells. The
+  flow is in m³/s, so the same rule holds on any planet. Each line passes a point somewhere in every
+  cell, not its centre.
+- **Biomes:** from the warm and cold season, the year's rain against what could evaporate, and the
+  height. The classes are ice sheet, barren rock, tundra, boreal forest, temperate forest, temperate
+  rainforest, Mediterranean scrub, grassland and steppe, cold and hot desert, savanna, tropical dry
+  forest, tropical rainforest and wetland. Their edges wander a little, as real ones do.
 
 ## Data
 

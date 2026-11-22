@@ -19,6 +19,16 @@
 
   const LAYERS = [['zones', 'Climate zones'], ['temp', 'Temperature'], ['rain', 'Precipitation'], ['wind', 'Pressure & winds'], ['currents', 'Ocean currents'], ['life', 'Upwelling & reefs']];
   let cache = null;
+  /* The climate of a world, kept while its map and planet stay the same: shared with Rivers & biomes.
+     With {peek: true}, only what is already worked out (or null). */
+  WS.currentClimate = (w, d, opts = {}) => {
+    if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
+    const pl = K.planetOf(w, d), m = WS.currentMap(w, d);
+    if (cache && cache.mapRef === m && JSON.stringify(cache.pl) === JSON.stringify(pl)) return cache;
+    if (opts.peek) return null;
+    cache = { mapRef: m, clim: K.build(m.map, pl), pl };
+    return cache;
+  };
 
   WS.defineStep({
     id: 'climate', title: 'Climate', code: '00_SURFACE/CLIMATE', strip: 'Winds, rain, zones',
@@ -42,13 +52,12 @@
         const w = ctx.world, d = ctx.d;
         if (!w.plates.features.some((f) => f.kind === 'crust')) { clim = null; return; }
         if (busy) return;
-        const pl = K.planetOf(w, d), same = cache && JSON.stringify(cache.pl) === JSON.stringify(pl) && cache.mapRef === WS.currentMap(w, d);
-        if (same) { if (clim !== cache.clim || !off) { clim = cache.clim; paint(); } return; }   // nothing changed
+        const pl = K.planetOf(w, d), have = WS.currentClimate(w, d, { peek: true });
+        if (have) { if (clim !== have.clim || !off) { clim = have.clim; paint(); } return; }   // nothing changed
         busy = true; hint.textContent = 'Working out the climate…';
         setTimeout(() => {
-          const t0 = performance.now(), m = WS.currentMap(w, d);
-          cache = { mapRef: m, clim: K.build(m.map, pl), pl };
-          clim = cache.clim; busy = false;
+          const t0 = performance.now();
+          clim = WS.currentClimate(w, d).clim; busy = false;
           paint(); renderStats(); renderIn(); renderKey(); draw();
           hint.textContent = `${clim.W} × ${clim.H} cells · ${fmt.int(performance.now() - t0)} ms${pl.locked ? ' · tidally locked' : ''}`;
           WS.app.refresh();
