@@ -36,25 +36,35 @@
   color-scheme: dark;
 }
 
+/* Pulp: printed ink on paper. Solid stock, dark ink, a bold typewriter face for figures. */
+@font-face {
+  font-family: 'WS Typewriter';
+  src: url('../fonts/CourierPrime-700.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+  size-adjust: 80%; /* sits in the room VT323 was given: about as wide, a little shorter */
+}
+
 :root[data-theme="pulp"] {
-  --bg: #efdfb8;
-  --bg-2: #e7d19f;
-  --panel: rgba(255, 249, 232, 0.55);
-  --panel-solid: #f6ead0;
-  --line: #b8321c;
-  --line-soft: rgba(184, 50, 28, 0.5);
-  --line-faint: rgba(184, 50, 28, 0.18);
-  --text: #2a1b10;
-  --muted: #7d5b3d;
-  --amber: #b86d00;
-  --amber-soft: rgba(217, 144, 28, 0.25);
-  --teal: #1f6f62;
-  --teal-soft: rgba(31, 111, 98, 0.16);
-  --red: #b0161e;
-  --red-soft: rgba(176, 22, 30, 0.14);
-  --ink-on-accent: #f6ead0;
-  --input-bg: rgba(255, 252, 240, 0.85);
-  --input-line: rgba(31, 111, 98, 0.75);
+  --font-mono: 'WS Typewriter', 'Courier New', monospace;
+  --bg: #ecdeba;
+  --bg-2: #e4d2a6;
+  --panel: #f8efd8;
+  --panel-solid: #f8efd8;
+  --line: #9c2914;
+  --line-soft: rgba(156, 41, 20, 0.72);
+  --line-faint: rgba(156, 41, 20, 0.3);
+  --text: #1b110a;
+  --muted: #553a21;
+  --amber: #8a4e00;
+  --amber-soft: rgba(200, 130, 20, 0.28);
+  --teal: #0e5448;
+  --teal-soft: rgba(14, 84, 72, 0.15);
+  --red: #a0121b;
+  --red-soft: rgba(160, 18, 27, 0.13);
+  --ink-on-accent: #fbf4e2;
+  --input-bg: #fffaee;
+  --input-line: rgba(14, 84, 72, 0.85);
   --glow-line: none;
   --glow-amber: none;
   --glow-teal: none;
@@ -86,15 +96,24 @@ body::before {
 body::after {
   background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.55) 100%);
 }
-:root[data-theme="pulp"] body::before {
-  background-image: radial-gradient(rgba(120, 60, 20, 0.12) 1px, transparent 1.3px);
-  background-size: 5px 5px;
-  mix-blend-mode: multiply;
-}
+/* Pulp: plain paper, only a faint darkening at the edges of the page */
+:root[data-theme="pulp"] body::before { background: none; }
 :root[data-theme="pulp"] body::after {
-  background: radial-gradient(ellipse at 30% 20%, rgba(255, 255, 255, 0.35), transparent 60%),
-              radial-gradient(ellipse at center, transparent 60%, rgba(110, 60, 20, 0.22) 100%);
+  background: radial-gradient(ellipse at center, transparent 70%, rgba(110, 60, 20, 0.1) 100%);
 }
+
+/* Pulp type: heavier weights, so thin strokes don't vanish into the paper */
+:root[data-theme="pulp"] body { font-weight: 500; }
+:root[data-theme="pulp"] :is(.field-label, .readout .lbl, .panel-head, .panel-sub, table.data th, .nav-title, .step-link,
+  .param-strip, .card dt, .btn, .tab, .check, .gauge-top .name, .legend, .stack-row .cap, .icon-btn, .diag li, .lede-toggle,
+  .menu-pop button, .menu-pop label.mi, .sb-title, .world-name, details.fold > summary, .pill) { font-weight: 600; }
+:root[data-theme="pulp"] :is(.field-label, .readout .lbl, .panel-sub, table.data th, .nav-title, .card dt) { color: var(--muted); letter-spacing: .12em; }
+:root[data-theme="pulp"] .readout .val small, :root[data-theme="pulp"] .readout .sub, :root[data-theme="pulp"] .field-sub { color: var(--muted); }
+:root[data-theme="pulp"] .brand-name { font-weight: 800; }
+:root[data-theme="pulp"] svg text { font-weight: 700; }
+:root[data-theme="pulp"] svg text.t-ui { font-weight: 600; font-family: var(--font-ui); }
+:root[data-theme="pulp"] svg :is(.ln, .ln-amber, .ln-teal, .ln-red) { stroke-width: 1.8; }
+:root[data-theme="pulp"] svg :is(.ln-soft, .ln-mute) { stroke-width: 1.4; }
 
 a { color: var(--amber); }
 button, input, select, textarea { font: inherit; color: inherit; }
