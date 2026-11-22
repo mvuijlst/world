@@ -130,6 +130,8 @@
    * Seafloor spreading between two plates on either side of a rift (GPlates' flowlines and
    * half-stage ridge): the ridge moves with the average of the two plates' motions (half of their
    * relative stage rotation, in small steps), and the crust it makes is carried away on both plates.
+   * While the two plates close on each other no crust is made and the ridge stays put: the ocean
+   * between them is being consumed (subducted), not grown.
    * Returns, for the ages from `start` down to `age` in `step` Myr:
    *   ridge     the ridge line at `age`
    *   isochrons [{age, left, right}]: the line of crust of that age, on each flank, at `age`
@@ -143,12 +145,16 @@
     // the ridge at each age, in the reference frame of the left plate, advanced by half-stages
     let ridgeL = rift.map(vec);                         // ridge points, in the left plate's reference frame
     const iso = [];
+    const mid = vec(rift[Math.floor(rift.length / 2)]);
+    const gap = (q, r) => { const a = rotate(q, mid), b = r; return Math.atan2(Math.hypot(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]), a[0] * b[0] + a[1] * b[1] + a[2] * b[2]); };
     for (let k = 1; k < ages.length; k++) {
       const a0 = ages[k - 1], a1 = ages[k];
       // motion of right relative to left over [a0, a1], in left's reference frame
       const L0 = m.absolute(leftId, a0), L1 = m.absolute(leftId, a1), R0 = m.absolute(rightId, a0), R1 = m.absolute(rightId, a1);
       const relR0 = mul(inverse(L0), R0), relR1 = mul(inverse(L1), R1);
       const st = mul(relR1, inverse(relR0));              // stage of right w.r.t. left, in left's frame
+      const ridgeMid = ridgeL[Math.floor(ridgeL.length / 2)];
+      if (gap(relR1, ridgeMid) < gap(relR0, ridgeMid) - 1e-12) continue;   // closing: nothing made
       const half = slerp(IDENTITY, st, 0.5);
       ridgeL = ridgeL.map((v) => rotate(half, v));
       iso.push({ age: a1, ridgeL: ridgeL.slice(), stageAcc: null });
@@ -165,8 +171,8 @@
       const toRight = mul(inverse(R), L);                 // left-frame → right-frame at that age
       const right = it.ridgeL.map((v) => latLon(rotate(mul(Rnow, toRight), v)));
       isochrons.push({ age: it.age, left, right });
-      if (it.age === age) ridgeNow = left;
     }
+    if (iso.length) ridgeNow = ridgeL.map((v) => latLon(rotate(Lnow, v)));
     const flowlines = rift.map((seed, i) => ({ seed, left: isochrons.map((c) => c.left[i]), right: isochrons.map((c) => c.right[i]) }));
     // the original rift edge, as it now lies on each plate
     const edgeL = rift.map((p) => rotatePoint(Lnow, p)), edgeR = rift.map((p) => rotatePoint(Rnow, p));

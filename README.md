@@ -96,8 +96,18 @@ rotation) and, optionally, flowlines.
 **Make & simulate** does both for you (`js/supercontinent.js`, seeded): it generates a supercontinent
 of 3–5 plates, split by rifts that meet at a triple junction (further junctions for 4 and 5), with a
 craton or two well inside each plate and failed rifts branching off the rifts. Then it simulates the
-breakup: rotation poles every 10–50 Myr that carry each plate away from the middle at Earth-like
-speeds, the largest plate nearly still, the heading wandering a little. All of it stays editable.
+plates' motion in steps of about 2.5 Myr, writing rotation poles every 10–50 Myr:
+
+- **Break apart**: each block drifts away from the others, the largest nearly still;
+- **Wander**: each goes its own way;
+- **Come together**: all head for the middle until they form one supercontinent (the run ends there);
+- **Wilson cycle**: break apart, wander, come together, and again, until the time runs out.
+
+Runs go for 100–500 Myr or to the present, and any run can be continued from its last pole with
+another motion. Continents that meet weld (a collision) and move on as one block. Leading coasts show
+as subduction zones (teeth on the overriding plate), and ocean floor older than 200 Myr is taken to
+have been subducted. Where three rifts meet, the ocean between them is filled and the ridges joined.
+All of it stays editable.
 
 The server turns the drawing into GPlates files with [pyGPlates](https://www.gplates.org/docs/pygplates/)
 (`server/worlds/plates.py`): **Export for GPlates** gives a zip with a `.gpml` feature collection

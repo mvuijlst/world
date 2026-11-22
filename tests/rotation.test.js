@@ -60,3 +60,13 @@ test('spreading: isochrons sit on both flanks, symmetric, the ridge in between',
   const flow = s.flowlines[1];
   assert.equal(flow.left.length, 10);
 });
+
+test('spreading stops while the plates close again', () => {
+  // opens 20° by 900 Ma, closes back to 10° by 800 Ma
+  const m = R.model([{ id: 1, fixed: 0, rotations: [] }, { id: 2, fixed: 0, rotations: [{ age: 900, lat: 90, lon: 0, angle: 20 }, { age: 800, lat: 90, lon: 0, angle: 10 }] }], 1000);
+  const s = R.spreading(m, [[-30, 0], [0, 0], [30, 0]], 1, 2, 1000, 800, 10);
+  assert.equal(s.isochrons.length, 10, 'crust made only while opening');
+  assert.ok(Math.max(...s.isochrons.map((i) => i.age)) === 990 && Math.min(...s.isochrons.map((i) => i.age)) === 900);
+  near(s.ridge[1][1], 10, 1e-6, 'the ridge stays where it stopped');
+  near(s.edgeR[1][1], 10, 1e-6, 'the right plate has come back to 10°');
+});

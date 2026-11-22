@@ -69,3 +69,39 @@ test('splitting a polygon along a line', () => {
   // a line that misses
   assert.equal(S.splitPolygon(box, [[50, 50], [60, 60]]), null);
 });
+
+test('tracing on the globe: shapes behind it are clipped to the rim, not drawn across the disc', () => {
+  const pr = S.orthographic(10, 0, 100, 0, 0);
+  // a 2-D path recorder standing in for a canvas
+  const record = () => {
+    const pts = [];
+    return {
+      pts,
+      moveTo: (x, y) => pts.push([x, y]), lineTo: (x, y) => pts.push([x, y]), closePath() {},
+      arc(cx, cy, r, a0, a1) { const n = Math.max(2, Math.ceil(Math.abs(a1 - a0) / 0.02)); for (let i = 0; i <= n; i++) { const a = a0 + ((a1 - a0) * i) / n; pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); } },
+    };
+  };
+  const inside2d = (ring, [x, y]) => { let c = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c; } return c; };
+  const cap = (lat, lon, r) => Array.from({ length: 72 }, (_, k) => {
+    const c = S.vec([lat, lon]), e = [-Math.sin(lon * Math.PI / 180), Math.cos(lon * Math.PI / 180), 0], n = [-c[2] * Math.cos(lon * Math.PI / 180), -c[2] * Math.sin(lon * Math.PI / 180), Math.cos(lat * Math.PI / 180)];
+    const b = (k * 5 * Math.PI) / 180, d = (r * Math.PI) / 180;
+    return S.latLon(c.map((v, i) => Math.cos(d) * v + Math.sin(d) * (Math.cos(b) * n[i] + Math.sin(b) * e[i])));
+  });
+  // caps that reach round the back of the globe, one over the far pole of the view
+  for (const [lat, lon, r] of [[0, 150, 70], [-170 / 2, 60, 60], [40, 100, 45], [-5, 180, 80]]) {
+    const ring = cap(lat, lon, r), g = record();
+    pr.trace(g, S.densify(ring, true, 2), true);
+    let wrong = 0, n = 0;
+    for (let x = -99; x <= 99; x += 6) for (let y = -99; y <= 99; y += 6) {
+      if (x * x + y * y > 97 * 97) continue;
+      n++;
+      const truth = S.contains(ring, pr.invert(x, y));
+      if (truth !== (g.pts.length > 2 && inside2d(g.pts, [x, y]))) wrong++;
+    }
+    assert.ok(wrong / n < 0.02, `cap at ${lat},${lon} r ${r}: ${wrong} of ${n} wrong`);
+  }
+  // wholly behind: nothing drawn
+  const g = record();
+  pr.trace(g, S.densify(cap(-10, 180, 20), true, 2), true);
+  assert.equal(g.pts.length, 0);
+});

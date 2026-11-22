@@ -211,50 +211,178 @@
   }
 
   /*
-   * Rotation poles for every plate with crust: each drifts away from the middle of the
-   * supercontinent at a steady Earth-like speed, its heading wandering a little between poles.
-   * The largest plate barely moves (as Africa has barely moved since Pangaea): the others do the
-   * travelling, so the new oceans open at Earth-like rates.
-   * P: {plates, features, start}. opts: seed, duration (Myr, 100), interval (Myr between poles, 20),
-   * minSpeed and maxSpeed (cm/yr, 2 and 6), radiusKm. Returns the plates with new rotations
-   * (relative to plate 0); the plates without crust keep theirs.
+   * Plate motion through time, stepped every 2.5 Myr or so, written out as rotation poles.
+   * P: {plates, features, start}. opts:
+   *   mode      'apart': every block drifts away from the middle of the continents (a breakup);
+   *             'wander': each block goes its own way, its heading wandering;
+   *             'together': every block heads for the middle of the continents (a new
+   *             supercontinent assembles).
+   *   from      the age to run from: the start age (the default) replaces every pole; a younger
+   *             age continues the motion from there, keeping the poles before it
+   *   duration  Myr to run (100), interval: Myr between poles (20), minSpeed, maxSpeed (cm/yr),
+   *             radiusKm, seed
+   * Continents that run into each other weld (a collision, an orogeny) and from then on move as one
+   * block. The largest block barely moves while breaking apart or gathering, as Africa has barely
+   * moved since Pangaea. Plates with no crust keep their poles.
+   * Returns {plates, welds: [{age, a, b}], end}.
    */
   function simulate(P, opts = {}) {
+    if (opts.mode === 'cycle') return cycle(P, opts);
+    const start = P.start ?? 1000;
+    const from = clamp(opts.from ?? start, 0, start);
+    const duration = clamp(opts.duration ?? 100, 0, from), end = from - duration;
+    const interval = clamp(opts.interval ?? 20, 1, Math.max(1, duration));
+    const mode = ['apart', 'wander', 'together'].includes(opts.mode) ? opts.mode : 'apart';
     const seed = Number.isFinite(opts.seed) ? opts.seed >>> 0 : (Math.random() * 2 ** 31) | 0;
-    const r = rng(seed ^ 0x5eed), U = (a, b) => a + (b - a) * r();
-    const start = P.start ?? 1000, duration = clamp(opts.duration ?? 100, 10, start), interval = clamp(opts.interval ?? 20, 1, duration);
+    const r = rng((seed ^ 0x5eed ^ Math.round(from * 7919)) >>> 0), U = (a, b) => a + (b - a) * r();
     const vmin = opts.minSpeed ?? 2, vmax = Math.max(vmin, opts.maxSpeed ?? 6), R = opts.radiusKm ?? 6371;
-    const shapes = (id) => P.features.filter((f) => (f.kind === 'crust' || f.kind === 'craton') && (id === undefined || f.plateId === id) && f.coords.length >= 3);
-    const all = shapes().flatMap((f) => f.coords);
-    if (!all.length) return P.plates.map((p) => ({ ...p }));
-    const C = S.centroid(all);
-    const area = (id) => shapes(id).filter((f) => f.kind === 'crust').reduce((s, f) => s + S.areaFraction(f.coords), 0);
-    const anchor = P.plates.map((p) => [area(p.id), p.id]).sort((a, b) => b[0] - a[0])[0][1];
-    const ages = [];
-    for (let a = start - interval; a > start - duration + 1e-9; a -= interval) ages.push(+a.toFixed(3));
-    ages.push(start - duration);
-    return P.plates.map((p) => {
-      const own = shapes(p.id).flatMap((f) => f.coords);
-      if (!own.length) return { ...p };
-      const slow = p.id === anchor, c0 = S.centroid(own), v = slow ? U(0.3, 0.9) : U(vmin, vmax);
-      let tot = Q.IDENTITY, prev = start, heading = 0;
-      const rotations = [];
-      for (const age of ages) {
-        const c = Q.rotate(tot, c0);
-        let axis = cross(C, c);
-        if (Math.hypot(...axis) < 0.03) axis = cross(c, Math.abs(c[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]);
-        heading = clamp(heading + U(-9, 9), -35, 35);
-        axis = Q.rotate(Q.fromAxisAngle(c, heading * D2R), norm(axis));
-        const speed = clamp(v * U(0.85, 1.15), slow ? 0.2 : vmin * 0.8, vmax);
+    const m0 = Q.model(P.plates, start);
+    const pole = (q, age) => { const p = Q.toPole(q); return { age: +age.toFixed(3), lat: +p.lat.toFixed(4), lon: +p.lon.toFixed(4), angle: +p.angle.toFixed(4) }; };
+
+    // the continental blocks: each plate's crust (or its cratons, if it has no crust)
+    const bodies = P.plates.map((p) => {
+      const all = P.features.filter((f) => (f.kind === 'crust' || f.kind === 'craton') && f.plateId === p.id && f.coords.length >= 3);
+      const use = all.some((f) => f.kind === 'crust') ? all.filter((f) => f.kind === 'crust') : all;
+      if (!use.length) return null;
+      const rings = use.map((f) => f.coords.map(S.vec));
+      const c0 = S.centroid(use.flatMap((f) => f.coords));
+      const samples = rings.flatMap((rg) => rg.filter((_, i) => i % Math.max(1, Math.round(rg.length / 36)) === 0));
+      return {
+        id: p.id, rings, samples, c0, rad: Math.max(...rings.flat().map((v) => angle(c0, v))),
+        area: use.reduce((s, f) => s + S.areaFraction(f.coords), 0),
+        tot: from >= start ? Q.IDENTITY : m0.absolute(p.id, from), poles: [],
+      };
+    }).filter(Boolean);
+    const keep = (p) => ({ ...p, rotations: (p.rotations || []).map((x) => ({ ...x })) });
+    if (!bodies.length || duration <= 0) return { plates: P.plates.map(keep), welds: [], end: from };
+
+    const place = (b) => {
+      const rings = b.rings.map((rg) => rg.map((v) => Q.rotate(b.tot, v)));
+      b.now = { c: Q.rotate(b.tot, b.c0), samples: b.samples.map((v) => Q.rotate(b.tot, v)), inside: rings.map((rg) => S.within(rg.map(S.latLon))) };
+    };
+    bodies.forEach(place);
+    // touching: overlapping, or coasts within `gap` degrees
+    const contact = (i, j, gap = 1) => {
+      const A = bodies[i], B = bodies[j], near = Math.cos(gap * D2R);
+      if (angle(A.now.c, B.now.c) > A.rad + B.rad + gap + 1) return false;
+      if (B.now.samples.some((s) => A.now.inside.some((f) => f(s))) || A.now.samples.some((s) => B.now.inside.some((f) => f(s)))) return true;
+      return A.now.samples.some((s) => B.now.samples.some((t) => dot(s, t) > near));
+    };
+    // sharing an edge, vertex for vertex (as the pieces of a split supercontinent do)
+    const joined = (i, j) => {
+      const near = Math.cos(0.3 * D2R), rot = (b) => b.rings.flat().map((v) => Q.rotate(b.tot, v)), B = rot(bodies[j]);
+      return angle(bodies[i].now.c, bodies[j].now.c) <= bodies[i].rad + bodies[j].rad + 1 && rot(bodies[i]).some((s) => B.some((t) => dot(s, t) > near));
+    };
+
+    // blocks: plates welded together. In a breakup the pieces that touch at first are rifting apart
+    // and never weld again in that run; otherwise whatever touches now is one block already.
+    const parent = bodies.map((_, i) => i);
+    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    const apart = bodies.map(() => bodies.map(() => false));
+    for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+      const c = contact(i, j) || joined(i, j);
+      apart[i][j] = !c;
+      if (c && mode !== 'apart') parent[find(j)] = find(i);
+    }
+    const middle = () => norm(bodies.reduce((s, b) => s.map((v, k) => v + b.area * b.now.c[k]), [0, 0, 0]));
+    const C0 = middle();
+    const biggest = bodies.reduce((a, b) => (b.area > a.area ? b : a), bodies[0]);
+    for (const b of bodies) b.v = mode !== 'wander' && b === biggest ? U(0.3, 0.9) : U(vmin, vmax);
+    const heading = new Map();
+
+    // pin each plate where it is when continuing, so it does not glide from an older pole
+    if (from < start) for (const b of bodies) b.poles.push(pole(b.tot, from));
+    const step = interval / Math.ceil(interval / 2.5), every = Math.round(interval / step);
+    const welds = [];
+    let age = from, k = 0;
+    while (age > end + 1e-9) {
+      const dt = Math.min(step, age - end);
+      const groups = new Map();
+      bodies.forEach((b, i) => { const g = find(i); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); });
+      const G = middle(), stages = new Map();
+      for (const [g, members] of groups) {
+        const lead = members.reduce((a, i) => (bodies[i].area > bodies[a].area ? i : a), members[0]);
+        const c = norm(members.reduce((s, i) => s.map((v, q) => v + bodies[i].area * bodies[i].now.c[q]), [0, 0, 0]));
+        let axis, speed = clamp(bodies[lead].v * U(0.85, 1.15), 0.2, vmax);
+        if (mode === 'wander') {
+          const h = (heading.has(g) ? heading.get(g) : U(0, 360)) + U(-12, 12);
+          heading.set(g, h);
+          const { east, north } = frame(c), b = h * D2R;
+          axis = cross(c, north.map((v, q) => Math.cos(b) * v + Math.sin(b) * east[q]));
+        } else {
+          const h = clamp((heading.get(g) || 0) + U(-6, 6), -25, 25);
+          heading.set(g, h);
+          // breaking apart: away from the middle of the other blocks; gathering: toward the middle of all
+          const others = norm(bodies.reduce((acc, bb, i) => (find(i) === g ? acc : acc.map((v, q) => v + bb.area * bb.now.c[q])), [0, 0, 0]));
+          axis = mode === 'apart' ? cross(Math.hypot(...others) > 0.5 ? others : C0, c) : cross(c, G);
+          if (Math.hypot(...axis) < 0.03) {                    // at the middle: no way to go
+            if (mode === 'together') speed = 0;
+            axis = cross(c, Math.abs(c[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]);
+          }
+          if (mode === 'together') speed *= clamp(angle(c, G) / 15, 0.3, 1);   // slow down on arrival
+          axis = Q.rotate(Q.fromAxisAngle(c, h * D2R), norm(axis));
+        }
+        axis = norm(axis);
         const sinD = Math.max(0.2, Math.hypot(...cross(axis, c)));
-        const stage = Q.fromAxisAngle(axis, (speed * 10 * (prev - age)) / R / sinD);   // 1 cm/yr = 10 km/Myr
-        tot = Q.mul(stage, tot);
-        const pole = Q.toPole(tot);
-        rotations.push({ age, lat: +pole.lat.toFixed(4), lon: +pole.lon.toFixed(4), angle: +pole.angle.toFixed(4) });
-        prev = age;
+        stages.set(g, speed > 0 ? Q.fromAxisAngle(axis, (speed * 10 * dt) / R / sinD) : Q.IDENTITY);   // 1 cm/yr = 10 km/Myr
       }
-      return { ...p, fixed: 0, rotations };
+      const before = bodies.map((b) => b.tot);
+      bodies.forEach((b, i) => { b.tot = Q.mul(stages.get(find(i)), b.tot); place(b); });
+      // collisions: blocks that meet stop where they touched and weld
+      for (let pass = 0; pass < 4; pass++) {
+        let hit = false;
+        for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+          if (find(i) === find(j)) continue;
+          if (!apart[i][j]) continue;            // rifting apart from each other in this run: they part, not weld
+          if (!contact(i, j)) continue;
+          const gi = find(i), gj = find(j);
+          bodies.forEach((b, x) => { if (find(x) === gi || find(x) === gj) { b.tot = before[x]; place(b); } });
+          parent[gj] = gi;
+          welds.push({ age: +(age - dt).toFixed(3), a: bodies[i].id, b: bodies[j].id });
+          hit = true;
+        }
+        if (!hit) break;
+      }
+      age -= dt; k++;
+      const assembled = mode === 'together' && bodies.every((_, i) => find(i) === find(0));
+      if (k % every === 0 || age <= end + 1e-9 || assembled) for (const b of bodies) b.poles.push(pole(b.tot, Math.max(0, age)));
+      if (assembled) break;                                    // one supercontinent: the gathering is over
+    }
+
+    const plates = P.plates.map((p) => {
+      const b = bodies.find((x) => x.id === p.id);
+      if (!b) return keep(p);
+      // the poles before `from`, as rotations relative to plate 0 like the new ones
+      const older = from < start ? (p.rotations || []).filter((x) => x.age > from).map((x) => (p.fixed ? pole(m0.absolute(p.id, x.age), x.age) : { ...x })) : [];
+      return { ...p, fixed: 0, rotations: [...older, ...b.poles] };
     });
+    return { plates, welds, end: +Math.max(0, age).toFixed(3), assembled: mode === 'together' && bodies.every((_, i) => find(i) === find(0)) };
+  }
+
+  /*
+   * A Wilson cycle, over and over until the time runs out: the continents break apart, wander, then
+   * come together into a new supercontinent, which breaks apart again. Returns as simulate does, with
+   * the phases [{mode, from, end}].
+   */
+  function cycle(P, opts) {
+    const start = P.start ?? 1000;
+    let from = clamp(opts.from ?? start, 0, start);
+    const end = Math.max(0, from - clamp(opts.duration ?? 100, 0, from));
+    const r = rng(((Number.isFinite(opts.seed) ? opts.seed : 1) ^ 0xc1c1e) >>> 0);
+    // after a gathering (or at the start) break apart; after a breakup wander, then gather
+    let mode = opts.next || 'apart', plates = P.plates, welds = [];
+    const phases = [];
+    for (let guard = 0; guard < 40 && from > end + 1e-6; guard++) {
+      const step = opts.interval || 20;
+      const span = Math.max(step, Math.round((mode === 'apart' ? 150 + 100 * r() : mode === 'wander' ? 80 + 80 * r() : 400) / step) * step);
+      const res = simulate({ ...P, plates }, { ...opts, mode, from, duration: Math.min(span, from - end) });
+      plates = res.plates; welds = welds.concat(res.welds);
+      phases.push({ mode, from, end: res.end });
+      if (res.end >= from - 1e-6) break;
+      from = res.end;
+      mode = mode === 'apart' ? 'wander' : mode === 'wander' ? 'together' : 'apart';
+    }
+    return { plates, welds, end: from, phases };
   }
 
   const api = { generate, simulate };

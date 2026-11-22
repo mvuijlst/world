@@ -89,6 +89,12 @@
     return inside;
   }
   const contains = (points, p) => points.length >= 3 && insidePrepared(prepare(points), vec(p));
+  /* A reusable inside-test for one polygon: within(points)(u) for unit vectors u. */
+  function within(points) {
+    if (points.length < 3) return () => false;
+    const prep = prepare(points);
+    return (u) => dot(u, prep.c) >= prep.cosR && insidePrepared(prep, u);
+  }
 
   /* Evenly spread points over the sphere (Fibonacci lattice), as unit vectors. */
   const lattice = new Map();
@@ -190,6 +196,51 @@
         if (z < 0) { const l = Math.hypot(x, y) || 1; x /= l; y /= l; }       // behind: pinned to the rim
         return [cx + R * x, cy - R * y, z >= 0];
       },
+      /*
+       * Trace a densified path on a canvas context, clipped to the visible hemisphere. Where a closed
+       * shape goes behind the globe it follows the rim, along the stretch of rim inside the shape,
+       * from where it leaves to where it comes back; an open line simply stops at the rim.
+       */
+      trace(g, points, closed) {
+        const P = points.map((p) => { const u = vec(p); return { u, z: dot(u, c), x: dot(u, east), y: dot(u, north) }; });
+        const scr = (q) => [cx + R * q.x, cy - R * q.y];
+        const onRim = (a, b) => { const t = a.z / (a.z - b.z), u = norm(a.u.map((v, i) => v + (b.u[i] - v) * t)); return { u, z: 0, x: dot(u, east), y: dot(u, north) }; };
+        const angleOf = (q) => Math.atan2(-q.y, q.x);                  // canvas angle (y down)
+        if (!P.length) return;
+        if (!closed) {
+          P.forEach((q, i) => {
+            const a = P[i - 1];
+            if (!i) { if (q.z >= 0) g.moveTo(...scr(q)); return; }
+            if (a.z >= 0 && q.z >= 0) g.lineTo(...scr(q));
+            else if (a.z >= 0) g.lineTo(...scr(onRim(a, q)));
+            else if (q.z >= 0) { g.moveTo(...scr(onRim(a, q))); g.lineTo(...scr(q)); }
+          });
+          return;
+        }
+        const s = P.findIndex((q) => q.z >= 0);
+        if (s < 0) return;                                             // wholly behind
+        let inside = null;
+        const rimInside = (t) => { inside = inside || within(points); return inside(norm(east.map((v, i) => Math.cos(t) * v - Math.sin(t) * north[i]))); };
+        const ring = [...P.slice(s), ...P.slice(0, s), P[s]];
+        g.moveTo(...scr(ring[0]));
+        let from = null;
+        for (let i = 1; i < ring.length; i++) {
+          const a = ring[i - 1], b = ring[i];
+          if (a.z >= 0 && b.z >= 0) g.lineTo(...scr(b));
+          else if (a.z >= 0) { const e = onRim(a, b); g.lineTo(...scr(e)); from = angleOf(e); }
+          else if (b.z >= 0) {
+            const to = angleOf(onRim(a, b));
+            // the shorter way round the rim, unless only the longer way lies inside the shape (a shape
+            // reaching round the far side); a twisted sliver that fails both tests keeps the shorter
+            const cw = (((to - from) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+            const short = cw <= Math.PI ? cw : cw - 2 * Math.PI, long = cw <= Math.PI ? cw - 2 * Math.PI : cw;
+            const d = Math.abs(short) > 1e-9 && !rimInside(from + short / 2) && rimInside(from + long / 2) ? long : short;
+            g.arc(cx, cy, R, from, from + d, d < 0);
+            g.lineTo(...scr(b));
+          }
+        }
+        g.closePath();
+      },
       invert(px, py) {
         const x = (px - cx) / R, y = (cy - py) / R, r2 = x * x + y * y;
         if (r2 > 1) return null;
@@ -199,7 +250,7 @@
     };
   }
 
-  const api = { vec, latLon, distance, arc, densify, areaFraction, centroid, contains, coverage, fibonacci, distanceToLine, splitPolygon, orthographic };
+  const api = { vec, latLon, distance, arc, densify, areaFraction, centroid, contains, within, coverage, fibonacci, distanceToLine, splitPolygon, orthographic };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.sphere = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

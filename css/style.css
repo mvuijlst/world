@@ -574,3 +574,5 @@ table.data.poles td:first-child input.txt.num { max-width: 64px; }
 .seed-row { display: flex; gap: 6px; align-items: end; }
 .seed-row .field { flex: 1; min-width: 0; }
 .auto-grid .txt.num { width: 100%; }
+.time-slider { position: relative; }
+.time-slider .sim-span { position: absolute; left: 0; top: 9px; height: 4px; background: var(--teal); opacity: .55; pointer-events: none; }
