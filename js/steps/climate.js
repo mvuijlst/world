@@ -71,11 +71,11 @@
         const { W, H, land } = clim, px = new Uint8ClampedArray(W * H * 4), s = season(), year = u.season === 'year';
         for (let k = 0; k < W * H; k++) {
           let c;
-          const J = clim.seasons.jan, L = clim.seasons.jul;
+          const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ;
           if (u.layer === 'zones') c = land[k] ? hex(clim.zones[clim.zone[k] - 1]?.[1] || '#888888') : clim.ice[k] ? SEAICE : SEA;
-          else if (u.layer === 'temp') c = ramp(TEMP, year ? (J.T[k] + L.T[k]) / 2 : s.T[k]);
-          else if (u.layer === 'rain') c = land[k] ? ramp(RAIN, year ? J.Pr[k] + L.Pr[k] : 2 * s.Pr[k]) : SEA.map((x) => x + 30);
-          else if (u.layer === 'wind') { const p = (year ? (J.P[k] + L.P[k]) / 2 : s.P[k]) - 1013; c = p > 0 ? [200 + Math.min(55, p * 4), 150 - Math.min(80, p * 5), 120] : [120 + p * 3, 150 + p * 2, 210]; if (land[k]) c = c.map((x) => x * 0.8 + 30); }
+          else if (u.layer === 'temp') c = ramp(TEMP, year ? (J.T[k] + L.T[k] + 2 * E.T[k]) / 4 : s.T[k]);
+          else if (u.layer === 'rain') c = land[k] ? ramp(RAIN, year ? clim.rainYear[k] : 2 * s.Pr[k]) : SEA.map((x) => x + 30);
+          else if (u.layer === 'wind') { const p = (year ? (J.P[k] + L.P[k] + 2 * E.P[k]) / 4 : s.P[k]) - 1013; c = p > 0 ? [200 + Math.min(55, p * 4), 150 - Math.min(80, p * 5), 120] : [120 + p * 3, 150 + p * 2, 210]; if (land[k]) c = c.map((x) => x * 0.8 + 30); }
           else if (u.layer === 'currents') c = land[k] ? [150, 145, 130] : clim.ice[k] ? SEAICE : clim.sst[k] > 0.3 ? [40 + Math.min(180, clim.sst[k] * 45), 60, 110] : clim.sst[k] < -0.3 ? [30, 70 + Math.min(150, -clim.sst[k] * 35), 140 + Math.min(100, -clim.sst[k] * 25)] : SEA;
           else c = land[k] ? [150, 145, 130] : clim.ice[k] ? SEAICE : clim.reef[k] ? [255, 110, 150] : [30, 60 + Math.min(150, clim.fish[k] * 80), 100 + Math.min(80, clim.fish[k] * 40)];
           // the coast, on every layer but the zones (which show it anyway)
@@ -152,9 +152,9 @@
         const p = at(e);
         if (clim && p) {
           const j = clamp(Math.floor(((90 - p[0]) / 180) * clim.H), 0, clim.H - 1), i = clamp(Math.floor(((p[1] + 180) / 360) * clim.W), 0, clim.W - 1), k = j * clim.W + i;
-          const J = clim.seasons.jan, L = clim.seasons.jul, z = clim.z[k];
+          const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ, z = clim.z[k];
           const code = clim.land[k] ? clim.zones[clim.zone[k] - 1]?.[0] : null;
-          hint.textContent = `${fmt.num(p[0], 1)}°, ${fmt.num(p[1], 1)}° · ${z > 0 ? `${fmt.int(z)} m` : 'sea'} · ${fmt.num(J.T[k], 0)} / ${fmt.num(L.T[k], 0)} °C · ${fmt.int(J.Pr[k] + L.Pr[k])} mm a year${code ? ` · ${code} ${NAME[code] || ''}` : clim.ice[k] ? ' · sea ice' : clim.reef[k] ? ' · coral reefs' : ''}`;
+          hint.textContent = `${fmt.num(p[0], 1)}°, ${fmt.num(p[1], 1)}° · ${z > 0 ? `${fmt.int(z)} m` : 'sea'} · ${fmt.num(J.T[k], 0)} / ${fmt.num(E.T[k], 0)} / ${fmt.num(L.T[k], 0)} °C · ${fmt.int(clim.rainYear[k])} mm a year${code ? ` · ${code} ${NAME[code] || ''}` : clim.ice[k] ? ' · sea ice' : clim.reef[k] ? ' · coral reefs' : ''}`;
         }
         if (!drag || u.view !== 'globe') return;
         const k = (180 / Math.PI) / R() * (cv.width / cv.clientWidth);
@@ -172,7 +172,7 @@
         layerSel.addEventListener('change', () => { u.layer = layerSel.value; paint(); draw(); renderKey(); renderBar(); });
         const seasonal = u.layer === 'temp' || u.layer === 'rain' || u.layer === 'wind';
         replace(bar, tabs([['map', 'Map'], ['globe', 'Globe']], u.view, (v) => { u.view = v; renderBar(); fit(); }), layerSel,
-          seasonal ? tabs([['jan', 'Northern winter'], ['jul', 'Northern summer'], ['year', 'Year']].filter(([v]) => u.layer !== 'wind' || v !== 'year'), u.season === 'year' && u.layer === 'wind' ? 'jul' : u.season, (v) => { u.season = v; paint(); draw(); renderBar(); renderKey(); }) : null);
+          seasonal ? tabs([['jan', 'Northern winter'], ['equ', 'Equinoxes'], ['jul', 'Northern summer'], ['year', 'Year']].filter(([v]) => u.layer !== 'wind' || v !== 'year'), u.season === 'year' && u.layer === 'wind' ? 'jul' : u.season, (v) => { u.season = v; paint(); draw(); renderBar(); renderKey(); }) : null);
       }
       function renderKey() {
         const sw = (c) => h('i', { style: { display: 'inline-block', width: '22px', height: '10px', background: `rgb(${c.map(Math.round).join(',')})`, verticalAlign: 'middle', marginRight: '6px' } });
@@ -190,13 +190,13 @@
       }
       function renderStats() {
         if (!clim) { replace(statsHost); return; }
-        const { W, H, lat, land } = clim, grp = {}, J = clim.seasons.jan, L = clim.seasons.jul;
+        const { W, H, lat, land } = clim, grp = {}, J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ;
         let la = 0, sea = 0, ice = 0, reefs = 0, hot = -1e9, cold = 1e9, wet = 0, dry = 1e9;
         for (let k = 0; k < W * H; k++) {
           const a = Math.cos(lat[Math.floor(k / W)] * D2R);
           if (land[k]) {
             la += a; const gname = clim.zones[clim.zone[k] - 1]?.[0]?.[0]; grp[gname] = (grp[gname] || 0) + a;
-            hot = Math.max(hot, J.T[k], L.T[k]); cold = Math.min(cold, J.T[k], L.T[k]); const p = J.Pr[k] + L.Pr[k]; wet = Math.max(wet, p); dry = Math.min(dry, p);
+            hot = Math.max(hot, J.T[k], L.T[k], E.T[k]); cold = Math.min(cold, J.T[k], L.T[k], E.T[k]); const p = clim.rainYear[k]; wet = Math.max(wet, p); dry = Math.min(dry, p);
           } else { sea += a; if (clim.ice[k]) ice += a; if (clim.reef[k]) reefs++; }
         }
         const pc = (gname) => `${fmt.int((100 * (grp[gname] || 0)) / Math.max(1e-9, la))} %`;

@@ -1,7 +1,7 @@
 /*
  * Climate on the world map (Worldbuilder's Log 28-34, then climate zones): for two seasons, the
- * solstices, of a planet that need not be Earth; and the equinoxes' temperatures, which on a much
- * tilted world are the low latitudes' warm season.
+ * solstices, and the equinoxes, of a planet that need not be Earth (on a much tilted world the
+ * equinoxes are the low latitudes' warm, wet season).
  *   - temperature (Log 33-34): sunlight by latitude and season (its star, orbit and tilt), tied to the
  *     planet's mean temperature; colder with height (a lapse rate that grows with gravity); land far
  *     from the sea has wider seasons; warm and cold currents warm and cool their coasts; sea ice;
@@ -79,6 +79,8 @@
     const tilt = Math.abs(planet.tilt ?? 23.5) > 90 ? 180 - Math.abs(planet.tilt) : Math.abs(planet.tilt ?? 23.5);
     const spin = planet.retrograde ? -1 : 1, S0 = 1361 * (planet.flux ?? 1), Tg = planet.meanC ?? 15;
     const lapse = 6.5 * (planet.gravity ?? 1);                              // K per km, as g / cp
+    // ...up to the tropopause (11 km on Earth, lower in stronger gravity), above which it stops cooling
+    const tropo = 11000 / Math.max(0.05, planet.gravity ?? 1), belowTropo = (h) => clamp(h, 0, tropo);
     const R = planet.radiusKm ?? 6371, kmDeg = (Math.PI * R) / 180;
     const bands = (planet.cells && planet.cells.length ? planet.cells : [[0, 30], [30, 60], [60, 90]]).map(([a, b]) => [a, b]);
     const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0));
@@ -133,11 +135,13 @@
     };
 
     const seasons = {};
-    for (const [name, dec] of [['jan', -tilt], ['jul', tilt]]) {
+    // the two solstices and the equinoxes (both alike): on a much tilted world the low latitudes have
+    // their warm, wet season at the equinoxes, when the sun is overhead
+    for (const [name, dec] of [['jan', -tilt], ['jul', tilt], ['equ', 0]]) {
       // ── temperature (before currents) ──
       const T = new Float32Array(N), Tzon = new Float32Array(H);
       if (locked) {
-        for (let k = 0; k < N; k++) T[k] = Tg + dayNight * (face[k] - fm) * (land[k] ? 1 : 0.7) - (land[k] ? (lapse * zs[k]) / 1000 : 0);
+        for (let k = 0; k < N; k++) T[k] = Tg + dayNight * (face[k] - fm) * (land[k] ? 1 : 0.7) - (land[k] ? (lapse * belowTropo(zs[k])) / 1000 : 0);
         for (let k = 0; k < N; k++) if (!land[k]) T[k] = Math.max(-1.8, T[k]);
       }
       for (let j = 0; j < H && !locked; j++) {
@@ -148,13 +152,13 @@
           const k = j * W + i;
           if (!land[k]) { T[k] = seaT; continue; }
           const cont = 1 - Math.exp(-(toSea[k] * kmDeg) / 900);            // continentality
-          T[k] = base + (0.3 + 0.5 * cont) * swing - (lapse * zs[k]) / 1000;
+          T[k] = base + (0.3 + 0.5 * cont) * swing - (lapse * belowTropo(zs[k])) / 1000;
         }
       }
       // ── pressure: zonal belts shifted with the sun, continents low when hot and high when cold ──
       const shift = 0.35 * dec, P = new Float32Array(N);
       const anom = new Float32Array(N);
-      for (let k = 0; k < N; k++) if (land[k]) { const j = Math.floor(k / W); anom[k] = -0.35 * (T[k] + (lapse * Math.max(0, z[k])) / 1000 - Tzon[j]); }
+      for (let k = 0; k < N; k++) if (land[k]) { const j = Math.floor(k / W); anom[k] = -0.35 * (T[k] + (lapse * belowTropo(z[k])) / 1000 - Tzon[j]); }
       const anomS = blurField(grid, anom, Math.round(8 / grid.dx));
       for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) P[j * W + i] = locked ? 1013 - 18 * (face[j * W + i] - fm) + anomS[j * W + i] : zonalP(lat[j] - shift) + anomS[j * W + i];
       // ── winds: down the pressure gradient, turned by the spin, less so near the equator ──
@@ -174,24 +178,7 @@
       }
       seasons[name] = { T, P, u, v };
     }
-    // ── the equinoxes: temperature only. Where the tilt is large the low latitudes have their warm
-    // season then, not at either solstice (the sun is overhead at the equator twice a year) ──
-    const eqT = new Float32Array(N);
-    if (locked) eqT.set(seasons.jan.T);
-    else {
-      for (let j = 0; j < H; j++) {
-        const Qs = insolation(lat[j], 0, S0), base = Tg + kT * (Qann[j] - qm), swing = damp(kT * (Qs - Qann[j]));
-        const seaT = Math.max(-1.8, Tg + 4 + kO * (Qann[j] - qm) + 0.2 * swing);
-        for (let i = 0; i < W; i++) {
-          const k = j * W + i;
-          if (!land[k]) { eqT[k] = seaT; continue; }
-          const cont = 1 - Math.exp(-(toSea[k] * kmDeg) / 900);
-          eqT[k] = base + (0.3 + 0.5 * cont) * swing - (lapse * zs[k]) / 1000;
-        }
-      }
-    }
-    // (its winds: between the solstices')
-    const equinox = { T: eqT, u: Float32Array.from(seasons.jan.u, (x, k) => (x + seasons.jul.u[k]) / 2), v: Float32Array.from(seasons.jan.v, (x, k) => (x + seasons.jul.v[k]) / 2) };
+    const eqT = seasons.equ.T;
 
     // ── ocean currents: the sides of the gyres (from the annual winds' belts) ──
     const sst = new Float32Array(N), cu = new Float32Array(N), cv = new Float32Array(N), upwell = new Float32Array(N);
@@ -217,7 +204,7 @@
     }
     // currents warm and cool the sea, and the coasts the wind blows them onto
     const sstS = blurField(grid, sst, 2);
-    for (const s of [...Object.values(seasons), ...(locked ? [] : [equinox])]) {
+    for (const s of Object.values(seasons)) {
       for (let k = 0; k < N; k++) {
         if (!land[k]) { s.T[k] = Math.max(-1.8, s.T[k] + sstS[k]); continue; }
         const near = Math.exp(-(toSea[k] * kmDeg) / 600);
@@ -235,8 +222,12 @@
     }
 
     // ── precipitation: moisture from warm seas carried by the winds and rained out ──
+    // (a year: a quarter round each solstice, and the two equinox quarters)
+    const QUARTERS = { jan: 0.5, jul: 0.5, equ: 1 };
     let pSum = 0, wSum = 0;
-    for (const s of Object.values(seasons)) {
+    for (let k = 0; k < N; k++) wSum += grid.cosl[Math.floor(k / W)];
+    for (const [name, s] of Object.entries(seasons)) {
+      if (locked && name !== 'jan') continue;                                  // no seasons: all alike
       const Pr = new Float32Array(N);
       let Mo = new Float32Array(N), Mn = new Float32Array(N);
       const cap = (T) => 0.25 + Math.exp(0.065 * clamp(T, -40, 40));        // what the air can hold
@@ -268,23 +259,30 @@
         [Mo, Mn] = [Mn, Mo];
       }
       s.Pr = blurField(grid, Pr, 1);
-      for (let k = 0; k < N; k++) { const wgt = grid.cosl[Math.floor(k / W)]; pSum += Pr[k] * wgt; wSum += wgt; }
+      const share = locked ? 2 : QUARTERS[name];
+      for (let k = 0; k < N; k++) pSum += Pr[k] * grid.cosl[Math.floor(k / W)] * share;
     }
+    if (locked) { seasons.jul.Pr = Float32Array.from(seasons.jan.Pr); seasons.equ.Pr = Float32Array.from(seasons.jan.Pr); }
     function zAt(fi, fj) { const i = Math.round(fi), j = clamp(Math.round(fj), 0, H - 1); return zs[idx(i, j)]; }
     // scale to millimetres: Earth's mean ~1000 mm a year, about 7 % more per degree warmer
     // (and with how much sea there is to evaporate: a dry world is a dry world)
     let seaShare = 0; { let a2 = 0; for (let k = 0; k < N; k++) { const wgt = grid.cosl[Math.floor(k / W)]; a2 += wgt; if (!land[k]) seaShare += wgt; } seaShare /= a2; }
-    const meanYear = 1000 * clamp(1 + 0.07 * (Tg - 15), 0.05, 3) * clamp(seaShare / 0.71, 0.05, 1.3) ** 0.8, scale = meanYear / (2 * (pSum / wSum) / 2) / 2;
+    const meanYear = 1000 * clamp(1 + 0.07 * (Tg - 15), 0.05, 3) * clamp(seaShare / 0.71, 0.05, 1.3) ** 0.8, scale = meanYear / (pSum / wSum);
+    // each season's Pr is at its rate for half a year (as the Köppen thresholds count it); the year's
+    // total takes a quarter of each solstice's and half the equinoxes'
     for (const s of Object.values(seasons)) for (let k = 0; k < N; k++) s.Pr[k] *= scale;
+    const rainYear = Float32Array.from(seasons.jan.Pr, (v, k) => (v + seasons.jul.Pr[k] + 2 * seasons.equ.Pr[k]) / 2);
 
     // ── reefs, fishing grounds, sea ice, and the climate zones ──
     const zone = new Uint8Array(N), reef = new Uint8Array(N), ice = new Uint8Array(N), fish = new Float32Array(N);
-    const J = seasons.jan, L = seasons.jul;
-    if (locked) eqT.set(J.T);
+    const J = seasons.jan, L = seasons.jul, E = seasons.equ, SS = [J, L, E];
     for (let k = 0; k < N; k++) {
       const Tw = Math.max(J.T[k], L.T[k], eqT[k]), Tc = Math.min(J.T[k], L.T[k], eqT[k]);
       if (land[k]) {
-        const warmIsJul = L.T[k] >= J.T[k], Pw = warmIsJul ? L.Pr[k] : J.Pr[k], Pc = warmIsJul ? J.Pr[k] : L.Pr[k];
+        // the warm and the cold season's rain, in proportion, adding up to the year's
+        const ws = SS.reduce((a, s) => (s.T[k] > a.T[k] ? s : a)), cs = SS.reduce((a, s) => (s.T[k] < a.T[k] ? s : a));
+        const pw0 = ws === cs ? 1 : ws.Pr[k], pc0 = ws === cs ? 1 : cs.Pr[k], f = rainYear[k] / Math.max(1e-9, pw0 + pc0);
+        const Pw = pw0 + pc0 > 0 ? pw0 * f : rainYear[k] / 2, Pc = pw0 + pc0 > 0 ? pc0 * f : rainYear[k] / 2;
         zone[k] = ZI[koppen(Tw, Tc, Pw, Pc)] || 0;
       } else {
         if (Tc <= -1.7) ice[k] = 1;
@@ -293,7 +291,7 @@
         if (z[k] > -80 && Tc >= 20 && upwell[k] < 0.4) reef[k] = 1;
       }
     }
-    return { W, H, lat, z, land, seasons, equinoxT: eqT, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
+    return { W, H, lat, z, land, seasons, equinoxT: eqT, rainYear, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
   }
 
   const S2vec = (la, lo) => [Math.cos(la * D2R) * Math.cos(lo * D2R), Math.cos(la * D2R) * Math.sin(lo * D2R), Math.sin(la * D2R)];

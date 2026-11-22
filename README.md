@@ -199,12 +199,15 @@ height range and sea level.
 ## Climate
 
 The Climate step (`js/climate.js`, `js/steps/climate.js`) works out the climate of the world map for
-the two solstices, following Worldbuilder's Log 28–34. It works for any planet; some worlds come out
+the two solstices and the equinoxes, following Worldbuilder's Log 28–34. On a much tilted world the
+equinoxes are the low latitudes' warm, wet season. A year counts a quarter round each solstice and
+half at the equinoxes. It works for any planet; some worlds come out
 nothing like Earth, and that is fine.
 - **Temperature:** from the sunlight by latitude and season (the star's flux, the orbit, the tilt),
   tied to the planet's mean temperature. The pole-to-equator gradient is gentler on slow rotators
   (one broad cell) and under thick air, steeper on fast rotators. Large seasonal swings are damped.
-  Land far from the sea has wider seasons, and it gets colder with height by 6.5 °C × g per km. The
+  Land far from the sea has wider seasons, and it gets colder with height by 6.5 °C × g per km, up to
+  the tropopause (11 km ÷ g). The
   sea cannot fall below −1.8 °C: below that it is sea ice.
 - **Pressure and winds:** belts from the planet's circulation cells (set by its day), shifted with
   the seasons. Continents are low in summer and high in winter (monsoons). The wind blows down the

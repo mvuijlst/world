@@ -80,7 +80,7 @@
     const noise = M.noise3((planet.seed ?? 1) * 7 + 3);
 
     // ── the climate on the map's own cells (bilinear), corrected for height within a climate cell ──
-    const cW = clim.W, cH = clim.H, J = clim.seasons.jan, L = clim.seasons.jul, E = clim.equinoxT || Float32Array.from(J.T, (t, q) => (t + L.T[q]) / 2);
+    const cW = clim.W, cH = clim.H, J = clim.seasons.jan, L = clim.seasons.jul, Eq = clim.seasons.equ || { T: Float32Array.from(J.T, (t, q) => (t + L.T[q]) / 2), Pr: Float32Array.from(J.Pr, (v, q) => (v + L.Pr[q]) / 2) }, E = Eq.T;
     const Tw = new Float32Array(N), Tc = new Float32Array(N), Ta = new Float32Array(N), P = new Float32Array(N), Pw = new Float32Array(N), PETs = new Float32Array(N);
     const cz = clim.z;
     for (let j = 0; j < H; j++) {
@@ -93,23 +93,28 @@
         // take only land neighbours where there are some (the sea's mild climate stays at sea)
         const ws = [[a0, (1 - ti) * (1 - tj)], [a1, ti * (1 - tj)], [b0, (1 - ti) * tj], [b1, ti * tj]];
         const anyLand = ws.some(([q]) => clim.land[q]);
-        let sw = 0, tj2 = 0, tl2 = 0, te2 = 0, pj = 0, pl2 = 0, zc = 0;
+        let sw = 0, tj2 = 0, tl2 = 0, te2 = 0, pj = 0, pl2 = 0, pe = 0, zc = 0;
         for (const [q, wt] of ws) {
           if (anyLand && !clim.land[q]) continue;
-          sw += wt; tj2 += wt * J.T[q]; tl2 += wt * L.T[q]; te2 += wt * E[q]; pj += wt * J.Pr[q]; pl2 += wt * L.Pr[q]; zc += wt * Math.max(0, cz[q]);
+          sw += wt; tj2 += wt * J.T[q]; tl2 += wt * L.T[q]; te2 += wt * E[q]; pj += wt * J.Pr[q]; pl2 += wt * L.Pr[q]; pe += wt * Eq.Pr[q]; zc += wt * Math.max(0, cz[q]);
         }
-        if (sw <= 0) { const q = a0; sw = 1; tj2 = J.T[q]; tl2 = L.T[q]; te2 = E[q]; pj = J.Pr[q]; pl2 = L.Pr[q]; zc = Math.max(0, cz[q]); }
-        tj2 /= sw; tl2 /= sw; te2 /= sw; pj /= sw; pl2 /= sw; zc /= sw;
-        const dT = (-lapse * (z[k] - zc)) / 1000;
+        if (sw <= 0) { const q = a0; sw = 1; tj2 = J.T[q]; tl2 = L.T[q]; te2 = E[q]; pj = J.Pr[q]; pl2 = L.Pr[q]; pe = Eq.Pr[q]; zc = Math.max(0, cz[q]); }
+        tj2 /= sw; tl2 /= sw; te2 /= sw; pj /= sw; pl2 /= sw; pe /= sw; zc /= sw;
+        const tropo = 11000 / Math.max(0.05, planet.gravity ?? map.planet?.gravity ?? 1);
+        const dT = (-lapse * (Math.min(z[k], tropo) - Math.min(zc, tropo))) / 1000;
         const x = gr.xyz[k * 3], y = gr.xyz[k * 3 + 1], zz = gr.xyz[k * 3 + 2];
         // a little noise so that biome edges wander as they do, rather than follow the climate's contours
         const nT = 0.8 * noise(x, y, zz, 9, 3), nP = 1 + 0.12 * noise(zz, x, y, 7, 3);
         const tj3 = tj2 + dT + nT, tl3 = tl2 + dT + nT, te3 = te2 + dT + nT;
         // the warm and cold season from the solstices and the equinoxes; the year's mean and evaporation
-        // from all four (the equinoxes counted twice)
+        // from its four quarters (the equinoxes counted twice)
         Tw[k] = Math.max(tj3, tl3, te3); Tc[k] = Math.min(tj3, tl3, te3); Ta[k] = (tj3 + tl3 + 2 * te3) / 4;
         PETs[k] = (pet(tj3) + pet(tl3) + 2 * pet(te3)) / 4;
-        P[k] = Math.max(0, (pj + pl2) * nP); Pw[k] = Math.max(0, (tl3 >= tj3 ? pl2 : pj) * nP);
+        // the year's rain (a quarter round each solstice, half at the equinoxes), and the share of it that
+        // falls in the warm season rather than the cold one (for dry summers)
+        P[k] = Math.max(0, ((pj + pl2 + 2 * pe) / 2) * nP);
+        const sea3 = [[tj3, pj], [tl3, pl2], [te3, pe]], wm = sea3.reduce((a, b) => (b[0] > a[0] ? b : a)), cd = sea3.reduce((a, b) => (b[0] < a[0] ? b : a));
+        Pw[k] = wm === cd || wm[1] + cd[1] <= 0 ? P[k] / 2 : (P[k] * wm[1]) / (wm[1] + cd[1]);
       }
     }
 
