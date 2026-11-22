@@ -11,7 +11,7 @@
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const hex = (h2) => [1, 3, 5].map((i) => parseInt(h2.slice(i, i + 2), 16));
   const ramp = (stops, x) => { if (x <= stops[0][0]) return stops[0][1]; for (let i = 1; i < stops.length; i++) if (x <= stops[i][0]) { const [a, ca] = stops[i - 1], [b, cb] = stops[i], t = (x - a) / (b - a); return ca.map((v, k) => v + (cb[k] - v) * t); } return stops[stops.length - 1][1]; };
-  const SEA = [34, 66, 110], SHELF = [52, 92, 138], FRESH = [64, 124, 186], SALT = [176, 204, 204], RIVER = 'rgb(36, 92, 172)';
+  const SEA = [34, 66, 110], SHELF = [52, 92, 138], FRESH = [64, 124, 186], SALT = [176, 204, 204], ICE = [236, 242, 246], RIVER = 'rgb(36, 92, 172)';
   const WATER = [[0, [228, 210, 170]], [50, [214, 204, 156]], [200, [176, 196, 132]], [500, [120, 174, 108]], [1000, [70, 140, 96]], [2000, [34, 98, 78]]];
   const LAYERS = [['biomes', 'Biomes'], ['water', 'Water & basins']];
 
@@ -44,18 +44,18 @@
       const cv = h('canvas', { class: 'scene-canvas', role: 'img', 'aria-label': 'Rivers and biomes map' });
       host.appendChild(cv);
       const g = cv.getContext('2d');
-      let bio = null, map = null, img = null, off = null, busy = false;
+      let bio = null, map = null, clim = null, img = null, off = null, busy = false;
 
       function ensure() {
         const w = ctx.world, d = ctx.d;
         if (!w.plates.features.some((f) => f.kind === 'crust')) { bio = null; return; }
         if (busy) return;
         const have = WS.currentBiomes(w, d, { peek: true });
-        if (have) { if (bio !== have.bio || !off) { bio = have.bio; map = have.climRef.mapRef.map; paint(); renderStats(); renderKey(); hint.textContent = `${bio.W} × ${bio.H} cells · hover for a place`; } return; }
+        if (have) { if (bio !== have.bio || !off) { bio = have.bio; map = have.climRef.mapRef.map; clim = have.climRef.clim; paint(); renderStats(); renderKey(); hint.textContent = `${bio.W} × ${bio.H} cells · hover for a place`; } return; }
         busy = true; hint.textContent = 'Working out rivers and biomes…'; draw();
         setTimeout(() => {
           const t0 = performance.now(), c = WS.currentBiomes(w, d);
-          bio = c.bio; map = c.climRef.mapRef.map; busy = false;
+          bio = c.bio; map = c.climRef.mapRef.map; clim = c.climRef.clim; busy = false;
           paint(); renderStats(); renderKey(); draw();
           hint.textContent = `${bio.W} × ${bio.H} cells · ${fmt.int(performance.now() - t0)} ms`;
           WS.app.refresh();
@@ -69,9 +69,11 @@
         for (let k = 0; k < W * H; k++) {
           const i = k % W, j = (k - i) / W;
           let c;
-          if (z[k] <= 0) c = z[k] > -200 ? SHELF : SEA;
+          if (z[k] <= 0) c = clim && clim.ice[Math.min(clim.H - 1, Math.floor((j * clim.H) / H)) * clim.W + Math.floor((i * clim.W) / W)] ? ICE : z[k] > -200 ? SHELF : SEA;
           else if (bio.lake[k]) c = bio.lake[k] === 1 ? FRESH : SALT;
           else if (u.layer === 'biomes') c = hex(bio.biomes[bio.biome[k] - 1]?.[2] || '#888888');
+          // (ice sheets shed no running water, but they are not dry land: shown as ice)
+          else if (bio.biomes[bio.biome[k] - 1]?.[0] === 'ice') c = ICE;
           else { c = ramp(WATER, bio.runoff[k]); if (bio.inland[k]) c = [c[0] * 0.85 + 40, c[1] * 0.85 + 14, c[2] * 0.85]; }
           if (z[k] > 0 && !bio.lake[k]) {
             const e = z[j * W + ((i + 1) % W)] - z[j * W + ((i - 1 + W) % W)], n = z[Math.max(0, j - 1) * W + i] - z[Math.min(H - 1, j + 1) * W + i];
@@ -178,8 +180,9 @@
         if (u.layer === 'biomes' && bio) {
           const order = bio.stats.biomeShare.map((v, i) => [i, v]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
           items = order.map(([i, v]) => [hex(bio.biomes[i][2]), `${bio.biomes[i][1]} ${fmt.int(v * 100) === '0' ? '<1' : fmt.int(v * 100)} %`]);
-        } else items = WATER.map(([t, c]) => [c, `${t} mm/yr`]).concat([[[226, 190, 140], 'drains inland']]);
+        } else items = WATER.map(([t, c]) => [c, `${t} mm/yr`]).concat([[[226, 190, 140], 'drains inland'], [ICE, 'ice sheet']]);
         items.push([FRESH, 'fresh lake'], [SALT, 'salt lake']);
+        if (clim && clim.ice.some((v) => v)) items.push([ICE, 'sea ice (winter)']);
         replace(keyHost, panel('Key', { tag: LAYERS.find((l) => l[0] === u.layer)[1].toUpperCase() }, h('div', { class: 'map-key mono', style: { marginLeft: 0 } }, items.map(([c, t]) => h('span', null, sw(c), t)),
           h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '3px', background: RIVER, verticalAlign: 'middle', marginRight: '6px' } }), `river (from ${fmt.int(bio ? bio.minFlow : 600)} m³/s)`))));
       }

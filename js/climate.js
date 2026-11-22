@@ -1,6 +1,7 @@
 /*
  * Climate on the world map (Worldbuilder's Log 28-34, then climate zones): for two seasons, the
- * solstices, of a planet that need not be Earth.
+ * solstices, of a planet that need not be Earth; and the equinoxes' temperatures, which on a much
+ * tilted world are the low latitudes' warm season.
  *   - temperature (Log 33-34): sunlight by latitude and season (its star, orbit and tilt), tied to the
  *     planet's mean temperature; colder with height (a lapse rate that grows with gravity); land far
  *     from the sea has wider seasons; warm and cold currents warm and cool their coasts; sea ice;
@@ -173,6 +174,24 @@
       }
       seasons[name] = { T, P, u, v };
     }
+    // ── the equinoxes: temperature only. Where the tilt is large the low latitudes have their warm
+    // season then, not at either solstice (the sun is overhead at the equator twice a year) ──
+    const eqT = new Float32Array(N);
+    if (locked) eqT.set(seasons.jan.T);
+    else {
+      for (let j = 0; j < H; j++) {
+        const Qs = insolation(lat[j], 0, S0), base = Tg + kT * (Qann[j] - qm), swing = damp(kT * (Qs - Qann[j]));
+        const seaT = Math.max(-1.8, Tg + 4 + kO * (Qann[j] - qm) + 0.2 * swing);
+        for (let i = 0; i < W; i++) {
+          const k = j * W + i;
+          if (!land[k]) { eqT[k] = seaT; continue; }
+          const cont = 1 - Math.exp(-(toSea[k] * kmDeg) / 900);
+          eqT[k] = base + (0.3 + 0.5 * cont) * swing - (lapse * zs[k]) / 1000;
+        }
+      }
+    }
+    // (its winds: between the solstices')
+    const equinox = { T: eqT, u: Float32Array.from(seasons.jan.u, (x, k) => (x + seasons.jul.u[k]) / 2), v: Float32Array.from(seasons.jan.v, (x, k) => (x + seasons.jul.v[k]) / 2) };
 
     // ── ocean currents: the sides of the gyres (from the annual winds' belts) ──
     const sst = new Float32Array(N), cu = new Float32Array(N), cv = new Float32Array(N), upwell = new Float32Array(N);
@@ -198,7 +217,7 @@
     }
     // currents warm and cool the sea, and the coasts the wind blows them onto
     const sstS = blurField(grid, sst, 2);
-    for (const s of Object.values(seasons)) {
+    for (const s of [...Object.values(seasons), ...(locked ? [] : [equinox])]) {
       for (let k = 0; k < N; k++) {
         if (!land[k]) { s.T[k] = Math.max(-1.8, s.T[k] + sstS[k]); continue; }
         const near = Math.exp(-(toSea[k] * kmDeg) / 600);
@@ -261,8 +280,9 @@
     // ── reefs, fishing grounds, sea ice, and the climate zones ──
     const zone = new Uint8Array(N), reef = new Uint8Array(N), ice = new Uint8Array(N), fish = new Float32Array(N);
     const J = seasons.jan, L = seasons.jul;
+    if (locked) eqT.set(J.T);
     for (let k = 0; k < N; k++) {
-      const Tw = Math.max(J.T[k], L.T[k]), Tc = Math.min(J.T[k], L.T[k]);
+      const Tw = Math.max(J.T[k], L.T[k], eqT[k]), Tc = Math.min(J.T[k], L.T[k], eqT[k]);
       if (land[k]) {
         const warmIsJul = L.T[k] >= J.T[k], Pw = warmIsJul ? L.Pr[k] : J.Pr[k], Pc = warmIsJul ? J.Pr[k] : L.Pr[k];
         zone[k] = ZI[koppen(Tw, Tc, Pw, Pc)] || 0;
@@ -273,7 +293,7 @@
         if (z[k] > -80 && Tc >= 20 && upwell[k] < 0.4) reef[k] = 1;
       }
     }
-    return { W, H, lat, z, land, seasons, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
+    return { W, H, lat, z, land, seasons, equinoxT: eqT, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
   }
 
   const S2vec = (la, lo) => [Math.cos(la * D2R) * Math.cos(lo * D2R), Math.cos(la * D2R) * Math.sin(lo * D2R), Math.sin(la * D2R)];

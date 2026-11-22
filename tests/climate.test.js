@@ -45,6 +45,8 @@ test('other worlds: high tilt warms the poles, retrograde spin turns the winds, 
   const ann = (c) => (k) => (c.seasons.jan.T[k] + c.seasons.jul.T[k]) / 2;
   const tilted = K.build(map, { ...EARTH, tilt: 85 });
   assert.ok(zonal(tilted, ann(tilted), 80) > zonal(tilted, ann(tilted), 0), 'at 85° tilt the poles are warmer over the year');
+  // ...but the equator still has a warm season, at the equinoxes, when the sun is overhead
+  assert.ok(zonal(tilted, (k) => tilted.equinoxT[k], 0) > zonal(tilted, (k) => Math.max(tilted.seasons.jan.T[k], tilted.seasons.jul.T[k]), 0) + 10, 'equinox warmth at the equator');
   const retro = K.build(map, { ...EARTH, tilt: 156.5, retrograde: true });
   const trades = zonal(retro, (k) => (retro.land[k] ? 0 : retro.seasons.jan.u[k] + retro.seasons.jul.u[k]), 15);
   assert.ok(trades > 0, `westerly "trades" on a retrograde world (${trades})`);

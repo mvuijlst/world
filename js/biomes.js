@@ -80,8 +80,8 @@
     const noise = M.noise3((planet.seed ?? 1) * 7 + 3);
 
     // ── the climate on the map's own cells (bilinear), corrected for height within a climate cell ──
-    const cW = clim.W, cH = clim.H, J = clim.seasons.jan, L = clim.seasons.jul;
-    const Tw = new Float32Array(N), Tc = new Float32Array(N), P = new Float32Array(N), Pw = new Float32Array(N);
+    const cW = clim.W, cH = clim.H, J = clim.seasons.jan, L = clim.seasons.jul, E = clim.equinoxT || Float32Array.from(J.T, (t, q) => (t + L.T[q]) / 2);
+    const Tw = new Float32Array(N), Tc = new Float32Array(N), Ta = new Float32Array(N), P = new Float32Array(N), Pw = new Float32Array(N), PETs = new Float32Array(N);
     const cz = clim.z;
     for (let j = 0; j < H; j++) {
       const fj = clamp(((j + 0.5) / H) * cH - 0.5, 0, cH - 1), j0 = Math.floor(fj), j1 = Math.min(cH - 1, j0 + 1), tj = fj - j0;
@@ -93,19 +93,22 @@
         // take only land neighbours where there are some (the sea's mild climate stays at sea)
         const ws = [[a0, (1 - ti) * (1 - tj)], [a1, ti * (1 - tj)], [b0, (1 - ti) * tj], [b1, ti * tj]];
         const anyLand = ws.some(([q]) => clim.land[q]);
-        let sw = 0, tj2 = 0, tl2 = 0, pj = 0, pl2 = 0, zc = 0;
+        let sw = 0, tj2 = 0, tl2 = 0, te2 = 0, pj = 0, pl2 = 0, zc = 0;
         for (const [q, wt] of ws) {
           if (anyLand && !clim.land[q]) continue;
-          sw += wt; tj2 += wt * J.T[q]; tl2 += wt * L.T[q]; pj += wt * J.Pr[q]; pl2 += wt * L.Pr[q]; zc += wt * Math.max(0, cz[q]);
+          sw += wt; tj2 += wt * J.T[q]; tl2 += wt * L.T[q]; te2 += wt * E[q]; pj += wt * J.Pr[q]; pl2 += wt * L.Pr[q]; zc += wt * Math.max(0, cz[q]);
         }
-        if (sw <= 0) { const q = a0; sw = 1; tj2 = J.T[q]; tl2 = L.T[q]; pj = J.Pr[q]; pl2 = L.Pr[q]; zc = Math.max(0, cz[q]); }
-        tj2 /= sw; tl2 /= sw; pj /= sw; pl2 /= sw; zc /= sw;
+        if (sw <= 0) { const q = a0; sw = 1; tj2 = J.T[q]; tl2 = L.T[q]; te2 = E[q]; pj = J.Pr[q]; pl2 = L.Pr[q]; zc = Math.max(0, cz[q]); }
+        tj2 /= sw; tl2 /= sw; te2 /= sw; pj /= sw; pl2 /= sw; zc /= sw;
         const dT = (-lapse * (z[k] - zc)) / 1000;
         const x = gr.xyz[k * 3], y = gr.xyz[k * 3 + 1], zz = gr.xyz[k * 3 + 2];
         // a little noise so that biome edges wander as they do, rather than follow the climate's contours
         const nT = 0.8 * noise(x, y, zz, 9, 3), nP = 1 + 0.12 * noise(zz, x, y, 7, 3);
-        const tj3 = tj2 + dT + nT, tl3 = tl2 + dT + nT;
-        Tw[k] = Math.max(tj3, tl3); Tc[k] = Math.min(tj3, tl3);
+        const tj3 = tj2 + dT + nT, tl3 = tl2 + dT + nT, te3 = te2 + dT + nT;
+        // the warm and cold season from the solstices and the equinoxes; the year's mean and evaporation
+        // from all four (the equinoxes counted twice)
+        Tw[k] = Math.max(tj3, tl3, te3); Tc[k] = Math.min(tj3, tl3, te3); Ta[k] = (tj3 + tl3 + 2 * te3) / 4;
+        PETs[k] = (pet(tj3) + pet(tl3) + 2 * pet(te3)) / 4;
         P[k] = Math.max(0, (pj + pl2) * nP); Pw[k] = Math.max(0, (tl3 >= tj3 ? pl2 : pj) * nP);
       }
     }
@@ -114,8 +117,8 @@
     const runoff = new Float32Array(N), PET = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       if (!land[k]) continue;
-      PET[k] = (pet(Tw[k]) + pet(Tc[k])) / 2;
-      const ice = Tw[k] < 0, boil = (Tw[k] + Tc[k]) / 2 >= tBoil;
+      PET[k] = PETs[k];
+      const ice = Tw[k] < 0, boil = Ta[k] >= tBoil;
       if (!liquid || ice || boil) continue;
       runoff[k] = Math.max(0, P[k] - budyko(P[k], PET[k]));
     }
@@ -201,7 +204,7 @@
     for (let k = 0; k < N; k++) {
       if (!land[k]) continue;
       if (lakeOf[k]) { biome[k] = 0; continue; }
-      const tw = Tw[k], tc = Tc[k], ta = (tw + tc) / 2, p = P[k], ai = p / Math.max(1, PET[k]);
+      const tw = Tw[k], tc = Tc[k], ta = Ta[k], p = P[k], ai = p / Math.max(1, PET[k]);
       const summerDry = p > 0 && Pw[k] / p < 0.3;
       let b;
       if (!liquid || ta >= Math.min(tBoil, 60)) b = tw < 0 && p > 20 ? 'ice' : 'barren';
