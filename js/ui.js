@@ -109,7 +109,7 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
 
   /*
-   * On narrow screens `table.data.cards` lays each row out as a card; every cell shows its
+   * On narrow screens `table.data.row-cards` lays each row out as a card; every cell shows its
    * column heading from data-label. Call after the table is built.
    */
   function cardify(table) {
@@ -118,7 +118,7 @@
       c.querySelectorAll('.info-btn').forEach((b) => b.remove());
       return c.textContent.trim();
     });
-    table.classList.add('cards');
+    table.classList.add('row-cards');
     table.querySelectorAll('tbody tr').forEach((tr) => {
       [...tr.children].forEach((td, i) => { if (!td.hasAttribute('data-label')) td.setAttribute('data-label', heads[i] || ''); });
     });
