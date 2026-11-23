@@ -248,6 +248,7 @@
 
     // where the water goes: flood the land up from the coast
     const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), dist = new Float32Array(N), done = new Uint8Array(N), order = new Int32Array(N);
+    const spill = new Float32Array(N);                                     // the height water must rise to, to get out
     let no = 0;
     const q = heap(fill);
     for (let k = 0; k < N; k++) if (!land[k]) { done[k] = 1; let coast = false; nb(k, (n) => { if (land[n]) coast = true; }); if (coast) { fill[k] = 0; q.push(k); } }
@@ -258,11 +259,19 @@
       nb(c, (n, di, dj, j) => {
         if (done[n]) return;
         done[n] = 1; fill[n] = Math.max(zr[n], fill[c] + 1e-3); recv[n] = c; dist[n] = distKm(di, dj, j); q.push(n);
+        spill[n] = Math.max(z[n], land[c] ? spill[c] : 0);
       });
     }
+    // basins: hollows deeper than the unevenness. Whether one overflows depends on its rain against
+    // what its lake can evaporate: in a dry belt its water stays (an endorheic basin, its rim uncut), in
+    // a wet one it spills over the rim and on to the sea (and the river cuts the rim down)
+    const basinMin = rough / 6, inBasin = (k) => spill[k] - z[k] > basinMin;
+    const passes = (k) => smooth((wet(gr.lat[Math.floor(k / W)]) - 0.8) / 0.6);
+    const out = new Float32Array(N).fill(1);                              // the share a cell passes on
+    for (let o = 0; o < no; o++) { const k = order[o], r = recv[k]; if (inBasin(k) && !(land[r] && inBasin(r))) out[k] = passes(k); }
     // the rain gathered on the way down (upstream cells first)
     const A = Float64Array.from(wA);
-    for (let o = no - 1; o >= 0; o--) { const k = order[o], r = recv[k]; if (r >= 0 && land[r]) A[r] += A[k]; }
+    for (let o = no - 1; o >= 0; o--) { const k = order[o], r = recv[k]; if (r >= 0 && land[r]) A[r] += A[k] * out[k]; }
 
     // the cutting, downstream first; hollows (a cell whose way out is higher) are left alone
     const z0 = Float32Array.from(z);
@@ -285,14 +294,16 @@
     }
     for (let k = 0; k < N; k++) if (land[k] && side[k] > cut[k]) { cut[k] = side[k]; z[k] = Math.max(z0[k] - cut[k], Math.min(z0[k], 1)); cut[k] = z0[k] - z[k]; }
 
-    // the rock goes downstream: hollows on the way fill up with it, the rest reaches the sea
+    // the rock goes downstream: basins on the way fill up with it (halfway at most: they stay basins),
+    // what leaves a basin goes as its water does, the rest reaches the sea
     const Qs = new Float64Array(N), mouths = new Map();
     let eroded = 0, basins = 0;
     for (let o = no - 1; o >= 0; o--) {
       const k = order[o], r = recv[k];
       Qs[k] += cut[k] * area[k] / 1000; eroded += cut[k] * area[k] / 1000;      // km³
-      const room = r >= 0 && land[r] && z[r] > z[k] ? z[r] - z[k] : 0;          // a hollow: fill it to its lip
+      const room = inBasin(k) ? Math.max(0, z0[k] + 0.5 * (spill[k] - z0[k]) - z[k]) : 0;
       if (room > 0 && Qs[k] > 0) { const d = Math.min(room, (Qs[k] * 1000) / area[k]); z[k] += d; laid[k] += d; Qs[k] -= (d * area[k]) / 1000; basins += (d * area[k]) / 1000; }
+      if (out[k] < 1) { basins += Qs[k] * (1 - out[k]); Qs[k] *= out[k]; }
       if (land[r]) Qs[r] += Qs[k]; else mouths.set(r, (mouths.get(r) || 0) + Qs[k]);
     }
 

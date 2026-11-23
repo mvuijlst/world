@@ -207,9 +207,11 @@ following Worldbuilder's Log 20–26:
   flood from the sea), gathering the rain on the way; each cell is cut down towards the one it drains to
   by the stream-power law, solved implicitly (Braun & Willett 2013), so big rivers cut deep valleys
   through uplands and mountain belts (to some 1.5 km at Erosion ×1) and divides barely change; valley
-  sides slope down to them. The rock goes downstream: hollows fill into flat basin floors, and the
-  largest rivers build deltas a few metres above the sea on the shelf in front of their mouths. Land
-  stays land; the Rivers step's rivers then run in the valleys. It can be switched off, and is off
+  sides slope down to them. A basin passes its water on over its rim only in a wet belt; in a dry one
+  it stays closed and its rim uncut, so inland drainage and lakes survive the carving. The rock goes
+  downstream: basins fill with it (halfway at most), and the largest rivers build deltas a few metres
+  above the sea on the shelf in front of their mouths. Land stays land; the Rivers & biomes step works
+  on the carved map, and its rivers run in the valleys. It can be switched off, and is off
   where the air is too thin for liquid water.
 - **Islands** (Log 22): island arcs, and hotspot volcanoes that sink into seamounts as they age.
 - **Sea topography** (Log 26): the world's depth curve from its ridge depth (ridge + 350·√age, flattening

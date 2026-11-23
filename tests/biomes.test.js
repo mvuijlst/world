@@ -91,3 +91,11 @@ test('sea ice: where the sea freezes, with an edge that wanders rather than foll
   const spread = Math.max(...edgeLats) - Math.min(...edgeLats);
   assert.ok(spread > 15, `the ice edge spans many parallels (${spread.toFixed(1)}°)`);
 });
+
+test('a carved map keeps its basins: dry ones stay closed, lakes stay', () => {
+  const plain = M.build(world, { res: 360, carve: false });
+  const bp = B.build(plain, K.build(plain, EARTH), { ...EARTH, seed: 7 }), bc = B.build(map, climate, { ...EARTH, seed: 7 });
+  assert.ok(map.rivers, 'the shared map is carved');
+  assert.ok(bc.stats.lakes > 0.6 * bp.stats.lakes, `lakes ${bc.stats.lakes} vs ${bp.stats.lakes} uncarved`);
+  assert.ok(bc.stats.endorheic > 0.5 * bp.stats.endorheic, `inland drainage ${bc.stats.endorheic} vs ${bp.stats.endorheic} uncarved`);
+});
