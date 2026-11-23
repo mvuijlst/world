@@ -47,6 +47,27 @@
   /* Boiling point (°C) at a pressure in atm. */
   const boiling = (atm) => 1 / (1 / 373.15 - (8.314 / 40660) * Math.log(Math.max(1e-6, atm))) - 273.15;
 
+  /*
+   * The biome (its code, 1-based into BIOMES) of land with this warm, cold and mean season (°C), the
+   * year's rain and potential evaporation (mm), the rain in the warm season (mm), whether water can be
+   * liquid, and the boiling point (°C).
+   */
+  function classify(tw, tc, ta, p, pe, pw, liquid = true, tBoil = 100) {
+    const ai = p / Math.max(1, pe), summerDry = p > 0 && pw / p < 0.3;
+    let b;
+    if (!liquid || ta >= Math.min(tBoil, 60)) b = tw < 0 && p > 20 ? 'ice' : 'barren';
+    else if (tw < 0) b = 'ice';
+    else if (tw < 10) b = p < 60 ? 'barren' : 'tundra';
+    else if (ai < 0.2) b = ta >= 18 ? 'hotdesert' : 'colddesert';
+    else if (tc >= 18) b = ai < 0.5 ? 'savanna' : ai < 1.0 ? 'tropdry' : 'rainforest';
+    else if (tc < -3 && (tw < 17 || ta < 2)) b = ai < 0.45 ? 'grass' : 'boreal';
+    else if (summerDry && tc > -3 && ai < 1.2) b = 'medit';
+    else if (ai < 0.5) b = 'grass';
+    else if (tc > 0 && p > 1800 && ai > 1.8) b = 'temprain';
+    else b = 'temperate';
+    return BI[b];
+  }
+
   /* A min-heap of cell indices keyed by a Float64Array of values. */
   function heap(key) {
     const a = [];
@@ -227,20 +248,7 @@
     for (let k = 0; k < N; k++) {
       if (!land[k]) continue;
       if (lakeOf[k]) { biome[k] = 0; continue; }
-      const tw = Tw[k], tc = Tc[k], ta = Ta[k], p = P[k], ai = p / Math.max(1, PET[k]);
-      const summerDry = p > 0 && Pw[k] / p < 0.3;
-      let b;
-      if (!liquid || ta >= Math.min(tBoil, 60)) b = tw < 0 && p > 20 ? 'ice' : 'barren';
-      else if (tw < 0) b = 'ice';
-      else if (tw < 10) b = p < 60 ? 'barren' : 'tundra';
-      else if (ai < 0.2) b = ta >= 18 ? 'hotdesert' : 'colddesert';
-      else if (tc >= 18) b = ai < 0.5 ? 'savanna' : ai < 1.0 ? 'tropdry' : 'rainforest';
-      else if (tc < -3 && (tw < 17 || ta < 2)) b = ai < 0.45 ? 'grass' : 'boreal';
-      else if (summerDry && tc > -3 && ai < 1.2) b = 'medit';
-      else if (ai < 0.5) b = 'grass';
-      else if (tc > 0 && p > 1800 && ai > 1.8) b = 'temprain';
-      else b = 'temperate';
-      biome[k] = BI[b];
+      biome[k] = classify(Tw[k], Tc[k], Ta[k], P[k], PET[k], Pw[k], liquid, tBoil);
     }
     // wetlands: big rivers over low, flat, wet ground, and the shores of fresh lakes
     for (let k = 0; k < N; k++) {
@@ -393,7 +401,7 @@
   /* The planet's inputs for this from the app's world and derived values. */
   const planetOf = (w, d) => ({ pressure: w.planet.pressure, seed: w.plates.seed ?? 1, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity });
 
-  const api = { build, water, BIOMES, planetOf, pet, budyko, boiling, landUse };
+  const api = { build, water, classify, BIOMES, BI, planetOf, pet, budyko, boiling, landUse };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.biomes = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

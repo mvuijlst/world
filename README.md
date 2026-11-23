@@ -40,10 +40,11 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity (with the gravity scaling factor) and radius, ridge depth, erosion, with valleys carved by rivers and deltas at their mouths; map or globe, a brush to raise and lower, colour and 16-bit height PNGs, and the drawing kit; the workbook's `TECTONICS` sheet as a reference (range cross-sections, erosion, max peak, ocean depth by crust age) |
 | 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
 | 12 | Rivers & biomes | from the map and its climate: rivers down to the sea, fresh and salt lakes, basins that drain inland, and biomes; map or globe, a PNG of the map and the rivers as SVG |
-| 13 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
-| 14 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
-| 15 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 16 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 13 | Region | a closer map of part of the world map, 200–3,200 km across at down to 0.1 km a pixel, that agrees with it: finer relief, its own drainage and valleys, lakes, rivers down to brooks (and those entering from outside), biomes by height; zoom and pan, PNG, 16-bit heightmap and rivers SVG |
+| 14 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
+| 15 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
+| 16 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 17 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -308,6 +309,35 @@ with the Climate step's seasons.
   4 km ÷ g) and the productive share of the rest (each biome weighted by how well it feeds people), and
   the continents (landmasses of at least 1 % of the land). The land share is offered only when it is set
   on the World map step, since otherwise the map's sea level follows Population's.
+
+## Region
+
+The Region step (`js/region.js`, `js/steps/region.js`, built in `js/regionworker.js`) is a closer map of
+one part of the World map: a square window 200–3,200 km across at 512–2,048 pixels, so a few hundred
+metres to a few km a pixel where the world map's cells are some 55 km. Click the world map to place it
+(by default it sits on the mouth of the largest river away from the poles); zoom and pan the closer map.
+It agrees with the world map:
+- **Heights**: the world map's (bicubic between its cells), plus detail finer than one of its cells only,
+  so its large shapes stay the world map's own. The detail is fractal noise in km on the sphere (a place
+  always gets the same detail): ridged crests in mountains, hills on uplands, gentle swells on plains,
+  more where the world map is high and rugged; at the shore a rougher noise breaks the coast into bays,
+  spits and islets. Ground pushed below sea level that no sea reaches is a dry hollow, not an inland sea.
+- **Water**: the climate's runoff (as on Rivers & biomes) falls on every pixel and drains by a priority
+  flood from the sea and from the window's edges, but only where the world map's drainage leaves the
+  window there. Rivers coming in from outside bring the world map's discharge with them. Hollows
+  shallower than a tenth of the local relief silt up; deeper ones are lakes, fresh if more water reaches
+  them than they evaporate, salt if not; none under ice.
+- **Valleys**: each pixel is cut towards its river's graded profile (steep for a brook, gentle for a
+  big river; steeper under weak gravity), the more water the closer, at **Erosion ×**; valley sides then
+  slump to a stable slope.
+- **Biomes**: the world map's climate between its cells (looked up a little off each pixel, so biome
+  edges do not follow its cells' sides), colder with height by the planet's lapse rate: forest in the
+  valleys, tundra and ice on the crests.
+
+Exports, at the region's full detail and in one frame: the map (PNG), a 16-bit heightmap (its file
+name gives the height range and sea level) and the rivers (SVG, in pixels, with the frame's corners
+noted inside). The window is kept with the world (`region` in the JSON); the region is rebuilt the
+same from it.
 
 ## Drawing kit
 
