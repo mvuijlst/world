@@ -29,7 +29,9 @@ class ApiTokenMiddleware:
             token = found.group(0) if found else ''
             row = ApiToken.objects.select_related('owner').filter(digest=ApiToken.digest_of(token)).first() if token else None
             if row is None or not row.owner.is_active:
-                return JsonResponse({'error': 'That API token is not valid.'}, status=401)
+                # say what arrived (its start and length only), to compare with the prefix in the admin
+                seen = f'{token[:10]}…, {len(token)} characters' if token else f'no ws_ token in the header ({len(header) - 7} characters after Bearer)'
+                return JsonResponse({'error': f'That API token is not valid ({seen}).'}, status=401)
             request.user = row.owner
             request._dont_enforce_csrf_checks = True
             now = timezone.now()

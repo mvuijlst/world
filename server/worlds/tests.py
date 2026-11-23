@@ -120,6 +120,9 @@ class ApiTokenTests(TestCase):
 
     def test_bad_missing_and_revoked_tokens(self):
         self.assertEqual(self.c.get('/api/worlds', HTTP_AUTHORIZATION='Bearer ws_nope').status_code, 401)
+        r = self.c.get('/api/worlds', HTTP_AUTHORIZATION='Bearer ws_' + 'x' * 43)
+        self.assertIn('ws_xxxxxxx…, 46 characters', r.json()['error'])
+        self.assertNotIn('x' * 20, r.json()['error'], 'never the whole token')
         self.assertEqual(self.c.get('/api/worlds').status_code, 401)
         self.row.delete()
         self.assertEqual(self.c.get('/api/worlds', **self.auth).status_code, 401)
