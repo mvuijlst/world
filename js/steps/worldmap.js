@@ -38,6 +38,105 @@
     gravity: d.planet.gravity, scaling: w.tectonics.scaling, radiusKm: d.planet.radiusKm, ridgeDepth: w.tectonics.ridgeDepth,
   });
 
+  // ── mountain range profiles: the workbook's TECTONICS sheet, kept as a reference ──
+  function suggested(type, gravity, scaling) {
+    const r = WS.calc.mountainRange({ type, heights: [], widths: [], erosion: 0, age: 0 }, gravity, scaling);
+    const mid = (x) => (x.min !== undefined ? Math.round((x.min + x.max) / 2 / 10) * 10 : null);
+    return { heights: r.features.map((f) => mid(f.heightRange)), widths: r.features.map((f) => mid(f.widthRange)) };
+  }
+  /* Profile a mountain range by hand: its type, features within the suggested sizes, erosion. */
+  function rangeProfiles(ctx) {
+    const { icon, textField, cardify } = WS.ui, C = WS.calc, V = WS.viz;
+    const root = h('div');
+    let sig = null, cur = null;
+    const structure = (w) => `${Math.min(w.tectonics.active || 0, w.tectonics.ranges.length - 1)}|${w.tectonics.ranges.map((r) => `${r.id}:${r.type}`).join(',')}`;
+    const change = (fn) => { sig = null; ctx.mutate(fn); };          // rebuilds this block on the next update
+    function build() {
+      const k = WS.kit(ctx), T = ctx.world.tectonics;
+      const idx = Math.min(T.active || 0, T.ranges.length - 1), r = T.ranges[idx], base = `tectonics.ranges.${idx}`;
+      const rangeTabs = h('div', { class: 'btn-row', style: { marginBottom: '12px' } },
+        T.ranges.map((rg, i) => h('button', { class: ['btn small', i === idx && 'primary'], type: 'button', onclick: () => change((w) => { w.tectonics.active = i; }) }, rg.name || `Range ${i + 1}`)),
+        h('button', { class: 'btn small', type: 'button', onclick: () => change((w) => {
+          const s = suggested('Andean', ctx.d.planet.gravity, w.tectonics.scaling);
+          w.tectonics.ranges.push({ id: WS.data.newId('r'), name: `Range ${w.tectonics.ranges.length + 1}`, type: 'Andean', heights: s.heights, widths: s.widths, erosion: 5, age: 50 });
+          w.tectonics.active = w.tectonics.ranges.length - 1;
+        }) }, icon('plus'), 'Add range'));
+      const typeSel = h('select', { class: 'sel', id: 'range-type' }, Object.keys(C.RANGE_TYPES).map((t) => h('option', { value: t, selected: t === r.type }, t)));
+      typeSel.addEventListener('change', () => change((w) => {
+        const rr = w.tectonics.ranges[idx], s = suggested(typeSel.value, ctx.d.planet.gravity, w.tectonics.scaling);
+        rr.type = typeSel.value; rr.heights = s.heights; rr.widths = s.widths;
+      }));
+      const inputs = h('div', null, rangeTabs,
+        h('div', { class: 'fields' },
+          textField(ctx, { path: `${base}.name`, label: 'Range name' }),
+          h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'range-type' }, 'Type', info('Andean: thin orogeny at a subduction margin (southern Andes).\nLaramide: thick orogeny at a subduction margin (Rockies).\nUral: thin orogeny at a continent–continent collision (Urals, Alps, Caucasus).\nHimalayan: thick orogeny at a continent–continent collision (Himalayas).\n\nChanging the type refills the table with mid-range suggestions.')), typeSel),
+          k.f({ path: `${base}.erosion`, label: 'Erosion rate', unit: 'm/Myr', min: 0, slider: [0, 20], step: 0.5, help: 'Global average ≈ 4–5 m/Myr. Regionally: arid 3, cold 7, polar 1, temperate 16, tropical 5.' }),
+          k.f({ path: `${base}.age`, label: 'Inactive for', unit: 'Myr', min: 0, slider: [0, 500], step: 1, help: 'How long the range has been tectonically inactive. 0 = still active.' })),
+        h('div', { class: 'btn-row', style: { marginTop: '12px' } },
+          h('button', { class: 'btn small', type: 'button', onclick: () => change((w) => Object.assign(w.tectonics.ranges[idx], suggested(r.type, ctx.d.planet.gravity, w.tectonics.scaling))) }, icon('reset'), 'Fill suggested midpoints'),
+          T.ranges.length > 1 ? h('button', { class: 'btn small danger', type: 'button', onclick: async () => { if (await WS.ui.ask(`Remove ${r.name} and everything set for it?`, { title: 'Remove range', ok: 'Remove', danger: true })) change((w) => { w.tectonics.ranges.splice(idx, 1); w.tectonics.active = 0; }); } }, icon('x'), 'Remove range') : null));
+      const ro = k.ro([
+        { label: 'Max peak height', value: (c) => fmt.int(c.d.tectonics.maxPeak), unit: 'm', help: 'The absolute highest a single peak can stand under this gravity (rock strength), well above what ranges reach.' },
+        { label: 'Gravity', value: (c) => fmt.num(c.d.planet.gravity, 3), unit: 'g', sub: () => 'linked from Planet' },
+      ]);
+      const xsHost = h('div', { class: 'viz-frame' }), featTable = h('div', { class: 'table-wrap' });
+      const oceanHost = h('div', { class: 'viz-frame' }), oceanTable = h('div', { class: 'table-wrap' });
+      replace(root,
+        h('p', { class: 'muted', style: { fontSize: '13px', marginBottom: '12px' } }, 'The workbook’s Tectonics sheet: size a range by hand from its type and this gravity, and see it worn down. The map makes its own belts from the plates’ collisions and trenches; this does not change them.'),
+        h('div', { class: 'grid two' },
+          h('div', { class: 'stack-gap' }, inputs, ro),
+          h('div', { class: 'stack-gap' },
+            h('div', null, xsHost, h('div', { class: 'viz-caption' }, h('span', { class: 'key' }, h('i', { class: 'sw', style: { background: 'var(--amber)' } }), 'active profile'), h('span', { class: 'key' }, h('i', { class: 'sw', style: { background: 'var(--teal)' } }), 'after erosion'), h('span', null, 'vertical exaggeration varies'))),
+            featTable)),
+        h('h4', { class: 'field-label', style: { margin: '18px 0 8px' } }, 'Ocean depth by crust age (from the ridge depth above)'),
+        h('div', { class: 'grid two' }, oceanTable, oceanHost));
+      let featSig = '';
+      const renderFeatures = (c) => {
+        const rr = c.d.tectonics.ranges[idx], cr = c.world.tectonics.ranges[idx];
+        const rows = rr.features.map((f, i) => {
+          const mk = (arr, key, disabled, ok) => {
+            if (disabled) return h('span', { class: 'muted' }, '—');
+            const inp = h('input', { class: ['txt num', !ok && 'bad'], type: 'number', step: 10, value: cr[arr][i] ?? '', 'aria-label': `${f.name} ${key}` });
+            inp.addEventListener('input', () => ctx.set(`${base}.${arr}.${i}`, inp.value === '' ? null : Number(inp.value)));
+            return inp;
+          };
+          return h('tr', null, h('td', { class: 'txtcell' }, h('b', null, f.name)),
+            h('td', null, mk('heights', 'height (m)', f.tapering, f.heightOk)), h('td', { class: 'txtcell muted' }, f.heightRange.text),
+            h('td', null, mk('widths', 'width (km)', f.infinite, f.widthOk)), h('td', { class: 'txtcell muted' }, f.widthRange.text),
+            h('td', { class: 'num' }, f.erodedHeight === null ? 'Tapering' : fmt.int(f.erodedHeight)));
+        });
+        replace(featTable, cardify(h('table', { class: 'data' },
+          h('thead', null, h('tr', null, h('th', null, 'Feature'), h('th', null, 'Height m'), h('th', null, ['Suggested ', info('Average heights. Individual peaks may exceed them. 0 means at or below sea level. “Tapering” slopes between its neighbours — leave it blank.')]), h('th', null, 'Width km'), h('th', null, ['Suggested ', info('Average widths. 0 means the feature may be absent. ∞ tapers off until it meets another feature (mountain, coast, rift…) — leave it blank.')]), h('th', null, 'Eroded m'))),
+          h('tbody', null, rows))));
+      };
+      return {
+        update(c) {
+          k.update(c);
+          const rr = c.d.tectonics.ranges[idx];
+          replace(xsHost, V.crossSection(rr, c.d.tectonics.maxPeak));
+          const fs = `${c.world.tectonics.scaling}|${c.d.planet.gravity.toFixed(4)}|${rr.features.map((f) => `${f.heightOk}${f.widthOk}${f.erodedHeight}`).join(',')}`;
+          if (fs !== featSig) {
+            const active = document.activeElement, pos = active && featTable.contains(active) ? active.getAttribute('aria-label') : null;
+            featSig = fs; renderFeatures(c);
+            if (pos) { const again = featTable.querySelector(`[aria-label="${pos}"]`); if (again) { again.focus(); const v = again.value; again.value = ''; again.value = v; } }
+          }
+          replace(oceanHost, V.oceanCurve({ ridge: c.world.tectonics.ridgeDepth }));
+          const oc = c.d.tectonics.ocean.filter((o) => [0, 10, 20, 50, 100, 200, 500, 1000].includes(o.age));
+          replace(oceanTable, h('table', { class: 'data' }, h('thead', null, h('tr', null, h('th', null, 'Crust age (Myr)'), h('th', null, 'Depth (m)'))),
+            h('tbody', null, oc.map((o) => h('tr', null, h('td', null, String(o.age)), h('td', { class: 'num' }, fmt.int(o.depth)))))));
+        },
+      };
+    }
+    return {
+      el: root,
+      update(c) {
+        const s = structure(c.world);
+        if (s !== sig) { sig = s; cur = build(); }
+        cur.update(c);
+      },
+    };
+  }
+
   WS.defineStep({
     id: 'worldmap', title: 'World map', code: '00_SURFACE/WORLD_MAP', strip: 'Land & sea',
     blurb: 'The surface today: continents, shelves, mountains, islands and the deep sea, from the plates’ history.',
@@ -46,11 +145,14 @@
       const u = (ctx.ui.map = ctx.ui.map || { view: 'map', shade: true, bounds: false, tool: 'look', radius: 150, strength: 600, lat: 20, lon: 0, zoom: 1 });
       const host = h('div', { class: 'scene-host' }), hint = h('div', { class: 'scene-status mono' });
       const viewTabs = h('div'), toolsHost = h('div'), setHost = h('div'), statsHost = h('div'), expHost = h('div'), keyHost = h('div');
+      const profiles = rangeProfiles(ctx);
       const el = h('div', { class: 'stack-gap' },
         panel('Map', { ticks: true, tag: 'PRESENT DAY', flush: true }, h('div', { class: 'map-bar' }, viewTabs, keyHost), host, h('div', { class: 'viz-caption' }, hint)),
         h('div', { class: 'grid two' },
           h('div', { class: 'stack-gap' }, panel('Draw', { tag: 'BRUSH' }, toolsHost), statsHost),
-          h('div', { class: 'stack-gap' }, panel('Sea level & relief', { tag: 'SETTINGS' }, setHost), panel('Take it away', { tag: 'EXPORT' }, expHost))));
+          h('div', { class: 'stack-gap' }, panel('Sea level & relief', { tag: 'SETTINGS' }, setHost), panel('Take it away', { tag: 'EXPORT' }, expHost))),
+        panel('Range profiles', { tag: 'REFERENCE' },
+          h('details', { class: 'fold' }, h('summary', null, 'Mountain range cross-sections, erosion and ocean depth'), h('div', { style: { marginTop: '12px' } }, profiles.el))));
       const cv = h('canvas', { class: 'scene-canvas', tabindex: 0, role: 'img', 'aria-label': 'Map of the world today' });
       host.appendChild(cv);
       const g = cv.getContext('2d');
@@ -226,6 +328,7 @@
           i.addEventListener('change', () => { const v = Number(i.value); if (!Number.isFinite(v)) return; ctx.set(path, clamp(v, min, max)); });
           return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label, info(tip)), i);
         };
+        const fg = ctx.d.planet.gravity ** w.tectonics.scaling;
         const res = h('select', { class: 'sel', 'aria-label': 'Detail' }, [[360, 'Coarse · 360'], [720, 'Fine · 720'], [1440, 'Finest · 1440 (slow)']].map(([v, t]) => h('option', { value: v, selected: (w.map.res || 720) === v }, t)));
         res.addEventListener('change', () => ctx.set('map.res', Number(res.value)));
         replace(setHost,
@@ -233,12 +336,14 @@
             num('map.land', 'Land, % of surface', 1, 95, 0.5, 'How much of the surface stands above the sea. By default the Population step’s land share; the crust can only hold so much.', +(w.map.land ?? w.population.land).toFixed(1)),
             num('map.shelf', 'Shelf width ×', 0.2, 4, 0.1, 'Continental shelves: about 150 km wide on quiet coasts, 40 km where a plate subducts, on Earth.', w.map.shelf),
             num('map.relief', 'Relief ×', 0.2, 3, 0.1, 'Mountain heights on top of what gravity allows.', w.map.relief),
+            num('tectonics.scaling', 'Gravity scaling', 1, 2, 0.05, 'How strongly heights and widths shrink as gravity grows: they are divided by g^scaling (Artifexian: 1–2). At 1 g it makes no difference.', w.tectonics.scaling),
+            num('tectonics.ridgeDepth', 'Ridge depth, m', 0, 6000, 50, 'Depth of the mid-ocean ridge crests below sea level; the ocean floor deepens from there as it ages and cools. On Earth about 2,600 m; stay within about ±500 m of that.', w.tectonics.ridgeDepth),
             h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Detail'), res)),
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             w.map.land != null ? h('button', { class: 'btn small', type: 'button', onclick: () => ctx.set('map.land', null) }, `Follow Population (${fmt.num(w.population.land, 1)} %)`) : null,
             auto ? h('button', { class: 'btn small', type: 'button', onclick: () => ctx.set('map.land', +auto.toFixed(1)) }, `Earth-like for this crust: ${fmt.num(auto, 1)} %`) : null),
           h('p', { class: 'muted', style: { fontSize: '13px', marginTop: '8px' } },
-            `Gravity ${fmt.num(ctx.d.planet.gravity, 2)} g: heights and widths ÷ ${fmt.num(ctx.d.planet.gravity ** w.tectonics.scaling, 2)} (g^${fmt.num(w.tectonics.scaling, 2)}, set on Tectonics), ridges at ${fmt.int(w.tectonics.ridgeDepth)} m.`));
+            `Gravity ${fmt.num(ctx.d.planet.gravity, 2)} g: heights and widths ÷ ${fmt.num(fg, 2)} (g^${fmt.num(w.tectonics.scaling, 2)}), so the highest ranges reach about ${fmt.int(8850 / fg)} m; ridges at ${fmt.int(w.tectonics.ridgeDepth)} m.`));
       }
       function renderStats() {
         if (!map) { replace(statsHost); return; }
@@ -284,7 +389,7 @@
         el,
         update() {
           if (!ro._on) { ro.observe(host); ro._on = true; }
-          renderView(); renderTools(); renderSet(); renderKey();
+          renderView(); renderTools(); renderSet(); renderKey(); profiles.update(ctx);
           if (ensure()) { if (!colours || offFor === null) colour(); renderStats(); fit(); } else { renderStats(); fit(); }
           renderExport();                                      // (after the map is built: its buttons need it)
         },
@@ -299,6 +404,7 @@
       if (map.land < map.target - 0.03) out.push({ level: 'warn', text: `Only ${fmt.num(map.land * 100, 1)} % is land: the continental crust can’t hold the ${fmt.num(map.target * 100, 1)} % asked for.` });
       else out.push({ level: 'ok', text: `${fmt.num(map.land * 100, 1)} % of the surface is land.` });
       if (map.land > map.crust * 0.85) out.push({ level: 'info', text: `Land is ${fmt.int((map.land / map.crust) * 100)} % of the continental crust, so there is little flooded shelf (Earth: about 71 %). A lower land share, or more crust on Plates, gives wider shelves.` });
+      if (Math.abs(w.tectonics.ridgeDepth - 2600) > 500) out.push({ level: 'warn', text: `Mid-ocean ridges at ${fmt.int(w.tectonics.ridgeDepth)} m are more than 500 m from Earth’s ~2,600 m.` });
       const peak = 8850 / d.planet.gravity ** w.tectonics.scaling;
       if (map.highest.m > peak * 1.5) out.push({ level: 'warn', text: `The highest point, ${fmt.int(map.highest.m)} m, is well above what this gravity allows (about ${fmt.int(peak)} m).` });
       return out;
