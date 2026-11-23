@@ -92,10 +92,13 @@ test('sea ice: where the sea freezes, with an edge that wanders rather than foll
   assert.ok(spread > 15, `the ice edge spans many parallels (${spread.toFixed(1)}°)`);
 });
 
-test('a carved map keeps its basins: dry ones stay closed, lakes stay', () => {
-  const plain = M.build(world, { res: 360, carve: false });
-  const bp = B.build(plain, K.build(plain, EARTH), { ...EARTH, seed: 7 }), bc = B.build(map, climate, { ...EARTH, seed: 7 });
-  assert.ok(map.rivers, 'the shared map is carved');
+test('carved with its climate, a map keeps its basins: dry ones stay closed, lakes stay', () => {
+  // as the app does it: the map, its climate, the rivers carve it with that climate's water
+  const plain = M.build(world, { res: 360, carve: false }), cp = K.build(plain, EARTH);
+  const carved = M.carveMap(M.build(world, { res: 360, carve: false }), { water: B.water(plain, cp, { ...EARTH, seed: 7 }) });
+  const bp = B.build(plain, cp, { ...EARTH, seed: 7 }), bc = B.build(carved, cp, { ...EARTH, seed: 7 });
+  assert.equal(carved.rivers.rain, 'climate');
+  assert.ok(carved.rivers.eroded > 0);
   assert.ok(bc.stats.lakes > 0.6 * bp.stats.lakes, `lakes ${bc.stats.lakes} vs ${bp.stats.lakes} uncarved`);
   assert.ok(bc.stats.endorheic > 0.5 * bp.stats.endorheic, `inland drainage ${bc.stats.endorheic} vs ${bp.stats.endorheic} uncarved`);
 });

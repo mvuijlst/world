@@ -69,12 +69,18 @@
    * map: a built world map. clim: its climate (climate.js build). planet: {pressure (atm), seed,
    * radiusKm, gravity}. opts: minFlow (m³/s for a river line, 600), minCells (cells it drains, 8), rough (m).
    */
-  function build(map, clim, planet = {}, opts = {}) {
+  /*
+   * The climate on the map's own cells, and the water each land cell sheds a year after evaporation
+   * (mm): what the rivers carry, and what carves the map. map: a built world map; clim: its climate;
+   * planet: {pressure (atm), seed, radiusKm, gravity}. Returns per-cell arrays (land cells only):
+   * runoff, P (rain), PET (what could evaporate), Tw, Tc, Ta (warm, cold, mean °C), Pw (warm-season
+   * rain), and land, area (km²), liquid, seaIce.
+   */
+  function water(map, clim, planet = {}) {
     const { W, H, z } = map, gr = map.grid, N = W * H;
     const R = planet.radiusKm ?? map.planet?.radiusKm ?? 6371, kmDeg = (Math.PI * R) / 180;
     const lapse = 6.5 * (planet.gravity ?? map.planet?.gravity ?? 1);
     const atm = planet.pressure ?? 1, liquid = atm >= 0.0061, tBoil = boiling(atm);
-    const minFlow = opts.minFlow ?? 600, minCells = opts.minCells ?? 8;
     const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0));
     const area = Float32Array.from({ length: N }, (_, k) => (gr.dx * kmDeg) ** 2 * gr.cosl[Math.floor(k / W)]);   // km²
     const noise = M.noise3((planet.seed ?? 1) * 7 + 3);
@@ -130,13 +136,21 @@
       if (!liquid || ice || boil) continue;
       runoff[k] = Math.max(0, P[k] - budyko(P[k], PET[k]));
     }
+    return { runoff, P, PET, Tw, Tc, Ta, Pw, land, area, liquid, seaIce, tBoil };
+  }
+
+  function build(map, clim, planet = {}, opts = {}) {
+    const { W, H, z } = map, gr = map.grid, N = W * H;
+    const R = planet.radiusKm ?? map.planet?.radiusKm ?? 6371, kmDeg = (Math.PI * R) / 180;
+    const minFlow = opts.minFlow ?? 600, minCells = opts.minCells ?? 8;
+    const noise = M.noise3((planet.seed ?? 1) * 7 + 3);
+    const { runoff, P, PET, Tw, Tc, Ta, Pw, land, area, liquid, seaIce, tBoil } = water(map, clim, planet);
 
     // ── drainage: flood the land up from the sea (priority flood, with a tiny rise over flats) ──
     // The map's slopes are smooth, and water on an even slope runs down in parallel lines that never
     // meet; real land is uneven at every scale and its streams gather into valleys. So the water is
     // routed over the heights plus a gentle unevenness (scaled like the map's relief).
-    // (a map carved by its rivers already has its valleys: the water need only find them)
-    const rough = (opts.rough ?? (map.rivers ? 120 : 450)) / (map.planet?.factor ?? 1);
+    const rough = (opts.rough ?? 450) / (map.planet?.factor ?? 1);
     const zr = Float32Array.from(z, (v, k) => (v > 0 ? v + rough * (1 + noise(gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], gr.xyz[k * 3], 7, 5)) : v));
     const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), done = new Uint8Array(N), order = new Int32Array(N);
     let no = 0;
@@ -379,7 +393,7 @@
   /* The planet's inputs for this from the app's world and derived values. */
   const planetOf = (w, d) => ({ pressure: w.planet.pressure, seed: w.plates.seed ?? 1, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity });
 
-  const api = { build, BIOMES, planetOf, pet, budyko, boiling, landUse };
+  const api = { build, water, BIOMES, planetOf, pet, budyko, boiling, landUse };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.biomes = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

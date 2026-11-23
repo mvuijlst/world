@@ -27,7 +27,10 @@
     // (the World map's brush changes the map in place: its stroke count says when)
     if (cache && cache.mapRef === m && cache.strokes === m.strokes && JSON.stringify(cache.pl) === JSON.stringify(pl)) return cache;
     if (opts.peek) return null;
-    cache = { mapRef: m, strokes: m.strokes, clim: K.build(m.map, pl), pl };
+    // (a map carved by its rivers comes with the climate it was carved with: the same one, as long as
+    // nothing has been drawn on it since)
+    const kept = m.map.climate && m.map.climate.strokes === m.strokes && JSON.stringify(m.map.climate.pl) === JSON.stringify(pl) ? m.map.climate.clim : null;
+    cache = { mapRef: m, strokes: m.strokes, clim: kept || K.build(m.map, pl), pl };
     return cache;
   };
 

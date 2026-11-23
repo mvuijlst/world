@@ -203,12 +203,16 @@ following Worldbuilder's Log 20–26:
   volcanoes), at **Erosion ×** Earth's rate, faster where it rains (the equator and the fronts between
   the planet's circulation cells), slower in the dry belts and near the poles. The latitude stands in for
   the climate, which is worked out from the finished map, and is where a feature is today.
-- **Rivers carve** (`carve` in `js/worldmap.js`): the water drains to the lowest way out (a priority
-  flood from the sea), gathering the rain on the way; each cell is cut down towards the one it drains to
+- **Rivers carve** (`carve` and `carveMap` in `js/worldmap.js`): the map is built, its climate worked
+  out (Climate step), and the water each cell sheds after evaporation (`water` in `js/biomes.js`, as
+  for the rivers) drains to the lowest way out (a priority flood from the sea), gathering on the way; each cell is cut down towards the one it drains to
   by the stream-power law, solved implicitly (Braun & Willett 2013), so big rivers cut deep valleys
-  through uplands and mountain belts (to some 1.5 km at Erosion ×1) and divides barely change; valley
-  sides slope down to them. A basin passes its water on over its rim only in a wet belt; in a dry one
-  it stays closed and its rim uncut, so inland drainage and lakes survive the carving. The rock goes
+  through wet uplands and mountain belts (typically 1.5–3 km, deeper in the wettest high ranges, at
+  Erosion ×1), little in deserts, and divides barely change; valley sides slope down to them. A basin
+  spills over its rim only if more water flows in than its lake could evaporate; otherwise it stays
+  closed and its rim uncut, so inland drainage and lakes come out as on the uncarved map. The climate
+  is kept for the Climate step (carving barely changes it: it works on smoothed heights), so it is
+  worked out once. The rock goes
   downstream: basins fill with it (halfway at most), and the largest rivers build deltas a few metres
   above the sea on the shelf in front of their mouths. Land stays land; the Rivers & biomes step works
   on the carved map, and its rivers run in the valleys. It can be switched off, and is off

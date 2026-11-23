@@ -222,8 +222,11 @@
    *  - the rock: what is cut goes downstream; hollows it reaches fill up with it (basin floors), and
    *    what reaches the sea builds deltas on the shelf in front of the mouth, up to a few metres above
    *    the sea; what the shelf cannot hold goes to the deep sea.
-   * gr: the grid; z: heights (changed in place). opts: radiusKm, erosion (× Earth's, 1), wet(lat)
-   * (rain, 1 on average), rough (m of unevenness for the routing), seed, steps (3), k (strength, 0.8).
+   * gr: the grid; z: heights (changed in place). opts: radiusKm, erosion (× Earth's, 1), rough (m of
+   * unevenness for the routing), seed, steps (3), k (strength, 0.8), and the water: either water =
+   * {runoff, P, PET} (mm a year per cell, from the climate: biomes.js water), when a basin spills only
+   * if more flows in than its lake could evaporate, or else wet(lat) (rain by latitude, 1 on average),
+   * when a basin spills only in a wet belt.
    * Returns {cut, laid} (m, per cell), {mouths}, the volumes (km³) and the deltas' new land (km²).
    */
   function carve(gr, z, opts = {}) {
@@ -234,7 +237,12 @@
     const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0));
     const cut = new Float32Array(N), laid = new Float32Array(N);
     const area = new Float32Array(N), wA = new Float32Array(N);
-    for (let k = 0; k < N; k++) { const j = Math.floor(k / W); area[k] = (gr.dx * kmDeg) ** 2 * Math.max(0.02, gr.cosl[j]); wA[k] = area[k] * wet(gr.lat[j]); }
+    // the water each cell sheds, as a share of an Earth-like land's (300 mm a year); a little even in
+    // deserts (flash floods), and no more than a very wet land's (1500 mm: what falls on a 55 km cell
+    // runs off its slopes, not all down one gorge); and what a lake there could evaporate, likewise
+    const wt = opts.water, RUN = 300;
+    const evap = wt ? Float32Array.from(wt.PET, (e, k) => Math.max(0, 1.2 * e - wt.P[k]) / RUN) : null;
+    for (let k = 0; k < N; k++) { const j = Math.floor(k / W); area[k] = (gr.dx * kmDeg) ** 2 * Math.max(0.02, gr.cosl[j]); wA[k] = area[k] * (wt ? clamp(wt.runoff[k], 30, 1500) / RUN : wet(gr.lat[j])); }
     const nz = noise3(((opts.seed ?? 1) ^ 0x71ae) >>> 0), rough = opts.rough ?? 300;
     const zr = Float32Array.from(z, (v, k) => (v > 0 ? v + rough * (1 + nz(gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], gr.xyz[k * 3], 7, 5)) : v));
     const nb = (k, f) => {
@@ -265,13 +273,25 @@
     // basins: hollows deeper than the unevenness. Whether one overflows depends on its rain against
     // what its lake can evaporate: in a dry belt its water stays (an endorheic basin, its rim uncut), in
     // a wet one it spills over the rim and on to the sea (and the river cuts the rim down)
-    const basinMin = rough / 6, inBasin = (k) => spill[k] - z[k] > basinMin;
+    const zb = Float32Array.from(z), basinMin = rough / 6, inBasin = (k) => spill[k] - zb[k] > basinMin;   // (before any cutting)
     const passes = (k) => smooth((wet(gr.lat[Math.floor(k / W)]) - 0.8) / 0.6);
     const out = new Float32Array(N).fill(1);                              // the share a cell passes on
-    for (let o = 0; o < no; o++) { const k = order[o], r = recv[k]; if (inBasin(k) && !(land[r] && inBasin(r))) out[k] = passes(k); }
-    // the rain gathered on the way down (upstream cells first)
+    // each basin's way out (its last cell), and what a lake filling it could evaporate
+    const exitOf = new Int32Array(N).fill(-1), cap = new Float64Array(N);
+    for (let o = 0; o < no; o++) {
+      const k = order[o], r = recv[k];
+      if (!inBasin(k)) continue;
+      exitOf[k] = land[r] && inBasin(r) ? exitOf[r] : k;
+      if (evap) cap[exitOf[k]] += area[k] * evap[k];
+    }
+    // the rain gathered on the way down (upstream cells first); a basin passes on what its lake cannot
+    // evaporate (from the climate) or, by latitude, all of it in a wet belt and none in a dry one
     const A = Float64Array.from(wA);
-    for (let o = no - 1; o >= 0; o--) { const k = order[o], r = recv[k]; if (r >= 0 && land[r]) A[r] += A[k] * out[k]; }
+    for (let o = no - 1; o >= 0; o--) {
+      const k = order[o], r = recv[k];
+      if (exitOf[k] === k) out[k] = evap ? (A[k] > 0 ? clamp(1 - cap[k] / A[k], 0, 1) : 0) : passes(k);
+      if (r >= 0 && land[r]) A[r] += A[k] * out[k];
+    }
 
     // the cutting, downstream first; hollows (a cell whose way out is higher) are left alone
     const z0 = Float32Array.from(z);
@@ -302,6 +322,7 @@
       const k = order[o], r = recv[k];
       Qs[k] += cut[k] * area[k] / 1000; eroded += cut[k] * area[k] / 1000;      // km³
       const room = inBasin(k) ? Math.max(0, z0[k] + 0.5 * (spill[k] - z0[k]) - z[k]) : 0;
+      if (room > 0) cut[k] = Math.max(0, cut[k] - room);          // (what was cut there and laid back is not cut)
       if (room > 0 && Qs[k] > 0) { const d = Math.min(room, (Qs[k] * 1000) / area[k]); z[k] += d; laid[k] += d; Qs[k] -= (d * area[k]) / 1000; basins += (d * area[k]) / 1000; }
       if (out[k] < 1) { basins += Qs[k] * (1 - out[k]); Qs[k] *= out[k]; }
       if (land[r]) Qs[r] += Qs[k]; else mouths.set(r, (mouths.get(r) || 0) + Qs[k]);
@@ -580,21 +601,41 @@
       if (pl[k] !== pl[r] || (d >= 0 && pl[k] !== pl[d])) boundary[k] = nearTrench[k] ? 1 : nearRidge[k] ? 2 : 3;
     }
 
-    let landCells = 0, hiZ = -1e9, loZ = 1e9, hiK = 0, loK = 0;
-    for (let k = 0; k < N; k++) { if (z[k] > hiZ) { hiZ = z[k]; hiK = k; } if (z[k] < loZ) { loZ = z[k]; loK = k; } if (z[k] > 0) landCells++; }
-    const ll = (k) => [gr.lat[Math.floor(k / W)], lonOf(gr, k % W)];
-    return {
+    const map = {
       W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr,
-      land: shareAbove(gr, z, 0), crust: crustShare, target, sea,
-      highest: { m: hiZ, at: ll(hiK) }, deepest: { m: loZ, at: ll(loK) }, cells: { land: landCells }, at,
-      rivers: carved && { cut: carved.cut, laid: carved.laid, eroded: carved.eroded, delta: carved.delta, basins: carved.basins, mouths: carved.mouths, deltaArea: carved.deltaArea, deepest: carved.deepest },
+      crust: crustShare, target, sea, at, rivers: riversOf(carved, 'latitude'),
+      // what carveMap needs to carve it later, with the climate's water
+      carving: { erosion: E, seed, rough: 300 / f, k: opts.carveK, wet: (lat) => wetRaw(lat) / wetMean },
     };
+    return measure(map);
+  }
+  const riversOf = (c, rain) => c && { cut: c.cut, laid: c.laid, eroded: c.eroded, delta: c.delta, basins: c.basins, mouths: c.mouths, deltaArea: c.deltaArea, deepest: c.deepest, rain };
+  /* A map's land share, highest and deepest points (after its heights have changed). */
+  function measure(map) {
+    const { W, z, grid: gr } = map;
+    let landCells = 0, hiZ = -1e9, loZ = 1e9, hiK = 0, loK = 0;
+    for (let k = 0; k < z.length; k++) { if (z[k] > hiZ) { hiZ = z[k]; hiK = k; } if (z[k] < loZ) { loZ = z[k]; loK = k; } if (z[k] > 0) landCells++; }
+    const ll = (k) => [gr.lat[Math.floor(k / W)], lonOf(gr, k % W)];
+    return Object.assign(map, { land: shareAbove(gr, z, 0), highest: { m: hiZ, at: ll(hiK) }, deepest: { m: loZ, at: ll(loK) }, cells: { land: landCells } });
+  }
+
+  /*
+   * Carve a map built with carve: false, with the water its climate gives (biomes.js water: runoff,
+   * P, PET in mm a year per cell), then add the brush strokes. Changes and returns the map. With no
+   * liquid water (water.liquid false), nothing is carved.
+   */
+  function carveMap(map, opts = {}) {
+    const s = map.carving || {}, wt = opts.water;
+    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet });
+    for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); });
+    map.rivers = riversOf(carved, wt ? 'climate' : 'latitude');
+    return measure(map);
   }
 
   /* Sample a built map at [lat, lon] (nearest cell). */
   const sample = (map, la, lo) => map.z[cellOf(map.grid, la, lo)];
 
-  const api = { build, carve, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
+  const api = { build, carve, carveMap, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.worldmap = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
