@@ -790,7 +790,9 @@
     let prev = null, n = features.filter((f) => f.kind === 'suture').length;
     const parted = new Set();
     const end = Math.max(0, opts.to ?? 0);
-    for (let age = start - step; age >= end - 1e-9; age -= step) {
+    // from: begin there (to carry on a history: what touches then has not just met)
+    const top = opts.from != null ? Math.min(start, opts.from) : start - step;
+    for (let age = top; age >= end - 1e-9; age -= step) {
       const live = (f) => (f.begin ?? start) >= age && (f.end == null || f.end < age);
       const coasts = coastsAt({ ...P, features }, m, age), ids = [...coasts.keys()];
       const now = new Map();
@@ -908,16 +910,20 @@
       const back = Q.inverse(m.absolute(host.plateId, age));
       out.push({ id: `l${++nl}-${Math.round(age)}`, kind: 'lip', type: kind, plateId: host.plateId, name: name || `LIP ${nl}`, coords: blob(Q.rotate(back, v), kind === 'flood basalt' ? U(3, 6) : U(4, 8)), begin: +age.toFixed(3), auto: true });
     };
-    const count = opts.count ?? Math.round(U(8, 14));
+    // window: [older, younger] Ma, to add only the hotspots that begin in it (about two per 100 Myr)
+    const [hi, lo] = opts.window || [0.7 * start, 0.05 * start];
+    const count = opts.count ?? (opts.window ? Math.round((U(1.2, 2.4) * (hi - lo)) / 100) : Math.round(U(8, 14)));
     for (let i = 0; i < count; i++) {
       const v = S.vec([Math.asin(2 * r() - 1) * R2D, U(-180, 180)]);
-      const begin = Math.round(U(0.05, 0.7) * start), life = U(80, 400), end = begin - life > 0 ? Math.round(begin - life) : undefined;
+      const begin = Math.max(1, Math.round(U(lo, hi))), life = U(80, 400), end = begin - life > 0 ? Math.round(begin - life) : undefined;
       out.push({ id: `h${++nh}`, kind: 'hotspot', plateId: 0, name: `Hotspot ${nh}`, coords: [fix4(S.latLon(v))], begin, ...(end ? { end } : {}), auto: true });
       lipAt(v, begin);
     }
-    for (const rf of P.features.filter((f) => f.kind === 'rift' && (f.begin ?? start) < start && f.left && f.right)) {
+    // rifts that open (in the window, if one is given) may be heralded by a plume
+    const [rHi, rLo] = opts.window ? [hi, lo] : [start, -Infinity];
+    for (const rf of P.features.filter((f) => f.kind === 'rift' && (f.begin ?? start) < Math.min(start, rHi + 1e-9) && (f.begin ?? start) > rLo && f.left && f.right)) {
       if (r() > 0.6) continue;
-      const age = Math.min(start, Math.round((rf.begin ?? start) + U(1, 8)));
+      const age = Math.min(start, rHi, Math.round((rf.begin ?? start) + U(1, 8)));
       const v = Q.rotate(m.absolute(rf.plateId, age), S.vec(rf.coords[Math.floor(rf.coords.length / 2)]));
       out.push({ id: `h${++nh}`, kind: 'hotspot', plateId: 0, name: `Hotspot ${nh}`, coords: [fix4(S.latLon(v))], begin: age, end: Math.max(1, Math.round(age - U(60, 200))), auto: true });
       lipAt(v, age, `LIP ${nl + 1} (${rf.name})`);
@@ -1125,7 +1131,109 @@
     return { ...P, events: events.sort((a, b) => b.age - a.age) };
   }
 
-  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift, divideLines, microcontinent, markCollisions, markOrogens, addHotspots, hotspotTrack, riftContacts, breakup, makeWorld };
+  /*
+   * The whole history d Myr older: the start, every rotation pole and every feature's begin, end
+   * and active ages (features' not below 0, the present). What lasts to the present (no end) still does.
+   */
+  function shiftHistory(P, d) {
+    const sh = (x) => (Number.isFinite(x) ? +(x + d).toFixed(3) : x);
+    return {
+      ...P,
+      start: sh(P.start ?? 1000),
+      plates: P.plates.map((p) => ({ ...p, rotations: (p.rotations || []).map((q) => ({ ...q, age: sh(q.age) })) })),
+      features: P.features.map((f) => {
+        const g = { ...f };
+        for (const k of ['begin', 'end', 'active']) if (Number.isFinite(g[k])) g[k] = Math.max(0, sh(g[k]));
+        return g;
+      }),
+    };
+  }
+
+  /*
+   * Carry a finished history on: everything moves `duration` Myr into the past, the plates move on
+   * from then to the present (mode as in simulate, Wilson cycle included), and the new stretch gets
+   * its own marks, as the earlier ones were made: subduction zones and island arcs, collisions and
+   * accretions, mountain belts and hotspots (each only if the history has that kind of mark made by
+   * a step). The earlier marks keep their shapes; what reached the present stops where the new
+   * stretch begins: trenches and arcs, belts still rising, and plumes whose time is up.
+   * opts: duration, mode (apart, wander, together, cycle, or breakup: new rifts between the
+   * continents that touch, then apart), seed, interval, minSpeed, maxSpeed, radiusKm, gravity, scaling.
+   * Returns {plates, features, start, ..., events, welds, phases, end, duration}.
+   */
+  function advance(P, opts = {}) {
+    const D = Math.round(clamp(opts.duration ?? 100, 1, 5000));
+    const seed = Number.isFinite(opts.seed) ? opts.seed >>> 0 : (Math.random() * 2 ** 31) | 0;
+    const R = opts.radiusKm ?? 6371, start0 = P.start ?? 1000;
+    const r = rng((seed ^ 0xadd0 ^ Math.round(start0 * 31)) >>> 0), U = (a, b) => a + (b - a) * r();
+    const hasAuto = (test) => P.features.some((f) => f.auto && test(f));
+    const marks = {
+      subduction: hasAuto((f) => f.kind === 'subduction' || (f.kind === 'arc' && !f.accreted)),
+      collisions: hasAuto((f) => f.kind === 'suture' || f.accreted),
+      orogens: hasAuto((f) => f.kind === 'orogen'),
+      hotspots: hasAuto((f) => f.kind === 'hotspot' || f.kind === 'lip'),
+      ...(opts.marks || {}),
+    };
+    // (in the old ages, before the shift: 0 is the old present, -D the new one)
+    const byId = new Map(P.features.map((f) => [f.id, f]));
+    const trench = (f) => f.auto && (f.kind === 'subduction' || (f.kind === 'arc' && !f.accreted));
+    // trenches and arcs that only began at the old present would stop as they start: the new stretch makes its own
+    const gone = new Set(P.features.filter((f) => trench(f) && f.end == null && (f.begin ?? start0) <= 1e-9).map((f) => f.id));
+    const before = P.features.filter((f) => !gone.has(f.id) && !(f.auto && f.kind === 'orogen' && gone.has(f.id.slice(1)))).map((f) => {
+      if (!f.auto) return f;
+      if (trench(f) && f.end == null) return { ...f, end: 0 };
+      if (f.kind === 'hotspot' && f.end == null) {
+        const end = Math.round((f.begin ?? start0) - U(80, 400));
+        return end > -D ? { ...f, end } : f;
+      }
+      if (f.kind === 'orogen' && !(f.active > 0)) {
+        if (f.type === 'cordillera') {
+          const src = byId.get(f.id.slice(1));
+          return src && !src.auto && src.end == null ? { ...f, active: undefined } : { ...f, active: 0 };
+        }
+        const rise = f.type === 'accretion' ? U(20, 40) : U(40, 80);
+        return { ...f, active: Math.max(-D, Math.round((f.begin ?? start0) - rise)) };
+      }
+      return f;
+    });
+    let Q2 = shiftHistory({ ...P, features: before }, D);
+    const events = [];
+
+    // the plates move on; 'breakup' first rifts the continents that touch (near their old sutures)
+    const interval = clamp(opts.interval ?? 20, 1, D);
+    let mode = opts.mode || 'wander', keep;
+    if (mode === 'breakup') {
+      const bu = breakup(Q2, D, { seed: seed + Q2.start });
+      Q2 = bu.P; keep = bu.keep; mode = 'apart';
+      events.push(...bu.events);
+    }
+    const sim = simulate(Q2, { seed: seed + Q2.start, mode, from: D, duration: D, interval, minSpeed: opts.minSpeed ?? 1.5, maxSpeed: opts.maxSpeed ?? 4, radiusKm: R, ...(keep ? { keep } : {}) });
+    Q2 = { ...Q2, plates: sim.plates };
+    events.push(...sim.welds.map((w) => ({ ...w, kind: 'weld' })));
+
+    // the marks of the new stretch
+    const ids = new Set(Q2.features.map((f) => f.id));
+    const fresh = (list) => list.map((f) => { let id = f.id; while (ids.has(id)) id = `${id}+`; ids.add(id); return id === f.id ? f : { ...f, id }; });
+    if (marks.subduction) {
+      const every = Math.min(25, Math.max(5, Math.round(D / 2)));
+      Q2 = { ...Q2, features: Q2.features.concat(fresh(markSubduction(Q2, { seed: seed + Q2.start, every, minPoints: 7, radiusKm: R, from: D, to: 0 }))) };
+    }
+    if (marks.collisions) {
+      const col = markCollisions(Q2, { every: Math.min(10, D), from: D }), n0 = Q2.features.length;
+      Q2 = { ...Q2, features: col.features.slice(0, n0).concat(fresh(col.features.slice(n0))) };
+      events.push(...col.events);
+    }
+    // new trenches closed by a collision the moment they began never were
+    Q2 = { ...Q2, features: Q2.features.filter((f) => !(trench(f) && (f.begin ?? Q2.start) <= D + 1e-9 && f.end != null && f.end >= (f.begin ?? Q2.start) - 1e-9)) };
+    if (marks.orogens) {
+      const cause = (f) => f.kind === 'subduction' || f.kind === 'suture' || (f.kind === 'arc' && f.accreted);
+      const made = markOrogens({ ...Q2, features: Q2.features.filter((f) => !cause(f) || (f.begin ?? Q2.start) <= D + 1e-9) }, { seed: seed + Q2.start, radiusKm: R, gravity: opts.gravity, scaling: opts.scaling });
+      Q2 = { ...Q2, features: Q2.features.concat(fresh(made)) };
+    }
+    if (marks.hotspots) Q2 = { ...Q2, features: Q2.features.concat(fresh(addHotspots(Q2, { seed: seed + Q2.start, window: [D, 0] }))) };
+    return { ...Q2, events: events.sort((a, b) => b.age - a.age), welds: sim.welds, phases: sim.phases, end: sim.end, duration: D };
+  }
+
+  const api = { generate, simulate, leadingCoasts, markSubduction, secondRift, divideLines, microcontinent, markCollisions, markOrogens, addHotspots, hotspotTrack, riftContacts, breakup, makeWorld, shiftHistory, advance };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.supercontinent = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

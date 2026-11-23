@@ -211,3 +211,47 @@ test('Log 14: a microcontinent is a sliver of a margin, riding its plate until i
   assert.equal(mc.plates.find((p) => p.id === nid).fixed, pid);
   assert.equal(mc.rift.begin, 900);
 });
+
+test('shiftHistory moves every age, keeps what lasts to the present', () => {
+  const P = {
+    start: 1000, plates: [{ id: 1, rotations: [{ age: 500, lat: 10, lon: 20, angle: 5 }, { age: 0, lat: 10, lon: 20, angle: 9 }] }],
+    features: [{ id: 'a', kind: 'rift', begin: 800 }, { id: 'b', kind: 'subduction', begin: 300, end: 100 }, { id: 'c', kind: 'hotspot', begin: 50 }, { id: 'd', kind: 'orogen', begin: 200, active: 0 }],
+  };
+  const Q = G.shiftHistory(P, 100);
+  assert.equal(Q.start, 1100);
+  assert.deepEqual(Q.plates[0].rotations.map((r) => r.age), [600, 100]);
+  assert.deepEqual(Q.features.map((f) => [f.begin, f.end, f.active]), [[900, undefined, undefined], [400, 200, undefined], [150, undefined, undefined], [300, undefined, 100]]);
+  assert.equal(P.start, 1000, 'the input is left alone');
+});
+
+test('advance carries a history on to a new present, keeping the old marks', () => {
+  const w = G.makeWorld({ seed: 11, plates: 4 });
+  for (const mode of ['cycle', 'breakup', 'wander']) {
+    const D = 150;
+    const a = G.advance(w, { duration: D, mode, seed: 3 });
+    assert.equal(a.start, w.start + D, mode);
+    for (const p of a.plates) {
+      const ages = (p.rotations || []).map((r) => r.age);
+      if (ages.length) assert.equal(Math.min(...ages), 0, `${mode}: plate ${p.id} moves to the present`);
+    }
+    const ids = a.features.map((f) => f.id);
+    assert.equal(new Set(ids).size, ids.length, `${mode}: ids stay unique`);
+    for (const f of a.features) for (const k of ['begin', 'end', 'active']) if (f[k] != null) assert.ok(f[k] >= 0 && f[k] <= a.start, `${mode}: ${f.id} ${k} ${f[k]}`);
+    // the old marks keep their shapes, D Myr older; old trenches stop at the old present
+    // (a break-up splits the crust it rifts, and the lines across the rift, into new pieces)
+    for (const f of mode === 'breakup' ? [] : w.features) {
+      const g = a.features.find((x) => x.id === f.id);
+      assert.ok(g, `${mode}: ${f.id} kept`);
+      assert.deepEqual(g.coords, f.coords);
+      if (f.begin != null) assert.equal(g.begin, f.begin + D);
+      if (f.auto && f.kind === 'subduction' && f.end == null) assert.equal(g.end, D);
+    }
+    // and the new stretch has trenches of its own
+    assert.ok(a.features.some((f) => f.kind === 'subduction' && f.begin <= D), `${mode}: new subduction zones`);
+  }
+  // a break-up rifts the continents that touch
+  const b = G.advance(w, { duration: 100, mode: 'breakup', seed: 3 });
+  assert.ok(b.features.filter((f) => f.kind === 'rift').length >= w.features.filter((f) => f.kind === 'rift').length);
+  // the same inputs give the same world
+  assert.deepEqual(G.advance(w, { duration: 100, mode: 'cycle', seed: 5 }), G.advance(w, { duration: 100, mode: 'cycle', seed: 5 }));
+});

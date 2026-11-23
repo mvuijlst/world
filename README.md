@@ -33,15 +33,14 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
-| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–19: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, microcontinents, arc and continent collisions, mountain belts, hotspots and LIPs, a land estimate for Population, GPlates export/import |
-| 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity and radius; map or globe, a brush to raise and lower, colour and 16-bit height PNGs, and the drawing kit |
+| 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–19: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, microcontinents, arc and continent collisions, mountain belts, hotspots and LIPs, a land estimate for Population, GPlates export/import; **Advance** carries a finished history on, 25–500 Myr at a time (Wilson cycle, break up, drift apart, wander, come together), with undo, until the world looks right |
+| 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity (with the gravity scaling factor) and radius, ridge depth; map or globe, a brush to raise and lower, colour and 16-bit height PNGs, and the drawing kit; the workbook's `TECTONICS` sheet as a reference (range cross-sections, erosion, max peak, ocean depth by crust age) |
 | 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
 | 12 | Rivers & biomes | from the map and its climate: rivers down to the sea, fresh and salt lakes, basins that drain inland, and biomes; map or globe, a PNG of the map and the rivers as SVG |
-| 13 | Tectonics | `TECTONICS` — max peak, range cross-sections (several ranges), erosion, ocean depth |
-| 14 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
-| 15 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
-| 16 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 17 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 13 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
+| 14 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
+| 15 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 16 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -111,6 +110,15 @@ another motion. Continents that meet weld (a collision) and move on as one block
 as subduction zones (teeth on the overriding plate), and ocean floor older than 200 Myr is taken to
 have been subducted. Where three rifts meet, the ocean between them is filled and the ridges joined.
 All of it stays editable.
+
+The present is not the end. Once the plates reach 0 Ma, **Advance** (under Make a world) carries the
+world on by 25–500 Myr: the whole history moves that much into the past (`shiftHistory`), the plates
+move on to a new present (Wilson cycle, drift apart, wander, come together, or **break up**: the
+continents that touch rift near their old sutures), and the new stretch gets its own subduction zones
+and arcs, collisions, mountain belts and hotspots, only where the history already had marks of that
+kind made by a step. Older marks keep their shapes; trenches and arcs that reached the old present
+stop there, belts still rising stop after their time, and plumes get a lifetime. Repeat until the
+world looks right; **Undo** steps back (this session). The World map follows each step.
 
 Log 12 ("GPlates: Subduction Zones & Island Arcs") adds the trenches. **Subduction zones** are
 lines on the overriding plate, with teeth towards it (GPlates' subduction polarity), and **island
@@ -194,7 +202,7 @@ following Worldbuilder's Log 20–26:
 - **Sea topography** (Log 26): the world's depth curve from its ridge depth (ridge + 350·√age, flattening
   on old floor), continental slopes, trenches and oceanic plateaus.
 
-Not only Earth: as on the Tectonics step, heights and widths are divided by g^scaling. Widths are set
+Not only Earth: heights and widths are divided by g^scaling (the gravity scaling factor, 1–2, set on this step). Widths are set
 in km and turned into degrees by the planet's radius. Brush strokes are kept with the world and applied
 on top. Exports are an equirectangular colour map and a 16-bit heightmap PNG; the file name gives the
 height range and sea level.

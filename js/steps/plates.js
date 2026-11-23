@@ -587,10 +587,11 @@
         const last = lastPole();
         const slider = h('input', { type: 'range', min: 0, max: Pw.start, step: 1, value: Pw.start - u.age, 'aria-label': 'Age on view (drag right to go forward in time)' });
         slider.addEventListener('input', () => setAge(Pw.start - Number(slider.value)));
-        const startIn = h('input', { class: 'txt num', type: 'number', min: 10, max: 4500, step: 10, value: Pw.start, 'aria-label': 'Start age of the supercontinent (Ma)', style: { width: '90px' } });
+        const startIn = h('input', { class: 'txt num', type: 'number', min: 10, max: 13000, step: 10, value: Pw.start, 'aria-label': 'Start age of the supercontinent (Ma)', style: { width: '90px' } });
         startIn.addEventListener('change', () => {
-          const v = clamp(Math.round(Number(startIn.value) || Pw.start), 10, 4500);
-          ctx.mutate((w) => { const d = v - w.plates.start; w.plates.start = v; for (const p of w.plates.plates) for (const r of p.rotations || []) r.age += d; });
+          const v = clamp(Math.round(Number(startIn.value) || Pw.start), 10, 13000);
+          // the whole history moves with it: poles, and when rifts open, trenches stop, belts rise
+          ctx.mutate((w) => { const s = WS.supercontinent.shiftHistory(w.plates, v - w.plates.start); w.plates.start = s.start; w.plates.plates = s.plates; w.plates.features = s.features; });
           u.age = v; renderSide(); renderTime(); draw();
         });
         replace(timeHost,
@@ -932,6 +933,7 @@
           h('div', { class: 'btn-row', style: { marginTop: '12px' } },
             h('button', { class: 'btn primary', type: 'button', onclick: makeWorld }, has ? 'Make a new world' : 'Make a world'),
             h('span', { class: 'muted', style: { fontSize: '13px', alignSelf: 'center' } }, `${fmt.int(Pw.start)} Myr of history, to the present`)),
+          renderAdvance(Pw, last),
           h('details', { class: 'fold', style: { marginTop: '14px' } }, h('summary', null, 'Step by step'),
             h('div', { class: 'auto-grid', style: { marginTop: '10px' } },
               choice('mode', [['apart', 'Break apart'], ['wander', 'Wander'], ['together', 'Come together'], ['cycle', 'Wilson cycle, repeating']], 'Motion', 'Break apart: blocks drift away from each other. Wander: each its own way. Come together: into a new supercontinent (the run ends when it is whole). Wilson cycle: all three, again and again. Continents that meet weld and move on as one.'),
@@ -951,6 +953,51 @@
               step('Hotspots & LIPs', markHotspots, last === null)),
             h('p', { class: 'muted', style: { fontSize: '12.5px', marginTop: '8px' } }, 'Pick ages with the time slider. Each step replaces what the same step made before; what you drew yourself stays.')));
       }
+      /* Carry the world on: a row of motion, time span, Advance and Undo, under Make a world. */
+      function renderAdvance(Pw, last) {
+        const v = (u.adv = u.adv || { mode: 'cycle', by: 100 }), undo = (u.undo = u.undo || []);
+        const sel = (key, opts, label, tip) => {
+          const s = h('select', { class: 'sel', 'aria-label': label }, opts.map(([x, t]) => h('option', { value: x, selected: v[key] === x }, t)));
+          s.addEventListener('change', () => { v[key] = typeof v[key] === 'number' ? Number(s.value) : s.value; renderAuto(); });
+          return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label, tip ? info(tip) : null), s);
+        };
+        const crust = Pw.features.some((f) => f.kind === 'crust'), ready = crust && last === 0;
+        const why = !crust ? 'Make a world first.' : last === null ? 'Simulate the plates first (Step by step).' : last > 0 ? `The plates stop at ${fmt.int(last)} Ma: continue them to the present first (Step by step).` : null;
+        return h('div', { class: 'advance', style: { marginTop: '14px', paddingTop: '12px', borderTop: '1px dashed var(--line)' } },
+          h('div', { class: 'auto-grid' },
+            sel('mode', [['cycle', 'Wilson cycle'], ['breakup', 'Break up (new rifts)'], ['apart', 'Drift apart'], ['wander', 'Wander'], ['together', 'Come together']], 'Carry on', 'What the plates do next. Break up: continents that touch rift apart near their old sutures, then drift. Wilson cycle: apart, wander, together, and again. Come together: into a new supercontinent.'),
+            sel('by', [[25, '25 Myr'], [50, '50 Myr'], [100, '100 Myr'], [200, '200 Myr'], [500, '500 Myr']], 'For')),
+          h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+            h('button', { class: 'btn primary', type: 'button', disabled: !ready, onclick: advanceBy, title: why || '' }, `Advance ${fmt.int(v.by)} Myr ▸`),
+            h('button', { class: 'btn small', type: 'button', disabled: !undo.length, onclick: undoAdvance, title: 'Back to the world before the last advance' }, undo.length ? `Undo (${undo.length})` : 'Undo')),
+          h('p', { class: 'muted', style: { fontSize: '12.5px', marginTop: '8px' } }, why || `Today becomes ${fmt.int(v.by)} Ma ago and the plates move on to a new present, with new trenches, collisions, mountains and plumes; the older history keeps its shape. Repeat until the world looks right.${ctx.world.map.strokes.length ? ' Brush strokes on the World map stay where they are on the map, not on the land.' : ''}`));
+      }
+      async function advanceBy() {
+        const a = u.auto, v = u.adv, Pw = P();
+        u.undo = (u.undo || []).concat([JSON.stringify({ start: Pw.start, plates: Pw.plates, features: Pw.features, nextPlate: Pw.nextPlate })]).slice(-10);
+        toast(`Advancing ${fmt.int(v.by)} Myr…`);
+        await new Promise((r) => setTimeout(r, 30));
+        const res = WS.supercontinent.advance(Pw, { duration: v.by, mode: v.mode, seed: (a.seed ?? Pw.seed ?? 1) + Pw.start, interval: a.every, minSpeed: Math.min(1.5, a.speed), maxSpeed: a.speed, radiusKm: ctx.d.planet.radiusKm, gravity: ctx.d.planet.gravity, scaling: ctx.world.tectonics.scaling });
+        ctx.mutate((w) => {
+          w.plates.start = res.start; w.plates.plates = res.plates; w.plates.features = res.features;
+          if (res.nextPlate) w.plates.nextPlate = res.nextPlate;
+          for (const f of w.plates.features) if (f.kind === 'rift' && !(f.left && f.right)) Object.assign(f, sidesOf(w.plates, f));
+        });
+        const n = (k) => res.events.filter((e) => e.kind === k).length;
+        const what = [n('rift') && `${n('rift')} new rift${n('rift') > 1 ? 's' : ''}`, n('continent') && `${n('continent')} continental collision${n('continent') > 1 ? 's' : ''}`, n('arc') && `${n('arc')} arc${n('arc') > 1 ? 's' : ''} accreted`].filter(Boolean);
+        toast(`${fmt.int(res.duration)} Myr on (${fmt.int(res.start)} Myr since the supercontinent)${what.length ? `: ${what.join(', ')}` : ''}`);
+        u.selected = null; u.age = res.duration; u.spread = true;
+        renderAuto(); renderSide(); startPlay();
+      }
+      function undoAdvance() {
+        const snap = (u.undo || []).pop();
+        if (!snap) return;
+        const s = JSON.parse(snap);
+        ctx.mutate((w) => { w.plates.start = s.start; w.plates.plates = s.plates; w.plates.features = s.features; if (s.nextPlate) w.plates.nextPlate = s.nextPlate; });
+        u.selected = null; u.playing = false; u.age = 0;
+        toast(`Back to ${fmt.int(s.start)} Myr of history`);
+        renderAuto(); renderSide(); renderTime(); draw();
+      }
       const auto = (kinds) => (f) => f.auto && kinds.includes(f.kind);
       async function makeWorld() {
         const a = u.auto, Pw = P();
@@ -962,7 +1009,7 @@
           wd.plates.plates = w.plates.map((p, i) => ({ ...p, colour: p.colour || PALETTE[i % PALETTE.length] }));
           wd.plates.features = w.features; wd.plates.nextPlate = w.nextPlate; wd.plates.seed = w.seed; wd.plates.step = w.step;
         });
-        u.selected = null; u.draft = []; u.playing = false; u.age = 0; u.spread = true;
+        u.selected = null; u.draft = []; u.playing = false; u.age = 0; u.spread = true; u.undo = [];
         const crust = w.features.filter((f) => f.kind === 'crust'), m = modelOf(P());
         const c = S.latLon(S.centroid(crust.flatMap((f) => m.reconstruct(f.plateId, f.coords, 0))));
         u.lat = clamp(c[0], -60, 60); u.lon = c[1]; u.zoom = 1;
@@ -980,7 +1027,7 @@
           w.plates.nextPlate = g.nextPlate;
           w.plates.seed = g.seed;
         });
-        u.selected = null; u.draft = []; u.playing = false; u.age = P().start;
+        u.selected = null; u.draft = []; u.playing = false; u.age = P().start; u.undo = [];
         const c = S.latLon(S.centroid(g.features.filter((f) => f.kind === 'crust').flatMap((f) => f.coords)));
         u.lat = clamp(c[0], -60, 60); u.lon = c[1]; u.zoom = 1;
         if (g.plates.length < a.plates) toast(`Only ${g.plates.length} plates would fit with seed ${a.seed}: try another seed`);
@@ -1111,7 +1158,7 @@
       // Log 12
       const zones = P.features.filter((f) => f.kind === 'subduction');
       if (P.plates.some((p) => (p.rotations || []).length) && !zones.length) out.push({ level: 'info', text: 'The plates move but no subduction zones are marked: the ocean floor they push against has to go somewhere.' });
-      for (const a of P.features.filter((f) => f.kind === 'arc')) {
+      for (const a of P.features.filter((f) => f.kind === 'arc' && !f.accreted)) {   // (an accreted arc is a terrane: its trench is gone)
         const near = zones.some((z) => z.plateId === a.plateId && S.distanceToLine(S.latLon(S.centroid(a.coords)), z.coords) < 8);
         if (!near) out.push({ level: 'warn', text: `${a.name} has no subduction zone on its plate nearby: island arcs rise a little behind a trench.` });
       }
