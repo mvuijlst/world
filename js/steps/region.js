@@ -170,21 +170,35 @@
         g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
         g.drawImage(off, v.x0, v.y0, v.side, v.side);
         const dpr = cv.width / Math.max(1, cv.clientWidth);
-        if (u.rivers) drawRivers(g, (x, y) => [v.x0 + x * sc, v.y0 + y * sc], dpr * clamp(0.6 + 0.25 * Math.log2(Math.max(1, sc * 2)), 0.6, 2.2), sc);
+        if (u.rivers) drawRivers(g, (x, y) => [v.x0 + x * sc, v.y0 + y * sc], dpr * clamp(0.8 + 0.3 * Math.log2(Math.max(1, sc)), 0.8, 1.8), sc);
         if (u.grid) drawGrid(g, v, dpr);
         drawScale(g, v, dpr);
       }
-      const riverWidth = (q, scale) => scale * (0.35 + 0.8 * Math.log10(1 + q / reg.minFlow));
+      /*
+       * Rivers as lines thin enough to read as rivers: a hairline for a brook, growing slowly with the
+       * flow (a tenfold flow, about a quarter of a pixel more): a river of thousands of m³/s is drawn
+       * about twice as wide as a brook, never more than 2 pixels (times the zoom's scale). Each river is one stroke, in runs of nearly even width, so joints show
+       * no beads.
+       */
+      const riverWidth = (q, scale) => scale * Math.min(2, 0.45 + 0.28 * Math.log10(1 + q / reg.minFlow));
       function drawRivers(gg, proj, scale, sc = 1) {
         gg.strokeStyle = RIVER; gg.lineCap = 'round'; gg.lineJoin = 'round';
-        const minQ = reg.minFlow * (sc < 0.5 ? 4 : sc < 1 ? 2 : 1);    // (fewer brooks when zoomed out)
+        const minQ = reg.minFlow * (sc < 0.6 ? 4 : sc < 1.2 ? 2 : 1);    // (fewer brooks when zoomed out)
         for (const rv of reg.rivers) {
           if (rv.q[rv.q.length - 1] < minQ) continue;
-          let prev = proj(rv.pts[0][0], rv.pts[0][1]);
-          for (let i = 1; i < rv.pts.length; i++) {
-            const p = proj(rv.pts[i][0], rv.pts[i][1]);
-            if (rv.q[i] >= minQ) { gg.lineWidth = riverWidth(rv.q[i], scale); gg.beginPath(); gg.moveTo(prev[0], prev[1]); gg.lineTo(p[0], p[1]); gg.stroke(); }
-            prev = p;
+          let i = 0;
+          while (i < rv.pts.length - 1 && rv.q[i] < minQ) i++;
+          while (i < rv.pts.length - 1) {
+            const w0 = riverWidth(rv.q[i], scale);
+            gg.lineWidth = w0; gg.beginPath();
+            let p = proj(rv.pts[i][0], rv.pts[i][1]); gg.moveTo(p[0], p[1]);
+            let j = i + 1;
+            for (; j < rv.pts.length; j++) {
+              p = proj(rv.pts[j][0], rv.pts[j][1]); gg.lineTo(p[0], p[1]);
+              if (Math.abs(riverWidth(rv.q[j], scale) - w0) > 0.15 * scale) break;
+            }
+            gg.stroke();
+            i = j;
           }
         }
       }
@@ -371,7 +385,7 @@
         if (!off) return;
         const F = reg.W < 1500 ? 2 : 1, big = h('canvas'); big.width = reg.W * F; big.height = reg.H * F;
         const bg = big.getContext('2d'); bg.imageSmoothingEnabled = false; bg.drawImage(off, 0, 0, big.width, big.height);
-        if (u.rivers) drawRivers(bg, (x, y) => [x * F, y * F], F * 0.8, F);
+        if (u.rivers) drawRivers(bg, (x, y) => [x * F, y * F], F * 0.7, F);
         big.toBlob((b) => save(b, fileName(u.layer, 'png')));
       }
       async function exportHeight() {
@@ -385,7 +399,7 @@
         const f2 = (x) => Math.round(x * 10) / 10, fr = reg.frame;
         const lines = reg.rivers.map((rv) => {
           const q = rv.q.reduce((a, b) => Math.max(a, b), 0);
-          return `<polyline points="${rv.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(0.4 + 0.9 * Math.log10(1 + q / reg.minFlow))}" data-flow="${Math.round(q)}"/>`;
+          return `<polyline points="${rv.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(Math.min(2, 0.45 + 0.28 * Math.log10(1 + q / reg.minFlow)))}" data-flow="${Math.round(q)}"/>`;
         });
         const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${reg.W} ${reg.H}" width="${reg.W}" height="${reg.H}">\n<!-- ${fmt.num(fr.north, 3)}N to ${fmt.num(fr.south, 3)}, ${fmt.num(fr.west, 3)} to ${fmt.num(fr.east, 3)} (degrees, equirectangular); ${fmt.num(fr.pxKm, 3)} km a pixel at the centre -->\n<g fill="none" stroke="#245cac" stroke-linecap="round" stroke-linejoin="round">\n${lines.join('\n')}\n</g>\n</svg>\n`;
         save(new Blob([svg], { type: 'image/svg+xml' }), fileName('rivers', 'svg'));

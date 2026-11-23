@@ -330,6 +330,11 @@ It agrees with the world map:
 - **Valleys**: each pixel is cut towards its river's graded profile (steep for a brook, gentle for a
   big river; steeper under weak gravity), the more water the closer, at **Erosion ×**; valley sides then
   slump to a stable slope.
+- **Rivers as lines**: a river once it drains enough land for the region's scale (some (span/55)² km²) or
+  carries a lot of water; short stubs left out; smoothed off the pixel grid; drawn thin, a big river about
+  twice a brook's width, one stroke each. Rivers grade to the water they flow into (a lake's surface, not
+  its bed), and a small hollow on a big river's course is silted up rather than a lake; sea narrower than a
+  few pixels (a world map estuary) is the river's floor.
 - **Biomes**: the world map's climate between its cells (looked up a little off each pixel, so biome
   edges do not follow its cells' sides), colder with height by the planet's lapse rate: forest in the
   valleys, tundra and ice on the crests.

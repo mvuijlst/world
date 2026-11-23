@@ -167,6 +167,30 @@
     const dyKm = fr.dLat * kmDeg / H, areaOf = (k) => dxKm[(k / W) | 0] * dyKm;
     const DI = [-1, 0, 1, -1, 1, -1, 0, 1], DJ = [-1, -1, -1, 0, 0, 1, 1, 1];
 
+    // sea narrower than a few pixels (a world map estuary, drawn finer than it can be) is the river's
+    // floor, just above the sea: an opening of the sea (shrink it, then grow it back) by two pixels
+    {
+      const sea = Uint8Array.from(z, (v) => (v <= 0 ? 1 : 0));
+      const morph = (src, keep) => {                       // keep 1: erode (all 8 neighbours sea); 0: dilate
+        const out = new Uint8Array(N);
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const k = y * W + x;
+          let v = src[k];
+          for (let q = 0; q < 8; q++) {
+            const yy = y + DJ[q], xx = x + DI[q];
+            if (yy < 0 || yy >= H || xx < 0 || xx >= W) continue;
+            const n = src[yy * W + xx];
+            if (keep && !n) { v = 0; break; }
+            if (!keep && n) { v = 1; break; }
+          }
+          out[k] = v;
+        }
+        return out;
+      };
+      const open = morph(morph(morph(morph(sea, 1), 1), 0), 0);
+      for (let k = 0; k < N; k++) if (sea[k] && !open[k] && z[k] > -40 / f) z[k] = 1 + 0.02 * Math.min(50, -z[k]);
+    }
+
     // the sea comes in only from the sea: ground below sea level that no water reaches from where the
     // world map has sea is a dry hollow (a lake, if enough water gathers in it), not an inland sea
     {
@@ -277,7 +301,11 @@
     const toM3s = (mm, km2) => ((mm / 1000) * km2 * 1e6) / YEAR_S;
 
     // ── 2. where the water goes: flood the land up from the sea and the open edges ──
-    function flood(zz) {
+    // silted floors are flat; water on them follows a faint unevenness (about a metre), not a ruler
+    const silt = new Uint8Array(N), nf = gradNoise(seed ^ 0xf1a7), lumpKm = Math.max(3 * pxKm, 4);
+    const routeZ = (zz) => Float32Array.from(zz, (v, k) => (silt[k] ? v + (1.2 / f) * (1 + nf(xyz[k * 3] / lumpKm, xyz[k * 3 + 1] / lumpKm, xyz[k * 3 + 2] / lumpKm)) : v));
+    function flood(zz0) {
+      const zz = routeZ(zz0);
       const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), done = new Uint8Array(N), order = new Int32Array(N);
       const q = heap(fill, N);
       let no = 0;
@@ -306,7 +334,7 @@
           done[n] = 1; fill[n] = Math.max(zz[n], fill[c] + 1e-4); recv[n] = c; q.push(n);
         }
       }
-      return { fill, recv, order, no };
+      return { fill, recv, order, no, zr: zz };
     }
     /* Hollows: connected pixels the flood had to fill (by more than `min` metres). */
     function hollows(zz, fill, min) {
@@ -339,12 +367,12 @@
     // the detail's dimples do not all become ponds; deep and large ones stay, to be lakes
     {
       // (in rugged country a hollow must be deeper to be more than the detail's: a tenth of the relief)
-      const hs = hollows(z, fl1.fill, 0.05);
+      const hs = hollows(fl1.zr, fl1.fill, 0.05);
       const bigEnough = Math.max(25, 12 * pxKm * pxKm);
       let filled = 0;
       for (const hlw of hs.list) {
         let rl = 0; for (const c of hlw.cells) rl = Math.max(rl, relief[c]);
-        if (hlw.depth < (30 / f) + 0.1 * rl || hlw.area < bigEnough) { for (const c of hlw.cells) z[c] = fl1.fill[c]; filled++; }
+        if (hlw.depth < (30 / f) + 0.1 * rl || hlw.area < bigEnough) { for (const c of hlw.cells) { z[c] = fl1.fill[c]; silt[c] = 1; } filled++; }
       }
       if (filled) fl1 = flood(z);
     }
@@ -358,7 +386,8 @@
       for (let o = 0; o < fl1.no; o++) {
         const k = fl1.order[o], r = fl1.recv[k];
         if (r < 0) continue;
-        const hr = z[r] > 0 ? z[r] : 0;
+        // (a river grades to the water it flows into: a lake's surface, not its bed)
+        const hr = z[r] > 0 ? Math.max(z[r], fl1.fill[r]) : 0;
         if (hr >= z[k]) continue;                                    // a hollow: left alone
         const y = (k / W) | 0, ry = (r / W) | 0, dk = Math.hypot((k - y * W - (r - ry * W)) * dxKm[y], (y - ry) * dyKm) * 1000;
         // the graded slope: steep for a brook, gentle for a big river (m per m); weaker gravity, steeper
@@ -393,7 +422,7 @@
 
     // ── 4. the water again over the carved land: lakes, salt lakes and rivers ──
     const fl = flood(z), recv = fl.recv;
-    const hs = hollows(z, fl.fill, 1 / f);
+    const hs = hollows(fl.zr, fl.fill, 1 / f);
     const minLake = 4 * pxKm * pxKm;
     // (a hollow under the ice holds no lake: most of it below freezing all summer)
     for (const hlw of hs.list) {
@@ -407,6 +436,8 @@
       if (id >= 0 && (r < 0 || hs.id[r] !== id)) {
         // a lake's outlet: what reaches the lake, less what it evaporates
         if (flow[k] <= 0) { hs.list[id].gone = true; terminal[k] = 1; continue; }
+        // a small hollow on a big river's course is filled with what the river carries: no lake
+        if (hs.list[id].area < 30 * pxKm * pxKm && flow[k] > 20 * (opts.minFlow ?? 8)) { hs.list[id].gone = true; if (r >= 0 && z[r] > 0) { flow[r] += flow[k]; up[r] += up[k]; } continue; }
         const out = flow[k] - lakeLoss[id];
         if (out <= 0) { terminal[k] = 1; hs.list[id].salt = true; hs.list[id].share = lakeLoss[id] > 0 ? flow[k] / lakeLoss[id] : 0; continue; }
         flow[k] = out;
@@ -451,9 +482,11 @@
     }
 
     // ── 6. rivers as lines, in pixels: from each source down to the sea, a lake, an edge, or a bigger river ──
-    const minFlow = opts.minFlow ?? 8, minUp = Math.max(6, Math.round(30 / (pxKm * pxKm)));
+    // a river once it drains enough land for the region's scale (spaced some tens of pixels apart: not
+    // a line down every gully), or once it carries a lot of water (one entering from outside)
+    const minFlow = opts.minFlow ?? 8, minArea = opts.minArea ?? Math.max(25, (fr.span / 55) ** 2), minUp = Math.max(12, Math.round(minArea / (pxKm * pxKm)));
     const hid = (k) => lake[k] || biome[k] === BI.ice;
-    const isRiver = (k) => z[k] > 0 && flow[k] >= minFlow && up[k] >= minUp && !hid(k);
+    const isRiver = (k) => z[k] > 0 && flow[k] >= minFlow && (up[k] >= minUp || flow[k] >= 30 * minFlow) && !hid(k);
     const kids = new Uint8Array(N);
     for (let k = 0; k < N; k++) if (isRiver(k) && recv[k] >= 0) kids[recv[k]]++;
     const jit = (k) => { let x = Math.imul(k ^ 0x9e3779b9, 0x85ebca6b); x ^= x >>> 13; x = Math.imul(x, 0xc2b2ae35); x ^= x >>> 16; return [((x & 0xffff) / 0xffff - 0.5) * 0.7, (((x >>> 16) & 0xffff) / 0xffff - 0.5) * 0.7]; };
@@ -476,12 +509,18 @@
         if (terminal[cur]) break;
         const r = recv[cur];
         if (r < 0 || !(z[r] > 0)) { if (r >= 0) { const y = (r / W) | 0; line.push([r - y * W + 0.5, y + 0.5]); qs.push(flow[cur]); } break; }
-        if (hid(cur) && !hid(r)) { line = [pt(cur)]; qs = [flow[cur]]; }
+        // leaving a lake or the ice: start again from its edge, unless that outlet is already drawn
+        // (every stream into a lake would otherwise add a stub over its outlet)
+        if (hid(cur) && !hid(r)) { if (seen[r]) break; line = [pt(cur)]; qs = [flow[cur]]; }
         cur = r;
       }
       flush();
     }
-    const rivers = raw.map((rv) => { const pts = chaikin(chaikin(rv.pts)); return { pts, q: resample(rv.q, pts.length) }; });
+    // short stubs (a little coastal stream, a tributary that joins at once) are left out unless they
+    // carry real water; the rest are smoothed beyond the grid's 45° steps, then rounded off
+    const minLen = Math.max(6, Math.round(12 / Math.sqrt(Math.max(0.05, pxKm))));
+    const rivers = raw.filter((rv) => rv.pts.length >= minLen || rv.q[rv.q.length - 1] >= 30 * minFlow)
+      .map((rv) => { const pts = chaikin(chaikin(relax(relax(relax(relax(relax(rv.pts))))))); return { pts, q: resample(rv.q, pts.length) }; });
 
     // ── figures ──
     let landPx = 0, hiZ = -Infinity, loZ = Infinity, hiK = 0, loK = 0, landKm2 = 0, bigQ = 0, bigK = -1;
@@ -496,12 +535,20 @@
       climate: { Tw, Tc, P },
       stats: {
         land: landPx / N, landKm2, highest: { m: hiZ, at: ll(hiK) }, deepest: { m: loZ, at: ll(loK) }, lakes, saltLakes, lakeKm2,
-        eroded, deepestCut: deepest, biggest: bigK >= 0 ? { q: bigQ, at: ll(bigK) } : null, rivers: rivers.length,
+        eroded, deepestCut: deepest, biggest: bigK >= 0 ? { q: bigQ, at: ll(bigK) } : null, rivers: rivers.length, minArea,
         biomeShare: Array.from(share.slice(1), (v) => v / Math.max(1, landKm2)), pxKm, worldCellKm: gkm,
       },
     };
   }
 
+  /* A moving average over five points (the ends kept): eases a line off the pixel grid's steps. */
+  function relax(p) {
+    if (p.length < 5) return p;
+    const out = p.map((q) => q.slice());
+    for (let i = 2; i < p.length - 2; i++) for (let c = 0; c < 2; c++) out[i][c] = (p[i - 2][c] + 2 * p[i - 1][c] + 3 * p[i][c] + 2 * p[i + 1][c] + p[i + 2][c]) / 9;
+    if (p.length >= 3) for (const i of [1, p.length - 2]) for (let c = 0; c < 2; c++) out[i][c] = (p[i - 1][c] + 2 * p[i][c] + p[i + 1][c]) / 4;
+    return out;
+  }
   function chaikin(p) {
     if (p.length < 3) return p;
     const out = [p[0]];
