@@ -87,7 +87,8 @@
           else if (u.layer === 'rain') c = isLand ? ramp(RAIN, year ? clim.rainYear[k] : 2 * s.Pr[k]) : SEA.map((x) => x + 30);
           else if (u.layer === 'wind') { const p = (year ? (J.P[k] + L.P[k] + 2 * E.P[k]) / 4 : s.P[k]) - 1013; c = p > 0 ? [200 + Math.min(55, p * 4), 150 - Math.min(80, p * 5), 120] : [120 + p * 3, 150 + p * 2, 210]; if (isLand) c = c.map((x) => x * 0.8 + 30); }
           // (under the ice the sea is at freezing: no warm or cold currents there, only drift)
-          else if (u.layer === 'currents') c = isLand ? [150, 145, 130] : iced ? SEAICE : clim.sst[k] > 0.3 ? [40 + Math.min(180, clim.sst[k] * 45), 60, 110] : clim.sst[k] < -0.3 ? [30, 70 + Math.min(150, -clim.sst[k] * 35), 140 + Math.min(100, -clim.sst[k] * 25)] : SEA;
+          // (warm and cold by how much: a faint tint for a slow drift, strong for a real current)
+          else if (u.layer === 'currents') { const t = clamp(Math.abs(clim.sst[k]) / 5, 0, 1), to = clim.sst[k] > 0 ? [220, 60, 110] : [40, 190, 235]; c = isLand ? [150, 145, 130] : iced ? SEAICE : SEA.map((x, q) => x + (to[q] - x) * t); }
           else c = isLand ? [150, 145, 130] : iced ? SEAICE : clim.reef[k] ? [255, 110, 150] : [30, 60 + Math.min(150, clim.fish[k] * 80), 100 + Math.min(80, clim.fish[k] * 40)];
           // the coast, on every layer but the zones (which show it anyway)
           if (u.layer !== 'zones') { const ii = kk % MW, jj = (kk - ii) / MW; if (isLand !== fz[jj * MW + ((ii + 1) % MW)] > 0 || (jj + 1 < MH && isLand !== fz[kk + MW] > 0)) c = [25, 25, 30]; }

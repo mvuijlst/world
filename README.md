@@ -215,11 +215,15 @@ nothing like Earth, and that is fine.
 - **Pressure and winds:** belts from the planet's circulation cells (set by its day), shifted with
   the seasons. Continents are low in summer and high in winter (monsoons). The wind blows down the
   pressure gradient, turned by the spin; a retrograde world is mirrored.
-- **Ocean currents:** each gyre runs poleward and warm along its basin's western side, and
-  equatorward and cold along its eastern side; the subpolar gyres the other way round. Currents warm
-  or cool the sea and the coasts downwind.
-- **Upwelling and reefs:** cold eastern-boundary coasts and the equator well up (rich fishing, as on
-  shelves and in subpolar seas). Coral reefs grow on warm, shallow seas away from them.
+- **Ocean currents:** driven by the year's winds (Stommel's model). The winds' stress on the sea, curling,
+  drives a circulation that the planet's spin turns into gyres within each basin's real coasts. The
+  return flow crowds into a narrow, fast boundary current: on the western side on a prograde world,
+  on the eastern side on a retrograde one, and hardly at all on a slow one. Each place gets something
+  of the water upstream, so warm water is carried poleward and cold equatorward; slow drifts carry
+  little, fast currents a lot. Sea ice shields the sea from the wind.
+- **Upwelling and reefs:** where the wind's Ekman drift pushes surface water away from a coast, and
+  along the equator under the easterlies, cold water wells up (rich fishing, as on shelves and in
+  subpolar seas). Coral reefs grow on warm, shallow seas away from it.
 - **Precipitation:** moisture is taken up from warm seas (and some from warm land), carried along
   the winds, and rained out in low-pressure belts, by summer convection, on windward slopes and as
   the air cools. That leaves rain shadows and dry interiors. The total follows the planet's warmth and

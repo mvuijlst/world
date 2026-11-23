@@ -71,3 +71,28 @@ test('cold and hot worlds, thin and thick air, dry and wet', () => {
   const rain = (c) => { let s = 0, n = 0; for (let k = 0; k < c.W * c.H; k++) if (c.land[k]) { s += c.seasons.jan.Pr[k] + c.seasons.jul.Pr[k]; n++; } return s / n; };
   assert.ok(rain(K.build(dryMap, EARTH)) < rain(K.build(map, EARTH)), 'less sea, less rain');
 });
+
+test('ocean currents from the winds: warm western sides on a prograde world, eastern on a retrograde one', () => {
+  // the widest stretch of sea along a parallel, its western and eastern fifth
+  const sides = (c, la) => {
+    const j = c.lat.findIndex((x) => Math.abs(x - la) <= 180 / c.H);
+    let best = null, run = null;
+    for (let n = 0; n < 2 * c.W; n++) {
+      const i = n % c.W, sea = !c.land[j * c.W + i];
+      if (sea) { if (!run) run = { from: n, len: 0 }; run.len++; if (!best || run.len > best.len) best = { ...run }; } else run = null;
+    }
+    const part = (a, b) => { let t = 0, m = 0; for (let n = best.from + Math.floor(best.len * a); n < best.from + Math.floor(best.len * b); n++) { t += c.sst[j * c.W + (n % c.W)]; m++; } return t / m; };
+    return { west: part(0, 0.2), east: part(0.8, 1), len: best.len };
+  };
+  const pro = K.build(map, { ...EARTH, rotation: 24 }), retro = K.build(map, { ...EARTH, rotation: 24, retrograde: true, tilt: 156.5 });
+  for (const la of [30, -30]) {
+    const p = sides(pro, la), r = sides(retro, la);
+    assert.ok(p.west > p.east + 0.5, `prograde at ${la}°: west ${p.west.toFixed(1)} vs east ${p.east.toFixed(1)}`);
+    assert.ok(r.east > r.west + 0.5, `retrograde at ${la}°: east ${r.east.toFixed(1)} vs west ${r.west.toFixed(1)}`);
+  }
+  // the subtropical gyres turn clockwise in the north, anticlockwise in the south: equatorward in the
+  // middle of the basin
+  const mid = (c, la) => { const j = c.lat.findIndex((x) => Math.abs(x - la) <= 180 / c.H); let v = 0, n = 0; for (let i = 0; i < c.W; i++) if (!c.land[j * c.W + i]) { v += c.current.v[j * c.W + i]; n++; } return v / n; };
+  assert.ok(mid(pro, 25) < 0 && mid(pro, -25) > 0, 'interior flow toward the equator');
+  assert.ok(pro.current.u.every(Number.isFinite) && pro.upwell.some((x) => x > 0.3), 'currents, and upwelling somewhere');
+});

@@ -88,21 +88,8 @@
     // climate follows the lie of the land, not every crag: heights smoothed over a cell or two
     const zs = blurField(grid, Float32Array.from(z, (v) => Math.max(0, v)), 1);
 
-    // distance to the sea (for continentality), and how far each ocean cell is from land to its
-    // west and to its east along its parallel (for the sides of ocean basins)
+    // distance to the sea (for continentality)
     const toSea = M.distance(grid, Uint8Array.from(land, (l) => 1 - l)).d;
-    const westLand = new Float32Array(N).fill(1e9), eastLand = new Float32Array(N).fill(1e9);
-    for (let j = 0; j < H; j++) {
-      const dx = grid.dx * Math.max(0.05, grid.cosl[j]);
-      for (const [dir, out] of [[1, westLand], [-1, eastLand]]) {
-        let d = 1e9;
-        for (let n = 0; n < 2 * W; n++) {
-          const i = dir > 0 ? n % W : (W - 1 - (n % W)), k = j * W + i;
-          d = land[k] ? 0 : d + dx;
-          if (n >= W) out[k] = d;
-        }
-      }
-    }
 
     // sunlight, and the year's mean, by latitude
     const decs = Array.from({ length: 12 }, (_, m) => tilt * Math.sin((2 * Math.PI * (m + 0.5)) / 12));
@@ -182,30 +169,16 @@
     }
     const eqT = seasons.equ.T;
 
-    // ── ocean currents: the sides of the gyres (from the annual winds' belts) ──
-    const sst = new Float32Array(N), cu = new Float32Array(N), cv = new Float32Array(N), upwell = new Float32Array(N);
-    const subG = edges[1] ?? 30, pol = edges[2] ?? 60;                      // subtropical gyre to the first high, subpolar beyond
-    for (let j = 0; j < H; j++) {
-      const a = Math.abs(lat[j]), hemi = lat[j] >= 0 ? 1 : -1;
-      // inside the subtropical gyre (from the trades to the westerlies): +1; inside the subpolar gyre: -1
-      const gyre = a < 4 ? 0 : a < subG + 0.6 * (pol - subG) ? smooth((a - 4) / 8) * (1 - smooth((a - (subG + 0.45 * (pol - subG))) / (0.15 * (pol - subG) + 1))) : a < pol + 8 ? -smooth((a - subG - 0.6 * (pol - subG)) / 6) : 0;
-      for (let i = 0; i < W && !locked; i++) {
-        const k = j * W + i;
-        if (land[k]) continue;
-        // with prograde spin the warm, poleward current runs along a basin's western side
-        const wSide = spin > 0 ? westLand[k] : eastLand[k], eSide = spin > 0 ? eastLand[k] : westLand[k];
-        const nearW = Math.exp(-(wSide * kmDeg) / 1200), nearE = Math.exp(-(eSide * kmDeg) / 1000);
-        const pole = gyre * (nearW - nearE);                                   // + poleward, - equatorward
-        cv[k] = hemi * pole;
-        const ann = (seasons.jan.u[k] + seasons.jul.u[k]) / 2;
-        cu[k] = Math.sign(ann) * Math.min(1, Math.abs(ann) * 4) * 0.6;
-        sst[k] = 4 * gyre * nearW - (gyre > 0 ? 5 * gyre * nearE : -3 * gyre * nearE) - (a < 6 ? 2 * Math.exp(-(eSide * kmDeg) / 3000) * (1 - a / 6) : 0);
-        // upwelling: cold eastern-boundary coasts of the subtropical gyre, and the equator
-        upwell[k] = Math.max(0, gyre) * nearE * 1.2 + (a < 5 ? (1 - a / 5) * 0.6 : 0);
-      }
-    }
+    // ── ocean currents, from the year's winds (see oceanCurrents) ──
+    const windU = Float32Array.from(seasons.jan.u, (x, k) => (x + seasons.jul.u[k] + 2 * seasons.equ.u[k]) / 4);
+    const windV = Float32Array.from(seasons.jan.v, (x, k) => (x + seasons.jul.v[k] + 2 * seasons.equ.v[k]) / 4);
+    // the sea's own temperature over the year (before the currents move it), and where it freezes
+    const sea0 = Float32Array.from(seasons.jan.T, (_, k) => (land[k] ? NaN : Math.max(-1.8, (seaRaw.jan[k] + seaRaw.jul[k] + 2 * seaRaw.equ[k]) / 4)));
+    const frozen = Uint8Array.from(sea0, (_, k) => (!land[k] && Math.min(seaRaw.jan[k], seaRaw.jul[k], seaRaw.equ[k]) < -1.8 ? 1 : 0));
+    const oc = oceanCurrents(grid, land, windU, windV, sea0, frozen, { spin: spin * (24 / Math.max(0.1, planet.rotation ?? 24)), kmDeg });
+    const sst = oc.sst, cu = oc.u, cv = oc.v, upwell = oc.upwell;
     // currents warm and cool the sea, and the coasts the wind blows them onto
-    const sstS = blurField(grid, sst, 2);
+    const sstS = blurField(grid, sst, 1);
     for (const s of Object.values(seasons)) {
       for (let k = 0; k < N; k++) {
         if (!land[k]) { s.T[k] = Math.max(-1.8, s.T[k] + sstS[k]); continue; }
@@ -307,6 +280,160 @@
     }
     const iceMap = iceOnMap({ W, H, seaCold }, map, planet.seed ?? 1);
     return { W, H, lat, z, land, seasons, equinoxT: eqT, rainYear, seaCold, iceMap, current: { u: cu, v: cv }, sst: sstS, upwell, fish, reef, ice, zone, zones: ZONES, grid };
+  }
+
+  /*
+   * Wind-driven ocean currents (Stommel's model): the winds' stress on the sea, curling, drives a
+   * circulation that the planet's spin turns into gyres. With the spin's effect growing toward the
+   * poles (β), the return flow crowds against one side of each basin as a narrow, fast boundary
+   * current: the western side on a prograde world (the Gulf Stream, the Kuroshio), the eastern on a
+   * retrograde one, hardly at all on a slow one. Solved for a stream function ψ in each basin
+   * (r∇²ψ + β ∂ψ/∂x = curl τ, ψ = 0 on the coasts), on a grid half as fine as the climate's.
+   * Then the sea's temperature: each place gets something of the water upstream, warm water carried
+   * poleward, cold equatorward; and upwelling, where the wind's Ekman transport pushes the surface
+   * water away from a coast, and along the equator under the easterlies, brings cold water up.
+   * grid: the climate's grid; land; windU, windV: the year's winds; sea0: the sea's own temperature
+   * (°C, NaN on land); frozen: where it freezes over (the ice shields the sea from the wind).
+   * opts.spin: the spin relative to Earth's, signed (negative: retrograde). Returns {u, v, sst, upwell}.
+   */
+  function oceanCurrents(grid, land, windU, windV, sea0, frozen, opts = {}) {
+    const { W, H, lat } = grid, N = W * H, D2 = Math.PI / 180, spinR = opts.spin ?? 1;
+    // land the currents go round: not specks of islands
+    const solid = Uint8Array.from(land), seen = new Uint8Array(N);
+    for (let k = 0; k < N; k++) {
+      if (!land[k] || seen[k]) continue;
+      const comp = [k]; seen[k] = 1;
+      for (let s = 0; s < comp.length; s++) {
+        const c = comp[s], j = Math.floor(c / W), i = c - j * W;
+        for (const n of [j * W + ((i + 1) % W), j * W + ((i - 1 + W) % W), j > 0 ? c - W : -1, j + 1 < H ? c + W : -1]) if (n >= 0 && land[n] && !seen[n]) { seen[n] = 1; comp.push(n); }
+      }
+      if (comp.length < Math.max(12, N * 0.0006)) for (const c of comp) solid[c] = 0;
+    }
+    // the wind's stress (∝ |w| w), weaker on ice, scaled so its strong values are about 1
+    const tx = new Float32Array(N), ty = new Float32Array(N), mags = [];
+    for (let k = 0; k < N; k++) {
+      if (land[k]) continue;
+      const m = Math.hypot(windU[k], windV[k]), f = frozen[k] ? 0.3 : 1;
+      tx[k] = m * windU[k] * f; ty[k] = m * windV[k] * f; mags.push(Math.hypot(tx[k], ty[k]));
+    }
+    mags.sort((a, b) => a - b);
+    const t95 = mags.length ? mags[Math.floor(mags.length * 0.95)] || 1 : 1;
+    for (let k = 0; k < N; k++) { tx[k] /= t95; ty[k] /= t95; }
+
+    // ── the stream function, on a grid half as fine ──
+    const w = Math.max(8, Math.floor(W / 2)), h = Math.max(4, Math.floor(H / 2)), n2 = w * h, dl = (2 * Math.PI) / w, dp = Math.PI / h;
+    const lat2 = Float32Array.from({ length: h }, (_, j) => 90 - ((j + 0.5) * 180) / h);
+    const wet = new Uint8Array(n2), Tx = new Float32Array(n2), Ty = new Float32Array(n2);
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+      let water = 0, sx = 0, sy = 0, n = 0;
+      for (let b = 0; b < 2; b++) for (let a = 0; a < 2; a++) {
+        const k = Math.min(H - 1, j * 2 + b) * W + Math.min(W - 1, i * 2 + a);
+        if (!solid[k]) water++;
+        if (!land[k]) { sx += tx[k]; sy += ty[k]; n++; }
+      }
+      const q = j * w + i;
+      wet[q] = water >= 2 && Math.abs(lat2[j]) < 84 ? 1 : 0;
+      Tx[q] = n ? sx / n : 0; Ty[q] = n ? sy / n : 0;
+    }
+    const cosA = Float32Array.from(lat2, (la) => Math.max(0.1, Math.cos(la * D2)));
+    const id = (i, j) => j * w + (((i % w) + w) % w);
+    // the curl of the stress, on the sphere
+    const F = new Float32Array(n2);
+    for (let j = 1; j < h - 1; j++) for (let i = 0; i < w; i++) {
+      const q = id(i, j);
+      if (!wet[q]) continue;
+      const dTy = (Ty[id(i + 1, j)] - Ty[id(i - 1, j)]) / (2 * dl);
+      const dTx = (Tx[id(i, j - 1)] * cosA[j - 1] - Tx[id(i, j + 1)] * cosA[j + 1]) / (2 * dp);
+      F[q] = (dTy - dTx) / cosA[j];
+    }
+    // friction sets the boundary current's width: about a cell and a half at 30° on an Earth-like spin
+    const r = 1.125 * dl, psi = new Float32Array(n2);
+    for (let it = 0; it < 900; it++) {
+      let change = 0, big = 1e-9;
+      for (let j = 1; j < h - 1; j++) {
+        const beta = spinR * Math.cos(lat2[j] * D2), dx = dl * cosA[j], ax = r / (dx * dx), ay = r / (dp * dp), bx = beta / dx;
+        // sweep from the side the information comes from (east when β > 0)
+        for (let s = 0; s < w; s++) {
+          const i = beta >= 0 ? w - 1 - s : s, q = j * w + i;
+          if (!wet[q]) continue;
+          const e = psi[id(i + 1, j)], wv = psi[id(i - 1, j)], nn = psi[q - w], ss = psi[q + w];
+          const nv = beta >= 0
+            ? (ax * (e + wv) + ay * (nn + ss) + bx * e - F[q]) / (2 * ax + 2 * ay + bx)
+            : (ax * (e + wv) + ay * (nn + ss) - bx * wv - F[q]) / (2 * ax + 2 * ay - bx);
+          const nv2 = psi[q] + 1.3 * (nv - psi[q]);
+          change = Math.max(change, Math.abs(nv2 - psi[q])); big = Math.max(big, Math.abs(nv2));
+          psi[q] = nv2;
+        }
+      }
+      if (change < 1e-4 * big && it > 30) break;
+    }
+
+    // ── currents on the climate's grid: u = -∂ψ/∂y, v = ∂ψ/∂x, from ψ between the coarse cells ──
+    const P = new Float32Array(N);
+    for (let j = 0; j < H; j++) {
+      const fj = clamp((j + 0.5) / 2 - 0.5, 0, h - 1), j0 = Math.floor(fj), j1 = Math.min(h - 1, j0 + 1), t = fj - j0;
+      for (let i = 0; i < W; i++) {
+        const fi = (i + 0.5) / 2 - 0.5, i0 = Math.floor(fi), s = fi - i0;
+        P[j * W + i] = (psi[id(i0, j0)] * (1 - s) + psi[id(i0 + 1, j0)] * s) * (1 - t) + (psi[id(i0, j1)] * (1 - s) + psi[id(i0 + 1, j1)] * s) * t;
+      }
+    }
+    const u = new Float32Array(N), v = new Float32Array(N), speeds = [];
+    const dlF = (2 * Math.PI) / W, dpF = Math.PI / H, at = (i, j) => j * W + (((i % W) + W) % W);
+    for (let j = 1; j < H - 1; j++) {
+      const c = Math.max(0.1, Math.cos(lat[j] * D2));
+      for (let i = 0; i < W; i++) {
+        const k = j * W + i;
+        if (land[k]) continue;
+        u[k] = -(P[at(i, j - 1)] - P[at(i, j + 1)]) / (2 * dpF);
+        v[k] = (P[at(i + 1, j)] - P[at(i - 1, j)]) / (2 * dlF * c);
+        speeds.push(Math.hypot(u[k], v[k]));
+      }
+    }
+    speeds.sort((a, b) => a - b);
+    const s95 = speeds.length ? speeds[Math.floor(speeds.length * 0.95)] || 1 : 1;
+    for (let k = 0; k < N; k++) { u[k] = clamp(u[k] / s95, -3, 3); v[k] = clamp(v[k] / s95, -3, 3); }
+
+    // ── the sea's temperature: something of the water upstream ──
+    const sst = new Float32Array(N);
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      const k = j * W + i;
+      if (land[k]) continue;
+      // back along the flow some 2000 km (cells of a degree at most), the anomaly as strong as the flow
+      let fi = i, fj = j, Tup = sea0[k], spSum = 0, n = 0;
+      const cells = Math.round(18 * (W / 360));
+      for (let s = 0; s < cells; s++) {
+        const q = at(Math.round(fi), clamp(Math.round(fj), 0, H - 1)), sp = Math.hypot(u[q], v[q]);
+        if (sp < 0.02) break;
+        const c = Math.max(0.15, Math.cos(lat[clamp(Math.round(fj), 0, H - 1)] * D2));
+        const ni = fi - (u[q] / sp) / c, nj = clamp(fj + v[q] / sp, 0, H - 1);
+        const q2 = at(Math.round(ni), Math.round(nj));
+        if (land[q2] || Number.isNaN(sea0[q2])) break;
+        fi = ni; fj = nj; Tup = sea0[q2]; spSum += sp; n++;
+      }
+      // (a slow drift mixes away most of what it carries; a fast current keeps it)
+      sst[k] = clamp(0.8 * (Tup - sea0[k]) * Math.pow(clamp((n ? spSum / n : 0) / 0.45, 0, 1), 1.5), -8, 8);
+    }
+
+    // ── upwelling: Ekman transport off a coast, and divergence along the equator ──
+    const toLand = M.distance(grid, Uint8Array.from(land)).d, upwell = new Float32Array(N);
+    for (let j = 1; j < H - 1; j++) {
+      const la = lat[j], c = Math.max(0.1, Math.cos(la * D2)), fSign = Math.sign(la || 1e-9) * Math.sign(spinR), fWeight = smooth(Math.abs(la) / 4) * Math.min(1, Math.abs(spinR) * 2);
+      for (let i = 0; i < W; i++) {
+        const k = j * W + i;
+        if (land[k] || frozen[k]) continue;
+        let coast = 0;
+        if (toLand[k] * (opts.kmDeg ?? 111) < 400) {
+          // the way out to sea, and the surface water's drift: 90° to the right of the wind where f > 0
+          const nx = (toLand[at(i + 1, j)] - toLand[at(i - 1, j)]) / (2 * c), ny = toLand[at(i, j - 1)] - toLand[at(i, j + 1)], nl = Math.hypot(nx, ny) || 1;
+          const mx = fSign * ty[k], my = -fSign * tx[k];
+          coast = Math.max(0, (mx * nx + my * ny) / nl) * Math.exp(-(toLand[k] * (opts.kmDeg ?? 111)) / 180) * fWeight;
+        }
+        const eq = Math.abs(la) < 8 ? Math.max(0, -Math.sign(spinR) * tx[k]) * (1 - Math.abs(la) / 8) * Math.min(1, Math.abs(spinR) * 2) : 0;
+        upwell[k] = clamp(1.6 * coast + 0.8 * eq, 0, 1.5);
+        sst[k] -= 2.5 * upwell[k];
+      }
+    }
+    return { u, v, sst, upwell };
   }
 
   /*
