@@ -14,6 +14,8 @@
 
 Every /api/worlds call needs a signed-in session and only ever sees that account's worlds.
 Writes need the X-CSRFToken header (the value of the csrftoken cookie).
+A script can instead send `Authorization: Bearer <API token>` (made in the admin, see auth.py):
+it then acts as the token's owner on /api/worlds, with no session and no CSRF token.
 """
 import json
 import math

@@ -366,6 +366,11 @@ rsync of the site, `pip install`, `migrate`, `collectstatic` and a restart of th
 followed by a check that `/api/session` answers. The SSH key, host, port, user and path are
 repository secrets. The server's `.env`, venv and database are never overwritten.
 
+Scripts and tools can use the world API without a session: in the admin, **API tokens → Add**,
+choose the account and a name, and copy the token shown at the top of the page (only a hash is
+kept, so it is shown once). Send it as `Authorization: Bearer <token>` to `/api/worlds`; it acts as
+that account there and nowhere else (not the admin, not sign-in). Delete it to revoke it.
+
 ## Fidelity to the workbook
 
 `tests/calc.test.js` checks the engine against the values cached in the
