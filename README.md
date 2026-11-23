@@ -190,13 +190,17 @@ following Worldbuilder's Log 20–26:
 - **Coasts**: not the crust's outline. A field of "how far inland", the distance into the crust
   roughened by domain-warped fractal noise at three scales (gulfs and peninsulas, bays, coves), is cut at
   the level that leaves the land share dry. The coast gets bays, capes, inland seas and offshore islands.
-- **Continents and shelves** (Log 23): the crust rises gently inland. Its rim is flooded shelf, about
-  150 km wide on quiet coasts and 40 km on active ones. Sea level is set so land covers the share asked
+- **Continents and shelves** (Log 23): a low coastal plain rises over a few hundred km to an interior
+  that is not one dome but broad basins (low and flat, as the Amazon's or the Congo's), uplands,
+  plateaus with an escarpment at their edge, and hills; cratons are smooth old shields. On an Earth-like
+  world about half the land lies below 500 m and a tenth above 2 km, as on Earth. The rim is flooded
+  shelf, about 150 km wide on quiet coasts and 40 km on active ones. Sea level is set so land covers the share asked
   for (by default the Population step's).
 - **Land topography** (Log 24): mountain belts, from 5.2 km for collisions to 4 km for cordilleras and
   2.4 km for accreted arcs, worn down after they stop rising. Each belt rises from foothills at a ragged
-  edge to a crest along its middle, with peaks and passes along its length and parallel ranges within
-  it (plateaus stay flat-topped). A belt stands on thickened crust, so the ground under it stays land
+  edge to a crest along its middle; how much of its width stands up varies along it, and it breaks
+  into massifs, passes and gaps a few hundred km apart, with parallel ranges within it (plateaus stay
+  flat-topped). A belt raises the land on its continent, not a strip out over the sea beyond it. A belt stands on thickened crust, so the ground under it stays land
   after its peaks are worn down (the Appalachians, the Urals), until that too is worn away, over a
   billion years or so (the Grenville). Large igneous provinces are basalt plateaus, planed down in turn.
 - **Erosion**: everything that stops rising wears down (belts, the ground they hold up, flood basalts,
@@ -230,11 +234,15 @@ following Worldbuilder's Log 20–26:
   above the sea on the shelf in front of their mouths. Land stays land; the Rivers & biomes step works
   on the carved map, and its rivers run in the valleys. It can be switched off, and is off
   where the air is too thin for liquid water.
-- **Islands** (Log 22): island arcs, and hotspot volcanoes that sink into seamounts as they age.
+- **Islands** (Log 22): island arcs as a broad submarine ridge with separate volcanoes on it every
+  50-150 km, some breaking the surface, a few large; and hotspot volcanoes that sink into seamounts as
+  they age. Oceanic plateaus are ragged, not smooth ovals.
 - **Sea topography** (Log 26): the world's depth curve from its ridge depth (ridge + 350·√age, flattening
   on old floor), continental slopes, trenches and oceanic plateaus.
 
-Not only Earth: heights and widths are divided by g^scaling (the gravity scaling factor, 1–2, set on this step). Widths are set
+Not only Earth: the heights and widths of what stands up (ranges, trenches, volcanoes) are divided by
+g^scaling (the gravity scaling factor, 1–2, set on this step); the lie of the land (coasts, shelves,
+basins, how far inland the ground rises) does not change with gravity. Widths are set
 in km and turned into degrees by the planet's radius. Brush strokes are kept with the world and applied
 on top. Exports are an equirectangular colour map and a 16-bit heightmap PNG; the file name gives the
 height range and sea level.

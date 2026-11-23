@@ -30,6 +30,14 @@
   const OCEAN_LIFE = 200;                                    // older ocean floor has been subducted
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const smooth = (t) => { const x = clamp(t, 0, 1); return x * x * (3 - 2 * x); };
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+  /* A seeded random sequence from a string (a feature's id): the same feature, the same draws. */
+  const hashRng = (str) => {
+    let a = 2166136261;
+    for (let i = 0; i < str.length; i++) a = Math.imul(a ^ str.charCodeAt(i), 16777619) >>> 0;
+    return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  };
 
   function rng(seed) { // mulberry32
     let a = seed >>> 0;
@@ -466,13 +474,18 @@
       const tideShare = clamp(1 - (tr - 2) / 4, 0.1, 1);                   // what stays at the mouth
       // an estuary up the river's lower course
       if (tr > 3 && kl >= 0) {
-        const n = clamp(Math.round(((tr - 2) * 40) / cellKm), 1, 12);
+        // a funnel up the river's lower course: widest at the mouth (wider the larger the tide), narrowing
+        // to the river; low ground within it goes under the sea, deeper along the channel
+        const n = clamp(Math.round(((tr - 2) * 20) / cellKm), 1, 8), mouthW = clamp(20 * (tr - 1), 30, 160);   // km
         let k = kl;
         for (let i = 0; i < n && k >= 0 && land[k]; i++) {
-          const depth = (4 + 2.5 * tr) * (1 - i / (n + 1));
-          if (z[k] > -depth) { if (z[k] > 0) estuaryArea += area[k]; cut[k] += z[k] + depth; z[k] = -depth; }
-          // the funnel: low ground either side of its widest part is tidal flat, just awash
-          if (i < Math.ceil(n / 3)) nb(k, (q) => { if (land[q] && z[q] > 0 && z[q] < 40 + 10 * tr) { estuaryArea += area[q]; cut[q] += z[q] + 1; z[q] = -1; } });
+          const f = 1 - i / n, depth = (4 + 2.5 * tr) * (0.3 + 0.7 * f), rad = (mouthW * f ** 1.5 + 8) / kmDeg;
+          const at = S.latLon([gr.xyz[k * 3], gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2]]);
+          stamp(gr, at, Math.max(rad, gr.dx * 0.55), (q, dd) => {
+            if (!land[q] || z[q] <= -1 || z[q] > 60 + 12 * tr) return;
+            const lower = -1 - (depth - 1) * Math.max(0, 1 - dd / Math.max(rad, gr.dx * 0.55));
+            if (lower < z[q]) { if (z[q] > 0) estuaryArea += area[q]; cut[q] += z[q] - lower; z[q] = lower; }
+          });
           k = mainUp[k];
         }
         info.kind = 'estuary';
@@ -519,7 +532,10 @@
     // the planet: heights and widths shrink as gravity grows (÷ g^scaling); km become degrees by its radius
     const g = Math.max(0.05, opts.gravity ?? 1), f = g ** clamp(opts.scaling ?? 2, 0, 3), radius = opts.radiusKm ?? 6371;
     const H = (metres) => metres / f, relief = (opts.relief ?? 1) / f;
-    const km = (k) => ((k / f) * 180) / (Math.PI * radius);           // a width on Earth, in degrees here
+    const km = (k) => ((k / f) * 180) / (Math.PI * radius);           // a mountain feature's width on Earth, in degrees here (÷ g^scaling)
+    // the lie of the land (coasts, shelves, basins, how far inland) does not shrink with gravity: only
+    // what stands up does (ranges, trenches, volcanoes); this is a plain distance, in degrees
+    const geo = (k) => (k * 180) / (Math.PI * radius);
     const ridge = opts.ridgeDepth ?? 2600, depth = (a) => C.oceanDepth(ridge, Math.max(0, a));
     const live = (f) => (f.begin ?? start) >= age && (f.end == null || f.end < age);
     const placed = (f) => m.reconstruct(f.plateId, f.coords, age);
@@ -560,7 +576,7 @@
     // welded continents are one landmass: close the narrow gaps between pieces of crust (a dilation
     // then an erosion by ~200 km) so a suture lies inland, not between two coasts
     {
-      const g = Math.max(1.5 * gr.dx, km(200)), d0 = distance(gr, cont).d;
+      const g = Math.max(1.5 * gr.dx, geo(200)), d0 = distance(gr, cont).d;
       const grown = Uint8Array.from(d0, (v) => (v <= g ? 1 : 0)), back = distance(gr, grown.map((c) => 1 - c)).d;
       for (let k = 0; k < N; k++) if (!cont[k] && grown[k] && back[k] > g) { cont[k] = 1; plate[k] = plate[k] || 0; }
     }
@@ -579,7 +595,7 @@
       });
     }
     const activeMargin = new Uint8Array(N);
-    for (const t of trenches) stamp(gr, S.latLon(t.v), km(550), (k) => { activeMargin[k] = 1; });
+    for (const t of trenches) stamp(gr, S.latLon(t.v), geo(550), (k) => { activeMargin[k] = 1; });
 
     // mountain belts (Log 24): heights by type (a collision range, a plateau behind one, a cordillera,
     // accreted highlands), worn down once they stop rising: Alps-like while young, Appalachian after
@@ -631,10 +647,13 @@
       let half = 0; for (const k of cells) half = Math.max(half, dEdge[k]);
       const lam = km(260);
       for (const k of cells) {
-        // edges to crest, the foothills fading out along a ragged line rather than the outline
-        const t = clamp(dEdge[k] / Math.max(half, 1e-6) + 0.3 * fbm(k, 8, 3), 0, 1);
+        // edges to crest, the foothills fading out along a ragged line rather than the outline; how much
+        // of the belt's width stands up changes along it (a range is not a strip of even width)
+        const wide = 0.4 + 0.6 * smooth((fbm(k, 6, 2) + 0.28) / 0.56);
+        const t = clamp((dEdge[k] / Math.max(half, 1e-6) - (1 - wide)) / wide + 0.3 * fbm(k, 8, 3), 0, 1);
         const profile = 0.05 + 0.95 * Math.pow(smooth(t * 1.25), 0.85);
-        const along = clamp(1.05 + 0.9 * fbm(k, 3.2, 3), 0.45, 1.2);         // peaks and passes
+        // massifs, passes and gaps along it, a few hundred km apart
+        const along = 0.12 + 1.08 * smooth((fbm(k, 12, 3) + 0.2) / 0.42);
         const par = 0.5 + 0.5 * Math.cos((2 * Math.PI * (dEdge[k] + 0.6 * lam * fbm(k, 5, 2))) / lam);
         const v = h * profile * along * (0.88 + 0.17 * par);
         if (v > into[k]) into[k] = v;
@@ -655,13 +674,14 @@
     // a mountain belt stands on crust thickened beneath it, and stays high long after it is worn down
     // (the Appalachians, the Urals): the ground under any belt, however old, is lifted
     const beltS = blur(gr, rootW, Math.max(1, Math.round(km(90) / gr.dx)), 2);
-    const reachK = km(3000), Pot = new Float32Array(N);
+    const reachK = geo(3000), Pot = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       const sd = cont[k] ? dIn[k] : -dOut[k];
-      Pot[k] = Math.abs(sd) > reachK ? sd : sd + km(1290) * warped(k, 2.2, 6, 0.4) + km(400) * warped(k, 7.5, 4, 0.2) + km(130) * fbm(k, 22, 3);
+      Pot[k] = Math.abs(sd) > reachK ? sd : sd + geo(1290) * warped(k, 2.2, 6, 0.4) + geo(400) * warped(k, 7.5, 4, 0.2) + geo(130) * fbm(k, 22, 3);
       // mountains and plateaus near the crust stand above the sea: ranges join the land they rise on
-      if (sd > -km(400) && (oroS[k] > H(300) || platS[k] > H(300))) Pot[k] += km(500) * clamp(Math.max(oroS[k], platS[k]) / H(1500), 0, 1);
-      if (sd > -km(100) && beltS[k] > 0.02) Pot[k] += km(650) * smooth(beltS[k] * 1.6) * smooth((sd + km(100)) / km(200));
+      // (on the continent and just off it: a range does not lay a strip of land out over the sea beyond)
+      if (sd > -geo(60) && (oroS[k] > H(300) || platS[k] > H(300))) Pot[k] += geo(500) * clamp(Math.max(oroS[k], platS[k]) / H(1500), 0, 1) * smooth((sd + geo(60)) / geo(160));
+      if (sd > -geo(30) && beltS[k] > 0.02) Pot[k] += geo(650) * smooth(beltS[k] * 1.6) * smooth((sd + geo(30)) / geo(200));
     }
     // 5. sea level: the coast is where that field crosses the level that leaves the share asked for dry
     const crustShare = shareAbove(gr, Float32Array.from(cont, (c) => (c ? 1 : 0)), 0.5);
@@ -671,12 +691,27 @@
     const p0 = (lo + hi) / 2, sea = p0;
     const dry = (k) => Pot[k] > p0;
 
-    // 6. the land: rising gently inland, broad basins and uplands, cratons as old flat shields
+    // 6. the land: a low coastal plain rising over a few hundred km, then not one dome but broad
+    // basins (the Amazon, the Congo, the Mississippi: low and flat), uplands, plateaus with an
+    // escarpment at their edge (Africa, the Deccan), and hills between; cratons are old flat shields
     const z = new Float32Array(N);
+    // (how much of a craton: feathered over a few hundred km, so a shield has no sharp outline)
+    const cratonS = blur(gr, Float32Array.from(craton), Math.max(1, Math.round(geo(220) / gr.dx)), 3);
     for (let k = 0; k < N; k++) {
       if (!dry(k)) continue;
-      const d = Pot[k] - p0;
-      z[k] = H(Math.max(4, 25 + 1250 * (1 - Math.exp(-d / km(900))) + (380 * fbm(k, 2.5, 5) + 320 * fbm(k, 1.1, 3)) * smooth(d / km(250)) - (craton[k] ? 80 : 0)));
+      const d = Pot[k] - p0, inland = 1 - Math.exp(-d / geo(350));
+      const big = warped(k, 1.3, 4, 0.6);                               // the continent's large shapes, about ±0.35
+      const up = Math.max(0, big) * 2600, basin = Math.min(0, big) * 1500;
+      // a step up, an escarpment, on a field of its own (not a ring round each upland)
+      const plateau = 450 * smooth((warped(k, 2.1, 3, 0.9) - 0.12) / 0.05) * smooth((big + 0.1) / 0.2);
+      const hills = 480 * warped(k, 3.4, 4, 0.3) + 160 * fbm(k, 9, 3);
+      const shield = 1 - 0.75 * smooth(cratonS[k] * 1.4);                // old shields: smooth, not lower
+      const floor = 30 + 40 * (fbm(k, 5, 2) + 0.35);                      // basin floors stay a little above the sea
+      // the lower of the coastal plain's rise and the interior's height, blended (a hard minimum leaves a
+      // crease parallel to the coast: on a round island, a ring)
+      const a = 25 + d / geo(0.5), b = 25 + inland * Math.max(floor, 560 + up + plateau + hills * shield + basin), sm = 180;
+      const lower = Math.min(a, b) - sm * Math.log1p(Math.exp(-Math.abs(a - b) / sm));
+      z[k] = H(Math.max(4, lower));
     }
     // large igneous provinces: ragged basalt plateaus on land, raised ocean floor at sea
     const lip = new Float32Array(N);
@@ -684,9 +719,11 @@
       // a flood basalt is planed down too: the Deccan stands, the Keweenawan basalts are gone
       const pl = placed(f), old = Math.max(0, (f.begin ?? start) - age) * rate(latOf(pl));
       const h = f.type === 'oceanic plateau' ? H(2400) : H(450) * (0.4 * Math.exp(-old / 600) + 0.6 * Math.exp(-old / 150));
-      fillPolygon(gr, pl, (k) => { const v = h * clamp(0.55 + 0.9 * warped(k, 8, 4, 0.3), 0, 1); if (v > lip[k]) lip[k] = v; });
+      // (an oceanic plateau is no smooth oval either: ragged, with higher and lower parts)
+      const oce = f.type === 'oceanic plateau';
+      fillPolygon(gr, pl, (k) => { const v = h * clamp(oce ? 0.35 + 1.4 * warped(k, 6, 4, 0.5) : 0.55 + 0.9 * warped(k, 8, 4, 0.3), 0, 1); if (v > lip[k]) lip[k] = v; });
     }
-    const lipS = blur(gr, lip, Math.max(1, Math.round(km(60) / gr.dx)), 2);
+    const lipS = blur(gr, lip, Math.max(1, Math.round(geo(60) / gr.dx)), 2);
     for (let k = 0; k < N; k++) {
       if (!dry(k)) continue;
       const ridged = 1 - Math.abs(warped(k, 9, 5, 0.15));        // sharp, branching crests
@@ -697,13 +734,13 @@
     for (let k = 0; k < N; k++) {
       if (dry(k)) continue;
       const e = p0 - Pot[k];                                      // how far out from the coast
-      const shelfW = (activeMargin[k] ? km(40) : km(150) * (0.6 + 0.5 * (fbm(k, 1.5, 2) + 1))) * shelfF;
+      const shelfW = (activeMargin[k] ? geo(40) : geo(150) * (0.6 + 0.5 * (fbm(k, 1.5, 2) + 1))) * shelfF;
       // the world's depth curve (ridge depth + 350·√age, flattening on old floor); floor older than the
       // map's ocean (no isochron left) is taken as old
       const a = oage[k], hills = H(180) * fbm(k, 14, 3);
       const D = (a >= 0 ? depth(a) : depth(150) + 300 * fbm(k, 2, 3)) - 150 * Math.max(0, fbm(k, 3, 2));
       const shelf = 20 + 120 * clamp(e / shelfW, 0, 1);
-      const rise = smooth((e - shelfW) / km(260));             // continental slope and rise
+      const rise = smooth((e - shelfW) / geo(260));             // continental slope and rise
       z[k] = -(shelf + (D - shelf) * rise) + (hills + lipS[k]) * rise;
     }
     // trenches, on the ocean side of each subduction zone
@@ -711,7 +748,7 @@
     for (const t of trenches) {
       const c = t.v.map((x, q) => x + off * t.out[q]), cl = S.latLon(c);
       stamp(gr, cl, tw * 2.4, (k, dd) => {
-        if (Pot[k] > p0 - km(70)) return;
+        if (Pot[k] > p0 - geo(70)) return;
         const extra = H(2600 + 1600 * (fbm(k, 4, 2) + 1) / 2) * Math.exp(-((dd / tw) ** 2));     // below the floor beside it
         if (extra > trench[k]) trench[k] = extra;
       });
@@ -719,9 +756,35 @@
     for (let k = 0; k < N; k++) z[k] -= trench[k];
 
     // 7. islands (Log 22): island arcs, and hotspot volcanoes sinking as they age
-    for (const f of P.features.filter((x) => x.kind === 'arc' && live(x) && !x.accreted && x.coords.length >= 3)) {
-      // a submarine ridge with volcanoes along it: only their tops break the surface, as a chain of islands
-      fillPolygon(gr, placed(f), (k) => { const v = warped(k, 26, 4, 0.2); const hgt = H(-1600 + 4300 * smooth((v + 0.05) / 0.75)); z[k] = Math.max(z[k], hgt); });
+    // an island arc: a broad submarine ridge (some 150-250 km across, its crest 1-2 km down), and on it
+    // separate volcanoes every 40-120 km, only some of them breaking the surface as islands, a few large
+    // (as Japan's or the Aleutians'); not one even strip
+    {
+      const ridge = new Float32Array(N), arcs = P.features.filter((x) => x.kind === 'arc' && live(x) && !x.accreted && x.coords.length >= 4);
+      for (const f of arcs) fillPolygon(gr, placed(f), (k) => { ridge[k] = 1; });
+      const swell = blur(gr, ridge, Math.max(1, Math.round(geo(80) / gr.dx)), 3);
+      for (let k = 0; k < N; k++) {
+        if (swell[k] < 0.01 || z[k] >= 0) continue;
+        // higher and lower stretches along it, ragged flanks (the swell normalised: an arc is often under a cell wide)
+        const s = smooth(Math.min(1, swell[k] / 0.12) * 1.1 + 0.3 * fbm(k, 16, 3) - 0.05) * (0.55 + 0.45 * smooth((fbm(k, 10, 3) + 0.25) / 0.5));
+        if (s > 0) z[k] = Math.max(z[k], z[k] + (H(-1900) - z[k]) * s + H(300) * fbm(k, 14, 2) * s);
+      }
+      for (const f of arcs) {
+        const ring = placed(f).map(S.vec), n = ring.length >> 1, r = hashRng(`${f.id}`);
+        // the arc's middle line: halfway between its two sides
+        const mid = Array.from({ length: n }, (_, i) => norm(ring[i].map((v, q) => v + ring[ring.length - 1 - i][q])));
+        let along = r() * geo(60);
+        for (let i = 1; i < mid.length; i++) {
+          const seg = Math.acos(clamp(dot(mid[i - 1], mid[i]), -1, 1)) * R2D;
+          for (; along < seg; along += geo(55) + r() * geo(90)) {
+            const t = along / seg, v = norm(mid[i - 1].map((x, q) => x + (mid[i][q] - x) * t));
+            const big = r() < 0.18, rad = big ? geo(25) + r() * geo(40) : geo(10) + r() * geo(16);
+            const top = big ? 300 + r() * 1800 : -1000 + r() * 1600;         // many stay seamounts
+            stamp(gr, S.latLon(v), Math.max(rad, gr.dx * 0.7), (k, dd) => { const hgt = H(-1500 + (top + 1500) * Math.max(0, 1 - dd / Math.max(rad, gr.dx * 0.7)) ** 1.3); if (hgt > z[k]) z[k] = hgt; });
+          }
+          along -= seg;
+        }
+      }
     }
     const cache = new Map();
     for (const h of P.features.filter((x) => x.kind === 'hotspot' && (x.begin ?? start) >= age)) {
@@ -745,8 +808,8 @@
     // 10. plate boundaries (Log 20): convergent near a trench, divergent on a young ridge, else transform
     const boundary = new Uint8Array(N);
     const nearTrench = new Uint8Array(N), nearRidge = new Uint8Array(N);
-    for (const t of trenches) stamp(gr, S.latLon(t.v), Math.max(2 * gr.dx, km(280)), (k) => { nearTrench[k] = 1; });
-    for (const rl of ridges) for (const p of S.densify(rl, false, 1)) stamp(gr, p, Math.max(2 * gr.dx, km(220)), (k) => { nearRidge[k] = 1; });
+    for (const t of trenches) stamp(gr, S.latLon(t.v), Math.max(2 * gr.dx, geo(280)), (k) => { nearTrench[k] = 1; });
+    for (const rl of ridges) for (const p of S.densify(rl, false, 1)) stamp(gr, p, Math.max(2 * gr.dx, geo(220)), (k) => { nearRidge[k] = 1; });
     for (let j = 0; j < gr.H; j++) for (let i = 0; i < W; i++) {
       const k = j * W + i, r = j * W + ((i + 1) % W), d = j < gr.H - 1 ? k + W : -1;
       if (pl[k] !== pl[r] || (d >= 0 && pl[k] !== pl[d])) boundary[k] = nearTrench[k] ? 1 : nearRidge[k] ? 2 : 3;
