@@ -25,7 +25,7 @@
   let cached = null;
   const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, w.map.erosion, w.map.carve, w.planet.pressure >= WET, d.planet.gravity, d.planet.radiusKm, d.planet.cells.count, w.tectonics.scaling, w.tectonics.ridgeDepth,
     // (the rivers carve with the climate's water: what the climate depends on)
-    w.map.carve !== false ? [WS.climate.planetOf(w, d), WS.biomes.planetOf(w, d)] : null]);
+    w.map.carve !== false ? [WS.climate.planetOf(w, d), WS.biomes.planetOf(w, d), +tidesOf(w, d).toFixed(3)] : null]);
   /* The map of a world (built if need be, synchronously): shared with the Climate step. */
   WS.currentMap = (w, d) => {
     if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
@@ -49,10 +49,16 @@
     map.climate = { clim, pl, strokes: w.map.strokes.length };
     return map;
   }
+  /* The planet's tides against Earth's, from its moon, star, size and gravity (worldmap.js planetTides). */
+  const tidesOf = (w, d) => M.planetTides({
+    moonMass: w.moon.enabled ? w.moon.mass : 0, moonKm: w.moon.a, starMass: w.star.mass, au: w.planet.a,
+    locked: w.planet.rotation >= 0.95 * d.planet.yearEarthDays * 24, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity,
+  });
+  WS.tidesOf = tidesOf;
   const settingsOf = (w, d) => ({
     res: w.map.res || 720, land: (w.map.land ?? w.population.land) / 100, shelf: w.map.shelf, relief: w.map.relief, seed: w.plates.seed,
     gravity: d.planet.gravity, scaling: w.tectonics.scaling, radiusKm: d.planet.radiusKm, ridgeDepth: w.tectonics.ridgeDepth,
-    erosion: w.map.erosion ?? 1, cells: d.planet.cells.count,
+    erosion: w.map.erosion ?? 1, cells: d.planet.cells.count, tides: tidesOf(w, d),
     carve: w.map.carve !== false && w.planet.pressure >= WET,          // rivers need liquid water
   });
   const WET = 0.0061;                                                     // atm: below it water cannot be liquid
@@ -378,7 +384,8 @@
             ['Deepest point', `${fmt.int(-map.deepest.m)} m`, `${fmt.num(map.deepest.at[0], 1)}°, ${fmt.num(map.deepest.at[1], 1)}°`],
             ['Mean land height', `${fmt.int(land ? sum / land : 0)} m`, 'Earth ≈ 840 m'],
             ['Plates', `${new Set(map.plate).size}`, 'with their boundaries'],
-            ...(map.rivers ? [['Carved by rivers', `${fmt.num(map.rivers.eroded / 1e6, 2)} M km³`, `deepest valley ${fmt.int(map.rivers.deepest)} m · deltas ${fmt.int(map.rivers.deltaArea)} km² · ${map.rivers.rain === 'climate' ? 'with the climate’s rain' : 'rain by latitude'}`]] : [])]
+            ...(map.rivers ? [['Carved by rivers', `${fmt.num(map.rivers.eroded / 1e6, 2)} M km³`, `deepest valley ${fmt.int(map.rivers.deepest)} m · ${map.rivers.rain === 'climate' ? 'with the climate’s rain' : 'rain by latitude'}`],
+              ['River mouths', `${map.rivers.mouthList.filter((x) => /delta/.test(x.kind)).length} deltas · ${map.rivers.mouthList.filter((x) => x.kind === 'estuary').length} estuaries`, `${fmt.int(map.rivers.deltaArea)} km² of delta land · tides ${fmt.num(map.tideX, 2)} × Earth’s (Moon, star, gravity)`]] : [])]
             .map(([l, v, sub]) => h('div', { class: 'readout' }, h('div', { class: 'lbl' }, l), h('div', { class: 'val' }, v), h('div', { class: 'sub' }, sub)))),
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             h('button', { class: 'btn small', type: 'button', onclick: () => { ctx.mutate((w) => { w.population.land = +(map.land * 100).toFixed(1); if (w.map.land != null) w.map.land = +(map.land * 100).toFixed(1); }); toast(`Population land set to ${fmt.num(map.land * 100, 1)} %`); } }, `Use ${fmt.num(map.land * 100, 1)} % as land on Population`)));

@@ -260,6 +260,15 @@
     files.push({ name: '6-coastline.svg', data: enc.encode(s.coastline) });
     if (bio) files.push({ name: '7-rivers.svg', data: enc.encode(s.rivers) });
     files.push({ name: '8-drawing.svg', data: enc.encode(s.drawing) });
+    // the map's waters as data: where the rivers meet the sea (and what they build there), the tides,
+    // and how the map was made (to make a closer map of a region that agrees with this one)
+    const cellLL = (k) => [+(90 - ((Math.floor(k / W) + 0.5) * 180) / H).toFixed(3), +(-180 + (((k % W) + 0.5) * 360) / W).toFixed(3)];
+    const waters = {
+      map: { width: W, height: H, degreesPerPixel: 360 / W, radiusKm: map.planet?.radiusKm, gravity: map.planet?.gravity, carving: map.carving ? { erosion: map.carving.erosion, seed: map.carving.seed, rain: map.rivers ? map.rivers.rain : null } : null },
+      tides: { timesEarth: map.tideX ?? null, note: 'tidal range on the coasts: about 1 m × this on a narrow shelf, up to 4 m × this on a wide one' },
+      mouths: map.rivers ? map.rivers.mouthList.map((m) => ({ at: cellLL(m.cell), pixel: [m.cell % W, Math.floor(m.cell / W)], kind: m.kind, dischargeM3s: Math.round(m.discharge), sedimentKm3: Math.round(m.sediment), tideM: +m.tide.toFixed(2) })) : [],
+    };
+    files.push({ name: '9-waters.json', data: enc.encode(JSON.stringify(waters, null, 1)) });
     const R = info.radiusKm ?? map.planet?.radiusKm ?? 6371, kmPx = (2 * Math.PI * R) / W;
     const present = (list, share) => list.map((x, i) => [x, share ? share[i] : 1]).filter(([, v]) => v > 0);
     const lines = [
@@ -275,6 +284,7 @@
       '6-coastline.svg      the coast as vector paths (pixel units, same size)',
       bio ? `7-rivers.svg         rivers of ${Math.round(bio.minFlow)} m³/s or more, wider with their flow (data-flow in m³/s)` : null,
       `8-drawing.svg        layers for a vector program: graticule (every 30°${tilt > 0.5 && tilt < 89.5 ? `; dashed: the tropics and polar circles at ${tilt.toFixed(1)}° and ${(90 - tilt).toFixed(1)}°` : ''}), coast, lakes, rivers`,
+      '9-waters.json        river mouths (where, delta or estuary, flow in m³/s, sediment, tidal range), the tides, how the map was made',
       '',
       bio ? 'Biomes:' : null,
       ...(bio ? present(bio.biomes, bio.stats.biomeShare).map(([[, name, col], v]) => `  ${col}  ${name} (${Math.round(v * 100)} % of the land)`) : []),

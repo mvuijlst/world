@@ -120,3 +120,34 @@ test('a built map is carved by its rivers unless told not to', () => {
   assert.equal(plain.rivers, null);
   assert.ok(Math.abs(carved.land - plain.land) < 0.01, `land ${carved.land} vs ${plain.land}`);
 });
+
+test('tides: from the moon, star, size and gravity; small tides build deltas, large ones scour estuaries', () => {
+  assert.ok(Math.abs(M.planetTides({ moonMass: 1, moonKm: 384400, starMass: 1, au: 1 }) - 1) < 1e-9, 'Earth: 1');
+  assert.ok(Math.abs(M.planetTides({ moonMass: 0, starMass: 1, au: 1 }) - 0.46 / 1.46) < 1e-9, 'no moon: the Sun alone');
+  assert.ok(Math.abs(M.planetTides({ moonMass: 1, moonKm: 192200 }) - 8.46 / 1.46) < 1e-9, 'a moon at half the distance: eight times the lunar tide');
+  assert.ok(M.planetTides({ moonMass: 1, gravity: 2 }) < 0.51, 'twice the gravity: half the tide');
+  // the dome island from above, with its shelf: a wide shelf gets more tide than the open ocean
+  const gr = M.makeGrid(360), base = new Float32Array(gr.N).fill(-3000), c = S.vec([0, 0]);
+  for (let k = 0; k < gr.N; k++) {
+    const d = Math.acos(Math.max(-1, Math.min(1, gr.xyz[k * 3] * c[0] + gr.xyz[k * 3 + 1] * c[1] + gr.xyz[k * 3 + 2] * c[2]))) * 180 / Math.PI;
+    if (d < 25) base[k] = 20 + 2500 * (1 - d / 25); else if (d < 30) base[k] = -60;
+  }
+  const t1 = M.tidalRange(gr, base, 1);
+  const shelfK = base.findIndex((v) => v === -60), oceanK = base.findIndex((v) => v === -3000);
+  assert.ok(t1[shelfK] > t1[oceanK] && t1[oceanK] === 0.5, `shelf ${t1[shelfK]} m, ocean ${t1[oceanK]} m`);
+  const run = (tideX, gravity = 1) => { const z = Float32Array.from(base); const r = M.carve(gr, z, { seed: 3, gravity, tides: M.tidalRange(gr, base, tideX) }); return { z, r }; };
+  const small = run(0.3), large = run(5);
+  const kinds = (r) => r.mouthList.map((m) => m.kind);
+  assert.ok(kinds(small.r).includes('delta') && !kinds(small.r).includes('estuary'), kinds(small.r).join());
+  assert.ok(kinds(large.r).includes('estuary') && !kinds(large.r).includes('delta'), kinds(large.r).join());
+  assert.ok(small.r.deltaArea > 0 && large.r.deltaArea === 0 && large.r.estuaryArea > 0);
+  const est = large.r.mouthList.find((m) => m.kind === 'estuary');
+  assert.ok(large.z[est.from] < 0, 'the river’s last cell is now an arm of the sea');
+  // stronger gravity: the same relief is cut harder; deltas smaller
+  const heavy = run(0.3, 2);
+  assert.ok(heavy.r.eroded > small.r.eroded * 1.2, `${heavy.r.eroded} vs ${small.r.eroded}`);
+  // what a closer map would need: the drainage and the water through it
+  const from = small.r.mouthList[0].from;
+  assert.ok(small.r.recv[from] >= 0 && small.z[small.r.recv[from]] <= 3, 'the mouth’s land cell drains to the sea');
+  assert.ok(small.r.discharge[from] > 100 && Math.abs(small.r.mouthList[0].discharge - small.r.discharge[from]) < 1e-6 * small.r.discharge[from] + 1e-3);
+});

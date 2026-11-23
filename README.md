@@ -210,7 +210,13 @@ following Worldbuilder's Log 20–26:
   through wet uplands and mountain belts (typically 1.5–3 km, deeper in the wettest high ranges, at
   Erosion ×1), little in deserts, and divides barely change; valley sides slope down to them. A basin
   spills over its rim only if more water flows in than its lake could evaporate; otherwise it stays
-  closed and its rim uncut, so inland drainage and lakes come out as on the uncarved map. The climate
+  closed and its rim uncut, so inland drainage and lakes come out as on the uncarved map. Gravity:
+  rivers cut as √g (the water's power grows with g, so does the weight of what it moves), and under
+  stronger gravity the load settles sooner, so deltas are smaller. Tides: the planet's tide against
+  Earth's comes from its moon and star, its size and gravity (G·M·R²/(g·a³); none from a star it is
+  locked to), and is larger over wide shelves. Where the tidal range at a mouth is small the river
+  builds a delta; where it is large (over ~3 m) it scours a funnel-shaped estuary and its load goes
+  out as bars under water. The climate
   is kept for the Climate step (carving barely changes it: it works on smoothed heights), so it is
   worked out once. The rock goes
   downstream: basins fill with it (halfway at most), and the largest rivers build deltas a few metres
@@ -294,7 +300,14 @@ image editor or a vector program:
 - SVGs: the coastline, the rivers (wider with their flow), and `8-drawing.svg` with Inkscape layers
   for a graticule (with the tropics and polar circles for the planet's tilt), the coast, the lakes and
   the rivers;
+- `9-waters.json`: every river mouth (where, delta or estuary, flow in m³/s, sediment, tidal range),
+  the planet's tides, and how the map was made (seed, erosion, rain), for labels or a closer map of a
+  region that agrees with this one;
 - `README.txt`: the scale (km a pixel), the heightmap's range and sea level, and the keys.
+
+In the app the built map also keeps, for a closer map later, the drainage of every land cell (where it
+drains to) and the water through it (m³/s), the tidal range on the sea, and how it was carved; the map
+is rebuilt the same from the saved world (every random choice is seeded).
 
 The coast and lake shores are traced from the map's cells (marching squares), smoothed and cut where
 they cross the date line.

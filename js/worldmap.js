@@ -211,6 +211,32 @@
   }
 
   /*
+   * The tidal range (m) on the sea: tideX is the planet's tide against Earth's (its moon and star, its
+   * size and gravity); about 1 m of that on a coast with a narrow shelf, up to 4 m where the shelf
+   * is wide (the tide piles up over shallow water: the North Sea, Patagonia), half of it on the
+   * open ocean. Bays that resonate (Fundy) are finer than the map.
+   */
+  /*
+   * A planet's tides against Earth's: the equilibrium tide, G·M·R² / (g·a³), from its moon (mass in
+   * Moon masses, distance in km; none if moonMass is 0) and its star (mass in suns, distance in AU;
+   * none felt if the planet is tidally locked to it), for its radius (km) and gravity (g).
+   * Earth: 1 (the Moon 1, the Sun 0.46 of that).
+   */
+  function planetTides(o = {}) {
+    const R = (o.radiusKm ?? 6371) / 6371;
+    const moon = o.moonMass ? o.moonMass / ((o.moonKm ?? 384400) / 384400) ** 3 : 0;
+    const sun = o.locked ? 0 : (0.46 * (o.starMass ?? 1)) / (o.au ?? 1) ** 3;
+    return ((moon + sun) / 1.46) * (R * R) / Math.max(0.05, o.gravity ?? 1);
+  }
+
+  function tidalRange(gr, z, tideX = 1, radiusKm = 6371) {
+    const kmDeg = (Math.PI * radiusKm) / 180, deep = Uint8Array.from(z, (v) => (v < -200 ? 1 : 0));
+    const d = distance(gr, deep).d, out = new Float32Array(gr.N);
+    for (let k = 0; k < gr.N; k++) if (z[k] <= 0) out[k] = deep[k] ? 0.5 * tideX : tideX * (1 + 3 * smooth((d[k] * kmDeg) / 500));
+    return out;
+  }
+
+  /*
    * Rivers carving the land, and what they carry away (the stream-power law, solved implicitly as in
    * Braun & Willett 2013, so a few long steps stay stable):
    *  - the water: every land cell drains to the lowest way out, found by flooding the land up from the
@@ -226,14 +252,21 @@
    * unevenness for the routing), seed, steps (3), k (strength, 0.8), and the water: either water =
    * {runoff, P, PET} (mm a year per cell, from the climate: biomes.js water), when a basin spills only
    * if more flows in than its lake could evaporate, or else wet(lat) (rain by latitude, 1 on average),
-   * when a basin spills only in a wet belt.
-   * Returns {cut, laid} (m, per cell), {mouths}, the volumes (km³) and the deltas' new land (km²).
+   * when a basin spills only in a wet belt; gravity (g, 1: rivers cut as √g, deltas settle sooner);
+   * tides (tidal range on the sea, m per cell: tidalRange) for what the mouths build.
+   * Returns {cut, laid} (m, per cell), the volumes (km³), the deltas' and estuaries' area (km²), the
+   * mouths [{cell, from (the land cell), discharge (m³/s), sediment (km³), tide (m), kind: delta,
+   * tidal delta, estuary, or river}], and the drainage: recv (where each land cell drains; sea or -1)
+   * and discharge (m³/s per cell).
    */
   function carve(gr, z, opts = {}) {
     const { W, H, N } = gr, R = opts.radiusKm ?? 6371, kmDeg = (Math.PI * R) / 180;
     const E = Math.max(0, opts.erosion ?? 1), wet = opts.wet || (() => 1), steps = Math.max(1, opts.steps ?? 3);
     // F = K·(A / 10⁴ km²)^0.6 · (100 km / distance): calibrated by eye and in the tests
-    const K = ((opts.k ?? 0.8) * E) / steps, mExp = 0.6;
+    // the water's power to cut grows with gravity (stream power ρ·g·Q·S), but so does the weight of the
+    // grains it must lift (the threshold to move them): the net effect grows as √g
+    const g = Math.max(0.05, opts.gravity ?? 1);
+    const K = ((opts.k ?? 0.8) * E * Math.sqrt(g)) / steps, mExp = 0.6;
     const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0));
     const cut = new Float32Array(N), laid = new Float32Array(N);
     const area = new Float32Array(N), wA = new Float32Array(N);
@@ -260,7 +293,7 @@
     let no = 0;
     const q = heap(fill);
     for (let k = 0; k < N; k++) if (!land[k]) { done[k] = 1; let coast = false; nb(k, (n) => { if (land[n]) coast = true; }); if (coast) { fill[k] = 0; q.push(k); } }
-    if (!q.size) return { cut, laid, mouths: 0, eroded: 0, delta: 0, basins: 0, deltaArea: 0, deepest: 0 };
+    if (!q.size) return { cut, laid, mouths: 0, mouthList: [], eroded: 0, delta: 0, basins: 0, deltaArea: 0, estuaryArea: 0, deepest: 0, recv, discharge: new Float32Array(N) };
     while (q.size) {
       const c = q.pop();
       if (land[c]) order[no++] = c;
@@ -287,10 +320,15 @@
     // the rain gathered on the way down (upstream cells first); a basin passes on what its lake cannot
     // evaporate (from the climate) or, by latitude, all of it in a wet belt and none in a dry one
     const A = Float64Array.from(wA);
+    // (A in km² of Earth-like runoff: × Q1 gives m³/s); the main stream into each cell, and the land
+    // cell that reaches the sea at each mouth
+    const Q1 = (RUN / 1000) * 1e6 / 3.156e7, mainUp = new Int32Array(N).fill(-1), mouthLand = new Map();
     for (let o = no - 1; o >= 0; o--) {
       const k = order[o], r = recv[k];
       if (exitOf[k] === k) out[k] = evap ? (A[k] > 0 ? clamp(1 - cap[k] / A[k], 0, 1) : 0) : passes(k);
-      if (r >= 0 && land[r]) A[r] += A[k] * out[k];
+      if (r < 0) continue;
+      if (land[r]) { A[r] += A[k] * out[k]; if (mainUp[r] < 0 || A[k] > A[mainUp[r]]) mainUp[r] = k; }
+      else if (!mouthLand.has(r) || A[k] > A[mouthLand.get(r)]) mouthLand.set(r, k);
     }
 
     // the cutting, downstream first; hollows (a cell whose way out is higher) are left alone
@@ -328,16 +366,37 @@
       if (land[r]) Qs[r] += Qs[k]; else mouths.set(r, (mouths.get(r) || 0) + Qs[k]);
     }
 
-    let deltaArea = 0;
-    // deltas: where a big river meets the shelf, the biggest first: a fan of new land a few metres
-    // above the sea in front of the mouth, as big as its load allows (a few cells for the largest);
-    // small rivers' loads, and what a delta cannot hold, go out over the shelf and down the slope
-    let delta = 0;
-    const shelf = -250, top = 3, cellA = (gr.dx * kmDeg) ** 2;
+    // the mouths, the biggest first. What the tide does there (its range, m: opts.tides) decides
+    // what the river builds (as Galloway's deltas): where the tide is small (under ~2 m) the load
+    // stays and builds a delta, a fan of new land a few metres above the sea; where it is large it
+    // sweeps the load out over the shelf (tidal bars, under water) and scours the river's lower
+    // course into a funnel-shaped estuary, deeper and longer the larger the tide. Under stronger
+    // gravity the load settles sooner: a delta is smaller and thicker. Small rivers' loads, and what
+    // a delta cannot hold, go out over the shelf and down the slope.
+    const tides = opts.tides, cellKm = gr.dx * kmDeg;
+    let deltaArea = 0, delta = 0, estuaryArea = 0;
+    const shelf = -250, cellA = cellKm * cellKm, mouthList = [];
     const big = [...mouths].sort((a, b) => b[1] - a[1]), biggest = big.length ? big[0][1] : 0;
     for (const [m, vol] of big) {
-      if (vol < biggest * 0.08) break;
-      let left = vol * 0.5, cells = clamp(Math.round(Math.sqrt(vol / (cellA * 2))), 1, 30);
+      const kl = mouthLand.get(m), tr = tides ? tides[m] : 1.5;
+      const info = { cell: m, from: kl, sediment: vol, discharge: kl >= 0 ? A[kl] * Q1 : 0, tide: tr, kind: 'river' };
+      if (vol < biggest * 0.08) { if (info.discharge > 1000) mouthList.push(info); continue; }
+      const tideShare = clamp(1 - (tr - 2) / 4, 0.1, 1);                   // what stays at the mouth
+      // an estuary up the river's lower course
+      if (tr > 3 && kl >= 0) {
+        const n = clamp(Math.round(((tr - 2) * 40) / cellKm), 1, 12);
+        let k = kl;
+        for (let i = 0; i < n && k >= 0 && land[k]; i++) {
+          const depth = (4 + 2.5 * tr) * (1 - i / (n + 1));
+          if (z[k] > -depth) { if (z[k] > 0) estuaryArea += area[k]; cut[k] += z[k] + depth; z[k] = -depth; }
+          // the funnel: low ground either side of its widest part is tidal flat, just awash
+          if (i < Math.ceil(n / 3)) nb(k, (q) => { if (land[q] && z[q] > 0 && z[q] < 40 + 10 * tr) { estuaryArea += area[q]; cut[q] += z[q] + 1; z[q] = -1; } });
+          k = mainUp[k];
+        }
+        info.kind = 'estuary';
+      }
+      const top = tr > 3 ? -2 : 3;                                          // bars under water, or delta land
+      let left = vol * 0.5 * tideShare, cells = clamp(Math.round(Math.sqrt(vol / (cellA * 2)) * tideShare / Math.sqrt(g)), 1, 30);
       const seen = new Set([m]), front = [m];
       for (let s = 0; s < front.length && left > 0 && cells > 0; s++) {
         const k = front[s];
@@ -347,11 +406,17 @@
           z[k] += d; laid[k] += d; left -= (d * area[k]) / 1000; delta += (d * area[k]) / 1000; cells--;
           if (wasSea && z[k] > 0) deltaArea += area[k];
         }
-        if (front.length < 400) nb(k, (n) => { if (!seen.has(n) && !land[n] && z[n] > shelf && z[n] < top) { seen.add(n); front.push(n); } });
+        if (front.length < 400) nb(k, (q) => { if (!seen.has(q) && !land[q] && z[q] > shelf && z[q] < top) { seen.add(q); front.push(q); } });
       }
+      if (info.kind !== 'estuary') info.kind = tr > 2 ? 'tidal delta' : 'delta';
+      mouthList.push(info);
     }
     let deepest = 0; for (let k = 0; k < N; k++) if (cut[k] > deepest) deepest = cut[k];
-    return { cut, laid, mouths: mouths.size, eroded, delta, basins, deltaArea, deepest };
+    // the drainage, for later use (a closer map of a region, or drawing): where each land cell drains
+    // to (-1 at the sea), and the water through it (m³/s)
+    const discharge = new Float32Array(N);
+    for (let k = 0; k < N; k++) if (land[k]) discharge[k] = A[k] * Q1;
+    return { cut, laid, mouths: mouths.size, mouthList, eroded, delta, basins, deltaArea, estuaryArea, deepest, recv, discharge };
   }
 
   /*
@@ -360,7 +425,10 @@
    * (width factor), relief (height factor), seed, strokes [{lat, lon, r, dz}], age (0, the present),
    * gravity (Earth g, 1), scaling (1-2, 2), radiusKm (6371), ridgeDepth (m, 2600), erosion (how
    * fast the land wears down, × Earth's, 1), cells (circulation cells per hemisphere, 3), carve
-   * (rivers cut valleys and build deltas, true).
+   * (rivers cut valleys and build deltas, true), tides (the planet's tide, × Earth's, 1).
+   * The result keeps what a closer map of a region would need to agree with it: the heights, the
+   * plates, the ocean floor's age, the tidal range (tides), the drainage and discharge (rivers.recv,
+   * rivers.discharge) and the river mouths (rivers.mouthList), and how it was built (carving).
    */
   function build(P, opts = {}) {
     const W = Math.max(90, Math.round((opts.res ?? 720) / 2) * 2), gr = makeGrid(W), { N } = gr;
@@ -586,7 +654,8 @@
     }
 
     // 8. rivers cut valleys into it, and lay what they carry in hollows and in deltas
-    const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, rough: 300 / f, seed, k: opts.carveK });
+    const tideX = Math.max(0, opts.tides ?? 1), tides = tidalRange(gr, z, tideX, radius);
+    const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, rough: 300 / f, seed, k: opts.carveK, gravity: g, tides });
 
     // 9. what was drawn on it
     for (const s of opts.strokes || []) stamp(gr, [s.lat, s.lon], s.r, (k, dd) => { z[k] += s.dz * smooth(1 - dd / s.r); });
@@ -603,13 +672,13 @@
 
     const map = {
       W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr,
-      crust: crustShare, target, sea, at, rivers: riversOf(carved, 'latitude'),
+      crust: crustShare, target, sea, at, rivers: riversOf(carved, 'latitude'), tides, tideX,
       // what carveMap needs to carve it later, with the climate's water
       carving: { erosion: E, seed, rough: 300 / f, k: opts.carveK, wet: (lat) => wetRaw(lat) / wetMean },
     };
     return measure(map);
   }
-  const riversOf = (c, rain) => c && { cut: c.cut, laid: c.laid, eroded: c.eroded, delta: c.delta, basins: c.basins, mouths: c.mouths, deltaArea: c.deltaArea, deepest: c.deepest, rain };
+  const riversOf = (c, rain) => c && { cut: c.cut, laid: c.laid, eroded: c.eroded, delta: c.delta, basins: c.basins, mouths: c.mouths, mouthList: c.mouthList, deltaArea: c.deltaArea, estuaryArea: c.estuaryArea, deepest: c.deepest, recv: c.recv, discharge: c.discharge, rain };
   /* A map's land share, highest and deepest points (after its heights have changed). */
   function measure(map) {
     const { W, z, grid: gr } = map;
@@ -626,7 +695,7 @@
    */
   function carveMap(map, opts = {}) {
     const s = map.carving || {}, wt = opts.water;
-    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet });
+    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides });
     for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); });
     map.rivers = riversOf(carved, wt ? 'climate' : 'latitude');
     return measure(map);
@@ -635,7 +704,7 @@
   /* Sample a built map at [lat, lon] (nearest cell). */
   const sample = (map, la, lo) => map.z[cellOf(map.grid, la, lo)];
 
-  const api = { build, carve, carveMap, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
+  const api = { build, carve, carveMap, tidalRange, planetTides, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.worldmap = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
