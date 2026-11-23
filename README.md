@@ -41,10 +41,11 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
 | 12 | Rivers & biomes | from the map and its climate: rivers down to the sea, fresh and salt lakes, basins that drain inland, and biomes; map or globe, a PNG of the map and the rivers as SVG |
 | 13 | Region | a closer map of part of the world map, 200–3,200 km across at down to 0.1 km a pixel, that agrees with it: finer relief, its own drainage and valleys, lakes, rivers down to brooks (and those entering from outside), biomes by height; zoom and pan, PNG, 16-bit heightmap and rivers SVG |
-| 14 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
-| 15 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
-| 16 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 17 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 14 | Close-up | part of the Region, 10–200 km across at down to about 10 m a pixel, cut from it as the Region is cut from the world map: its land with finer detail still, following the Region's rivers, big rivers at their true width migrating over their floodplains, with oxbow lakes |
+| 15 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
+| 16 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
+| 17 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 18 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -335,17 +336,26 @@ It agrees with the world map:
   twice a brook's width, one stroke each. Rivers grade to the water they flow into (a lake's surface, not
   its bed), and a small hollow on a big river's course is silted up rather than a lake; sea narrower than a
   few pixels (a world map estuary) is the river's floor.
-- **Meanders**: on flat ground a river swings from side to side (`meanders` in `js/region.js`). Its path
-  follows the Kinoshita curve (skewed, overhanging bends, not a sine) about the valley's axis, swinging
-  more the flatter it is (none above about 0.2 % slope, fully below 0.02 %) and the larger the river (a
-  brook barely), with every bend a little different in length and swing and the belt wandering slowly.
-  A bend is about 11 channel widths long (width ≈ 2.7·√Q m), but never shorter than about 12 widths of
-  the line drawn, or the loops would only thicken it: on a region of 800 km a big river's bends are
-  drawn larger than life, on one of 200 km nearly true. Bends ease off at the ends, stay inside sharp
-  turns of the valley, and where one would cross itself its neck is cut off, as a river does it.
-  Tributaries are joined to the main river's bends. Each line follows its main stem (the branch with
-  the most water at each confluence) from source to mouth. Water is routed over the land plus a faint
-  unevenness, so on flats it wanders instead of running ruler-straight; a lake must be deeper than that.
+- **Meanders**: on flat ground a river swings from side to side (`meanders` in `js/region.js`), more the
+  flatter it is (none above about 0.2 % slope, fully below 0.02 %) and the larger the river. Each line
+  follows its main stem (the branch with the most water at each confluence) from source to mouth, and
+  tributaries are joined to its bends. Water is routed over the land plus a faint unevenness, so on flats
+  it wanders instead of running ruler-straight; a lake must be deeper than that.
+  - Where the channel is at least nearly as wide as the line that draws it (a big river in a Close-up),
+    the river *migrates* (`migrate`, after Howard & Knutson 1984): each stretch moves towards its outer
+    bank at a rate set by its own curvature and, more, by the curvature upstream, so bends grow, skew and
+    travel downstream; the ground gives way more readily in some patches than others (sand, clay, old
+    channel plugs), which makes the bends irregular, and the banks' roughness seeds new ones. Where a neck
+    narrows to the channel's width the river breaks through, and the loop is left as an **oxbow lake**
+    (its ends plugged: a crescent); oxbows the river or a younger oxbow has since crossed are erased
+    there, the oldest silted up. The river stays on its floodplain (ground within some 20 m of its level)
+    within a belt a few bends wide. Bends come out some 30 channel widths long along the channel (a dozen
+    along the valley), sinuosity 2–3, as on real meandering rivers; the channel's width is ≈ 2.7·√Q m.
+    The work is capped (a few million point-steps a map), largest rivers first.
+  - Elsewhere (narrower than its line: a river on a Region is drawn far wider than it is, and its real
+    bends are finer than the map) the bends are generalised, as on an atlas at that scale: a Kinoshita
+    curve (skewed bends, not a sine), each bend a little different, about 12 drawn widths long, easing off
+    at the ends, staying inside sharp turns of the valley, with any loop that would cross itself cut off.
 - **Biomes**: the world map's climate between its cells (looked up a little off each pixel, so biome
   edges do not follow its cells' sides), colder with height by the planet's lapse rate: forest in the
   valleys, tundra and ice on the crests.
@@ -354,6 +364,22 @@ Exports, at the region's full detail and in one frame: the map (PNG), a 16-bit h
 name gives the height range and sea level) and the rivers (SVG, in pixels, with the frame's corners
 noted inside). The window is kept with the world (`region` in the JSON); the region is rebuilt the
 same from it.
+
+## Close-up
+
+The Close-up step does to the Region what the Region does to the world map: a window 10–200 km across
+(at most half the Region), 512–2,048 pixels, so down to about 10 m a pixel, built by the same code
+(`build` in `js/region.js` takes either the world map or a region as its source). Click the Region to
+place it (by default on the Region's largest river). It agrees with the Region:
+- its heights are the Region's with detail below one of its pixels (fractal: much gentler than below a
+  world map cell, its height falling as the cell size to the 0.7);
+- its climate is the Region's at each pixel's own height, its rivers enter where the Region's do, and
+  water leaves where the Region's drainage leaves the window;
+- it follows the Region's rivers as the Region draws them: along each line the ground is lowered a few
+  metres, to a level that only falls downstream, so a river takes the same course here and does not
+  wander off across a flat; the Region's lakes stay lakes;
+- the river lines are drawn at whichever is wider, the line or the channel's true width: a big river
+  close up is a ribbon, meandering over its floodplain between its oxbow lakes.
 
 ## Drawing kit
 

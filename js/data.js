@@ -72,6 +72,8 @@
       map: { land: null, shelf: 1, relief: 1, erosion: 1, carve: true, iceAge: 6, res: 720, strokes: [] },
       // a closer map of part of the world map: its centre (null: chosen from the map), km across, pixels across
       region: { lat: null, lon: null, span: 800, res: 1024 },
+      // closer still: part of the region (null: on the region's largest river), km across, pixels across
+      closeup: { lat: null, lon: null, span: 50, res: 1024 },
       vista: { body: 'home', lat: 40, day: 0.3, hour: 0.62, az: 240, mode: 'panorama', exposure: 0, haze: 0, eye: 'earth', habitat: 'auto', labels: true },
       notes: {},
     };

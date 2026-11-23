@@ -75,15 +75,18 @@
    */
   function frame(opts, radiusKm = 6371) {
     const kmDeg = (Math.PI * radiusKm) / 180, W = Math.max(64, Math.round(opts.res ?? 1024)), Hh = W;
-    const span = clamp(opts.span ?? 800, 20, 0.5 * Math.PI * radiusKm), dLat = span / kmDeg;
+    const span = clamp(opts.span ?? 800, 5, 0.5 * Math.PI * radiusKm), dLat = span / kmDeg;
     const lat = clamp(opts.lat ?? 0, -88 + dLat / 2, 88 - dLat / 2), lon = ((((opts.lon ?? 0) + 180) % 360) + 360) % 360 - 180;
     const cosc = Math.max(0.1, Math.cos(lat * D2R)), dLon = dLat / cosc;
     return { W, H: Hh, lat, lon, span, kmDeg, north: lat + dLat / 2, south: lat - dLat / 2, west: lon - dLon / 2, east: lon + dLon / 2, dLat, dLon, pxKm: span / W };
   }
 
   /*
-   * Build a region. map: the world map (z, W, H, planet, rivers.recv and rivers.discharge if carved);
-   * water: biomes.js water(map, clim, planet) on it (runoff, P, PET, Tw, Tc, Ta, Pw, liquid, tBoil);
+   * Build a region. map: the world map (z, W, H, planet, rivers.recv and rivers.discharge if carved),
+   * with water: biomes.js water(map, clim, planet) on it (runoff, P, PET, Tw, Tc, Ta, Pw, liquid,
+   * tBoil); or another region (what build returns), for a closer map of part of it (water: null, its
+   * own is used). Either is the source: the new map takes its heights, drainage and climate from it, and
+   * adds only the detail finer than one of its cells (or pixels).
    * opts: lat, lon, span (km), res (pixels across), seed, erosion (× Earth's, 1), detail (× 1),
    * minFlow (m³/s to draw a river, 8), sea (true: the sea floor gets detail too).
    * Returns {frame, W, H, z (m), flow (m³/s), recv, lake (1 fresh, 2 salt), biome (code, 0 sea or
@@ -92,13 +95,23 @@
   function build(map, water, opts = {}) {
     const planet = map.planet || {}, f = planet.factor ?? 1, R = planet.radiusKm ?? 6371, g = planet.gravity ?? 1;
     const fr = frame(opts, R), { W, H, kmDeg, pxKm } = fr, N = W * H;
-    const gW = map.W, gH = map.H, gz = map.z, gkm = (2 * Math.PI * R) / gW;   // a world map cell, km
+    // the source: the world map (the whole globe, wrapping east-west) or a region (a box of its own)
+    const sub = !!map.frame, sf = sub ? map.frame : { north: 90, dLat: 180, west: -180, dLon: 360, pxKm: (2 * Math.PI * R) / map.W };
+    if (sub) water = map.water;
+    const gW = map.W, gH = map.H, gz = map.z, gkm = sub ? sf.pxKm : (2 * Math.PI * R) / gW;   // a source cell, km
     const seed = (opts.seed ?? 1) | 0, E = Math.max(0, opts.erosion ?? 1), detailX = Math.max(0, opts.detail ?? 1);
     const latOf = (y) => fr.north - ((y + 0.5) / H) * fr.dLat, lonOf = (x) => fr.west + ((x + 0.5) / W) * fr.dLon;
-    const wrapI = (i) => ((i % gW) + gW) % gW, clampJ = (j) => clamp(j, 0, gH - 1);
-    const gfi = (lon) => ((lon + 180) / 360) * gW - 0.5, gfj = (lat) => ((90 - lat) / 180) * gH - 0.5;
-    const gCell = (lat, lon) => clampJ(Math.floor(((90 - lat) / 180) * gH)) * gW + wrapI(Math.floor(((lon + 180) / 360) * gW));
-    const gLat = (j) => 90 - ((j + 0.5) * 180) / gH, gLon = (i) => -180 + ((i + 0.5) * 360) / gW;
+    const wrapI = sub ? (i) => clamp(i, 0, gW - 1) : (i) => ((i % gW) + gW) % gW, clampJ = (j) => clamp(j, 0, gH - 1);
+    // (longitude east of the source's west edge: round the globe for the world map, either side of it for a region)
+    const east = sub ? (lon) => { let d = lon - sf.west; d -= 360 * Math.round((d - sf.dLon / 2) / 360); return d; } : (lon) => ((((lon + 180) % 360) + 360) % 360);
+    const gfi = (lon) => (east(lon) / sf.dLon) * gW - 0.5, gfj = (lat) => ((sf.north - lat) / sf.dLat) * gH - 0.5;
+    const gCell = (lat, lon) => clampJ(Math.floor(((sf.north - lat) / sf.dLat) * gH)) * gW + wrapI(Math.floor((east(lon) / sf.dLon) * gW));
+    const gLat = (j) => sf.north - ((j + 0.5) * sf.dLat) / gH, gLon = (i) => sf.west + ((i + 0.5) * sf.dLon) / gW;
+    // detail is fractal: below a source cell of a few hundred metres it is much finer than below a world
+    // map cell of 55 km (its height falls as the cell size to the 0.7)
+    const ampS = sub ? clamp((gkm / 55.6) ** 0.7, 0.02, 1) : 1;
+    // a source's lakes stay lakes (as hollows they may be shallower than a new one must be)
+    const srcLake = sub && map.lake ? map.lake : null;
 
     // ── the world map's relief round each of its cells (highest less lowest of the 3 × 3) ──
     const rel = new Float32Array(gW * gH);
@@ -146,19 +159,19 @@
       if (b > 0 || bm > -30) {
         // land (and the shore): more where it is high and rugged; ridged in mountains
         const mtn = smooth((bm - 700) / 1600) * smooth((relief[k] * f - 300) / 1200 + 0.3);
-        amp = (14 + 0.11 * Math.max(0, bm) + 0.22 * relief[k] * f) / f;
+        amp = (ampS * (14 + 0.11 * Math.max(0, bm) + 0.22 * relief[k] * f)) / f;
         // the shore: low land and shallow sea break up into bays, spits and islets
-        const shore = Math.exp(-Math.abs(bm) / 60);
+        const shore = Math.exp(-Math.abs(bm) / (60 * Math.sqrt(ampS)));
         v = (1 - mtn) * s + mtn * (0.35 * s + 1.1 * r);
-        v = (amp * v + (30 / f) * shore * c) / amp;
+        v = (amp * v + ((30 * ampS) / f) * shore * c) / amp;
       } else {
-        amp = (6 + 0.04 * -bm + 0.12 * relief[k] * f) / f;
-        v = (amp * s + (30 / f) * Math.exp(bm / 60) * c) / amp;
+        amp = (ampS * (6 + 0.04 * -bm + 0.12 * relief[k] * f)) / f;
+        v = (amp * s + ((30 * ampS) / f) * Math.exp(bm / (60 * Math.sqrt(ampS))) * c) / amp;
       }
       z[k] = b + amp * detailX * v;
-      // what was land on the world map stays above the sea unless right at the shore, and the reverse
-      if (b > 40 / f && z[k] <= 0) z[k] = Math.min(b, 2 + Math.abs(z[k]) * 0.1);
-      else if (b < -60 / f && z[k] > 0) z[k] = Math.max(b, -2 - z[k] * 0.1);
+      // what was land on the source stays above the sea unless right at the shore, and the reverse
+      if (b > (40 * ampS) / f && z[k] <= 0) z[k] = Math.min(b, 2 * ampS + Math.abs(z[k]) * 0.1);
+      else if (b < (-60 * ampS) / f && z[k] > 0) z[k] = Math.max(b, -2 * ampS - z[k] * 0.1);
     }
 
     // ── pixel geometry ──
@@ -211,7 +224,7 @@
 
     // ── the window's edges: water leaves where the world map's drainage leaves the window ──
     const inBox = (la, lo) => { let d = lo - fr.west; d = ((d % 360) + 360) % 360; return la <= fr.north && la >= fr.south && d <= fr.dLon; };
-    const grecv = map.rivers && map.rivers.recv, gq = map.rivers && map.rivers.discharge;
+    const grecv = sub ? map.recv : map.rivers && map.rivers.recv, gq = sub ? map.flow : map.rivers && map.rivers.discharge;
     const edge = new Uint8Array(N);
     for (let x = 0; x < W; x++) { edge[x] = 1; edge[(H - 1) * W + x] = 1; }
     for (let y = 0; y < H; y++) { edge[y * W] = 1; edge[y * W + W - 1] = 1; }
@@ -229,6 +242,7 @@
       const j0 = clampJ(Math.floor(gfj(fr.north)) - pad), j1 = clampJ(Math.ceil(gfj(fr.south)) + pad);
       const i0 = Math.floor(gfi(fr.west)) - pad, i1 = Math.ceil(gfi(fr.east)) + pad;
       for (let j = j0; j <= j1; j++) for (let ii = i0; ii <= i1; ii++) {
+        if (sub && (ii < 0 || ii >= gW)) continue;
         const c = j * gW + wrapI(ii), r = grecv[c];
         if (r < 0 || gz[c] <= 0 || !(gq[c] > 0) || inBox(gLat(j), gLon(wrapI(ii)))) continue;
         const rl = gLat((r / gW) | 0), ro = gLon(r % gW);
@@ -244,8 +258,43 @@
       }
       // the edge beside an inflow is no way out (or the river would turn straight back)
       for (const fl of inflows) {
-        const y = (fl.k / W) | 0, x = fl.k - y * W, rr = 4;
+        const y = (fl.k / W) | 0, x = fl.k - y * W, rr = Math.max(4, Math.ceil((1.5 * gkm) / pxKm));
         for (let dy = -rr; dy <= rr; dy++) for (let dx = -rr; dx <= rr; dx++) { const yy = y + dy, xx = x + dx; if (yy >= 0 && yy < H && xx >= 0 && xx < W) outlet[yy * W + xx] = 0; }
+      }
+    }
+
+    // a closer map of a region follows its rivers as the region draws them (bends and all): along each
+    // line the ground is lowered a few metres, more for a bigger river, to a level that only falls
+    // downstream, so the water here takes the same course and does not wander off across a flat to the
+    // nearest edge
+    if (sub && map.rivers && map.rivers.length) {
+      const mf = clamp((8 * fr.span) / 800, 0.2, 8);
+      const toChild = (p) => { const lat = sf.north - (p[1] / gH) * sf.dLat, lon = sf.west + (p[0] / gW) * sf.dLon; return [((east(lon) - east(fr.west)) / fr.dLon) * W, ((fr.north - lat) / fr.dLat) * H]; };
+      const zSrc = (p) => gz[clampJ(Math.floor(p[1])) * gW + wrapI(Math.floor(p[0]))];
+      const near = (c) => c[0] > -0.1 * W && c[0] < 1.1 * W && c[1] > -0.1 * H && c[1] < 1.1 * H;
+      for (const rv of map.rivers) {
+        if (!rv.pts.some((p) => near(toChild(p)))) continue;
+        let lv = Infinity, prev = null;
+        for (let i = 0; i < rv.pts.length; i++) {
+          const q = rv.q[i];
+          if (!(q >= 2 * mf)) { prev = null; continue; }
+          const c = toChild(rv.pts[i]), depth = ((1.5 + 1.5 * Math.log10(q / mf)) * Math.sqrt(ampS)) / f;
+          lv = Math.min(lv, Math.max(0, zSrc(rv.pts[i])) - depth);
+          if (prev && (near(c) || near(prev))) {
+            const half = Math.max(0.6, (1.35 * Math.sqrt(q)) / 1000 / pxKm), rr = Math.ceil(half);
+            const n = Math.max(1, Math.ceil(Math.hypot(c[0] - prev[0], c[1] - prev[1]) * 2));
+            for (let t = 0; t <= n; t++) {
+              const x = prev[0] + ((c[0] - prev[0]) * t) / n, y = prev[1] + ((c[1] - prev[1]) * t) / n;
+              for (let dy = -rr; dy <= rr; dy++) for (let dx = -rr; dx <= rr; dx++) {
+                const xx = Math.floor(x + dx), yy = Math.floor(y + dy);
+                if (xx < 0 || yy < 0 || xx >= W || yy >= H || dx * dx + dy * dy > half * half + 0.5) continue;
+                const k = yy * W + xx;
+                if (z[k] > 0 && lv < z[k]) z[k] = Math.max(0.3, lv);
+              }
+            }
+          }
+          prev = c;
+        }
       }
     }
 
@@ -304,7 +353,7 @@
     // water is routed over the land plus a faint unevenness (a few metres at most, in lumps a few pixels
     // across and some five times larger): on a flat (a silted floor, a filled hollow) it then wanders as
     // real water does, rather than running off in ruler-straight lines; on a slope it makes no difference
-    const silt = new Uint8Array(N), nf = gradNoise(seed ^ 0xf1a7), lumpKm = 4 * pxKm, LUMP = 1.5 / f;
+    const silt = new Uint8Array(N), nf = gradNoise(seed ^ 0xf1a7), lumpKm = 4 * pxKm, LUMP = (1.5 * Math.max(0.2, Math.sqrt(ampS))) / f;
     const lump = (k) => { const X = xyz[k * 3] / lumpKm, Y = xyz[k * 3 + 1] / lumpKm, Z = xyz[k * 3 + 2] / lumpKm; return clamp(1.6 + 0.6 * nf(X, Y, Z) + nf(X / 5 + 7.7, Y / 5, Z / 5), 0, 3.2); };
     const routeZ = (zz) => Float32Array.from(zz, (v, k) => (v > 0 ? v + LUMP * lump(k) : v));
     function flood(zz0) {
@@ -371,11 +420,13 @@
     {
       // (in rugged country a hollow must be deeper to be more than the detail's: a tenth of the relief)
       const hs = hollows(fl1.zr, fl1.fill, 0.05);
-      const bigEnough = Math.max(25, 12 * pxKm * pxKm);
+      const bigEnough = Math.max(25 * ampS * ampS, 12 * pxKm * pxKm);
       let filled = 0;
       for (const hlw of hs.list) {
         let rl = 0; for (const c of hlw.cells) rl = Math.max(rl, relief[c]);
-        if (hlw.depth < (30 / f) + 0.1 * rl || hlw.area < bigEnough) { for (const c of hlw.cells) { z[c] = fl1.fill[c]; silt[c] = 1; } filled++; }
+        let wasLake = false;
+        if (srcLake) for (const c of hlw.cells) { const y = (c / W) | 0; if (srcLake[gCell(latOf(y), lonOf(c - y * W))]) { wasLake = true; break; } }
+        if (!wasLake && (hlw.depth < (30 * Math.sqrt(ampS)) / f + 0.1 * rl || hlw.area < bigEnough)) { for (const c of hlw.cells) { z[c] = fl1.fill[c]; silt[c] = 1; } filled++; }
       }
       if (filled) fl1 = flood(z);
     }
@@ -462,13 +513,16 @@
     // ── 5. biomes: the climate at each pixel's own height ──
     const biome = new Uint8Array(N), tBoil = wt ? wt.tBoil ?? 100 : 100;
     const nb = gradNoise(seed ^ 0xb10e);
+    // the climate at each pixel's own height (kept: a closer map of this one starts from it)
+    const cTw = Float32Array.from(Tw), cTc = Float32Array.from(Tc), cTa = Float32Array.from(Ta), cPET = Float32Array.from(PET);
     for (let k = 0; k < N; k++) {
-      if (!(z[k] > 0) || lake[k]) continue;
-      const dT = (-lapse * (Math.min(z[k], tropo) - Math.min(zc[k], tropo))) / 1000 + 0.6 * nb(xyz[k * 3] / 40, xyz[k * 3 + 1] / 40, xyz[k * 3 + 2] / 40);
-      const tw = Tw[k] + dT, tc = Tc[k] + dT, ta = Ta[k] + dT;
+      if (!(z[k] > 0)) continue;
+      const dT = (-lapse * (Math.min(z[k], tropo) - Math.min(zc[k], tropo))) / 1000 + (sub ? 0 : 0.6 * nb(xyz[k * 3] / 40, xyz[k * 3 + 1] / 40, xyz[k * 3 + 2] / 40));
+      cTw[k] = Tw[k] + dT; cTc[k] = Tc[k] + dT; cTa[k] = Ta[k] + dT;
       // (evaporation follows the temperature down the mountain, roughly)
-      const pe = PET[k] * clamp(1 + dT / 30, 0.2, 1.5);
-      biome[k] = B.classify(tw, tc, ta, P[k], pe, Pw[k], liquid, tBoil);
+      cPET[k] = PET[k] * clamp(1 + dT / 30, 0.2, 1.5);
+      if (lake[k]) continue;
+      biome[k] = B.classify(cTw[k], cTc[k], cTa[k], P[k], cPET[k], Pw[k], liquid, tBoil);
     }
     // wetlands: big rivers over low, flat, wet ground, and the shores of fresh lakes
     const BI = B.BI, dry = new Set([BI.ice, BI.barren, BI.hotdesert, BI.colddesert]);
@@ -488,7 +542,7 @@
     // ── 6. rivers as lines, in pixels: from each source down to the sea, a lake, an edge, or a bigger river ──
     // a river once it drains enough land for the region's scale (spaced some tens of pixels apart: not
     // a line down every gully), or once it carries a lot of water (one entering from outside)
-    const minFlow = opts.minFlow ?? 8, minArea = opts.minArea ?? Math.max(25, (fr.span / 55) ** 2), minUp = Math.max(12, Math.round(minArea / (pxKm * pxKm)));
+    const minFlow = opts.minFlow ?? clamp((8 * fr.span) / 800, 0.2, 8), minArea = opts.minArea ?? Math.max(25, (fr.span / 55) ** 2), minUp = Math.max(12, Math.round(minArea / (pxKm * pxKm)));
     const hid = (k) => lake[k] || biome[k] === BI.ice;
     const isRiver = (k) => z[k] > 0 && flow[k] >= minFlow && (up[k] >= minUp || flow[k] >= 30 * minFlow) && !hid(k);
     const kids = new Uint8Array(N);
@@ -564,8 +618,10 @@
       }
       rv.slope = Array.from(sl);
     }
-    const smoothRivers = kept.map((rv) => { const pts = chaikin(chaikin(relax(relax(relax(relax(relax(rv.pts))))))); return { pts, q: resample(rv.q, pts.length), slope: resample(rv.slope, pts.length), join: rv.join }; });
-    const rivers = meanders(smoothRivers, { pxKm, minFlow, seed, gravityFactor: f, off: opts.meanders === false });
+    const smoothRivers = kept.map((rv) => { const pts = chaikin(chaikin(relax(relax(relax(relax(relax(rv.pts))))))); return { pts, q: resample(rv.q, pts.length), slope: resample(rv.slope, pts.length), level: resample(rv.k.map((k) => Math.max(0, z[k])), pts.length), join: rv.join }; });
+    // (the ground under a point, for where a river may wander: its floodplain, not over the hills)
+    const zAt = (x, y) => z[clamp(Math.floor(y), 0, H - 1) * W + clamp(Math.floor(x), 0, W - 1)];
+    const mm = meanders(smoothRivers, { pxKm, minFlow, seed, gravityFactor: f, zAt, bank: 20 / f, off: opts.meanders === false }), rivers = mm.rivers, oxbows = mm.oxbows;
 
     // ── figures ──
     let landPx = 0, hiZ = -Infinity, loZ = Infinity, hiK = 0, loK = 0, landKm2 = 0, bigQ = 0, bigK = -1;
@@ -576,8 +632,9 @@
     }
     const ll = (k) => { const y = (k / W) | 0; return [latOf(y), ((lonOf(k - y * W) + 540) % 360) - 180]; };
     return {
-      frame: fr, W, H, z, flow: Float32Array.from(flow), recv, lake, biome, rivers, cut, inflows: inflows.map((x) => ({ at: ll(x.k), q: x.q })), minFlow,
-      climate: { Tw, Tc, P },
+      frame: fr, W, H, z, flow: Float32Array.from(flow), recv, lake, biome, rivers, oxbows, cut, inflows: inflows.map((x) => ({ at: ll(x.k), q: x.q })), minFlow,
+      climate: { Tw: cTw, Tc: cTc, P },
+      water: { runoff, P, PET: cPET, Tw: cTw, Tc: cTc, Ta: cTa, Pw, liquid, tBoil }, planet,
       stats: {
         land: landPx / N, landKm2, highest: { m: hiZ, at: ll(hiK) }, deepest: { m: loZ, at: ll(loK) }, lakes, saltLakes, lakeKm2,
         eroded, deepestCut: deepest, biggest: bigK >= 0 ? { q: bigQ, at: ll(bigK) } : null, rivers: rivers.length, minArea,
@@ -606,9 +663,13 @@
    * rivers: [{pts, q, slope, join}] in pixels; o: pxKm, minFlow, seed, gravityFactor, off.
    */
   function meanders(rivers, o) {
-    if (o.off) return rivers.map(({ pts, q }) => ({ pts, q }));
-    const nz = gradNoise((o.seed ^ 0x3e4d) | 0), out = [];
-    for (let ri = 0; ri < rivers.length; ri++) {
+    if (o.off) return { rivers: rivers.map(({ pts, q }) => ({ pts, q })), oxbows: [] };
+    const nz = gradNoise((o.seed ^ 0x3e4d) | 0), out = [], oxbows = [];
+    // (the largest rivers first: the simulation's work is shared out, some 2.5 million point-steps)
+    let budget = o.budget ?? 2.5e6;
+    const order = rivers.map((rv, i) => [i, rv.q.reduce((a, b) => Math.max(a, b), 0)]).sort((a, b) => b[1] - a[1]).map(([i]) => i);
+    const done = new Array(rivers.length);
+    for (const ri of order) {
       const rv = rivers[ri];
       let hasFlat0 = false; for (const sl of rv.slope) if (sl < 0.002) { hasFlat0 = true; break; }
       // the bends swing about the valley's axis: the line smoothed over about a bend's length, so that
@@ -627,19 +688,21 @@
       for (let i = 1; i < n; i++) L[i] = L[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]);
       const total = L[n - 1];
       let hasFlat = false; for (const sl of rv.slope) if (sl < 0.002) { hasFlat = true; break; }
-      if (total < 4 || !hasFlat) { out.push({ pts: P, q: rv.q, join: rv.join }); continue; }
+      if (total < 4 || !hasFlat) { done[ri] = ({ pts: P, q: rv.q, join: rv.join }); continue; }
       const pos = (u) => {
         u = clamp(u, 0, total);
         let lo = 0, hi = n - 1;
         while (hi - lo > 1) { const m = (lo + hi) >> 1; if (L[m] <= u) lo = m; else hi = m; }
         const t = (u - L[lo]) / (L[hi] - L[lo] || 1);
-        return { x: P[lo][0] + (P[hi][0] - P[lo][0]) * t, y: P[lo][1] + (P[hi][1] - P[lo][1]) * t, q: rv.q[lo] + (rv.q[hi] - rv.q[lo]) * t, s: rv.slope[lo] + (rv.slope[hi] - rv.slope[lo]) * t };
+        const lv = rv.level ? rv.level[lo] + (rv.level[hi] - rv.level[lo]) * t : 0;
+        return { x: P[lo][0] + (P[hi][0] - P[lo][0]) * t, y: P[lo][1] + (P[hi][1] - P[lo][1]) * t, q: rv.q[lo] + (rv.q[hi] - rv.q[lo]) * t, s: rv.slope[lo] + (rv.slope[hi] - rv.slope[lo]) * t, level: lv };
       };
       /* The axis at u: its point, its normal (over a pixel or two either way), and how sharply it turns
          there (its radius, from the turn over about a bend's length w). */
-      const at = (u, w = 8) => {
+      const at = (u, w = 8, light = false) => {
         const c0 = pos(u), d = Math.max(1, w / 6), a0 = pos(u - d), b0 = pos(u + d);
         const dx = b0.x - a0.x, dy = b0.y - a0.y, l = Math.hypot(dx, dy) || 1;
+        if (light) return { x: c0.x, y: c0.y, nx: -dy / l, ny: dx / l, q: c0.q, s: c0.s, level: c0.level };
         // (the tightest of the turns over a bend, half a bend and a quarter: a hairpin shorter than a
         // bend must not be missed)
         let radius = 1e9;
@@ -652,6 +715,16 @@
         }
         return { x: c0.x, y: c0.y, nx: -dy / l, ny: dx / l, radius, q: c0.q, s: c0.s };
       };
+      // a real river on a flat floodplain: let it migrate (below); a brook: a Kinoshita train of bends
+      const qTop = rv.q.reduce((a, b) => Math.max(a, b), 0);
+      // (only where the channel is at least nearly as wide as the line that draws it: else its true
+      // bends are finer than the map can show, and simulating them at the line's scale would make its
+      // meander belt far too wide; a map at that scale shows them generalised, as Kinoshita bends)
+      const trueToDrawn = (2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm / riverWidth(qTop, o.minFlow);
+      if (qTop >= 15 * o.minFlow && trueToDrawn >= 0.8 && budget > 0) {
+        const m = migrate(P, L, total, pos, at, rv, o, ri, nz);
+        if (m) { budget -= m.work; done[ri] = { pts: m.pts, q: m.q, join: rv.join }; oxbows.push(...m.oxbows); continue; }
+      }
       const h = (ri * 2654435761) >>> 0, phase0 = ((h & 0xffff) / 0xffff) * 2 * Math.PI, skew = (h >>> 16) & 1 ? 1 : -1;
       const Js = skew / 32, Jf = 1 / 192;
       let u = 0, v = 0, phi = phase0;
@@ -689,8 +762,11 @@
       c = at(total);
       pts.push([c.x, c.y]); qs.push(c.q);
       const cut = cutoffs(pts, qs);
-      out.push({ pts: cut.pts, q: cut.q, join: rv.join });
+      done[ri] = { pts: cut.pts, q: cut.q, join: rv.join };
+      const wq = riverWidth(qTop, o.minFlow);
+      for (const lp of cut.loops) { const t = trimOxbow(lp); if (t) oxbows.push({ pts: t, w: wq, wTrue: (2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm }); }
     }
+    out.push(...done);
     // join each tributary to the main river's bends: its end moved onto the nearest point of a larger
     // river's drawn line, the last stretch of it bent over to meet it
     const cell = 3, grid = new Map(), keyOf = (x, y) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
@@ -718,7 +794,7 @@
         rv.pts[i] = [rv.pts[i][0] + dx * t, rv.pts[i][1] + dy * t];
       }
     }
-    return out.map(({ pts, q }) => ({ pts, q }));
+    return { rivers: out.map(({ pts, q }) => ({ pts, q })), oxbows };
   }
 
   /*
@@ -733,7 +809,7 @@
       const t = ((c[0] - a[0]) * s1 - (c[1] - a[1]) * s0) / den, u = ((c[0] - a[0]) * r1 - (c[1] - a[1]) * r0) / den;
       return t > 0 && t < 1 && u > 0 && u < 1 ? [a[0] + t * r0, a[1] + t * r1] : null;
     };
-    const P = [], Q = [];
+    const P = [], Q = [], loops = [];
     for (let i = 0; i < pts.length; i++) {
       P.push(pts[i]); Q.push(qs[i]);
       const n = P.length;
@@ -741,10 +817,172 @@
       const a = P[n - 2], b = P[n - 1];
       for (let j = n - 4; j >= Math.max(0, n - 400); j--) {
         const x = cross(P[j], P[j + 1], a, b);
-        if (x) { P.length = j + 1; Q.length = j + 1; P.push(x, b); Q.push(Q[j], qs[i]); break; }
+        if (x) { loops.push([x, ...P.slice(j + 1, n - 1), x]); P.length = j + 1; Q.length = j + 1; P.push(x, b); Q.push(Q[j], qs[i]); break; }
       }
     }
-    return { pts: P, q: Q };
+    return { pts: P, q: Q, loops };
+  }
+
+  /*
+   * An oxbow lake from a cut-off loop: the loop without its two ends, which the river plugs with sand
+   * as it leaves (a crescent, not a ring). Null if too little is left.
+   */
+  function trimOxbow(loop) {
+    if (loop.length < 8) return null;
+    const L = [0]; for (let i = 1; i < loop.length; i++) L.push(L[i - 1] + Math.hypot(loop[i][0] - loop[i - 1][0], loop[i][1] - loop[i - 1][1]));
+    const total = L[L.length - 1], cut = 0.14 * total, out = [];
+    for (let i = 0; i < loop.length; i++) if (L[i] >= cut && L[i] <= total - cut) out.push(loop[i]);
+    return out.length >= 5 ? out : null;
+  }
+
+  /*
+   * A river migrating across its floodplain (Howard & Knutson 1984): each stretch of channel moves
+   * sideways, towards its outer bank, at a rate set by its own curvature and, more, by the curvature
+   * upstream of it (R = Ω·C + Γ·∫ C(s − ξ)·e^(−ξ/l) dξ, Ω = −1, Γ = 2.5, C the curvature times the
+   * width, l = 2.5 widths): bends grow, skew downstream and travel down the valley. The ground is not
+   * all alike (sand, clay, the plugs of old channels): how readily it gives way varies in patches about
+   * a bend across, which is what makes real meanders irregular. Where a neck narrows to a channel's width
+   * the river breaks through and the loop is left as an oxbow lake. Only on flat ground (as for the
+   * Kinoshita bends), within a meander belt a few bends either side of the valley's axis; the ends are
+   * held where they are. The channel's width is its true one (≈ 2.7·√Q m), or the drawn line's where that
+   * is wider (as for the Kinoshita bends: bends ~11 widths long). Returns {pts, q, oxbows, work} or null
+   * (no flat ground).
+   */
+  function migrate(P, L, total, pos, at, rv, o, ri, nz) {
+    const qMax = rv.q.reduce((a, b) => Math.max(a, b), 0);
+    const wTrue = (2.7 * Math.sqrt(qMax)) / 1000 / o.pxKm, wDraw = riverWidth(qMax, o.minFlow);
+    const lam = Math.max(11 * wTrue, 12 * wDraw), w = lam / 11;
+    if (total < 3 * lam) return null;
+    // (the model's own lengths at half the channel's width: so run, its bends come out some 30 widths
+    // long along the channel and a dozen along the valley, as rivers' are; at the full width they come
+    // out about twice that. Its cutoffs still go by the true width.)
+    const ls = lam / 2, ws = w / 2, ds = ls / 9;
+    const freeAt = (u) => {
+      const p = pos(u);
+      return smooth((Math.log10(0.002) - Math.log10(Math.max(1e-6, p.s))) / 1) * smooth(Math.log10(Math.max(1, p.q / o.minFlow)) / 2) * smooth(Math.min(u, total - u) / (1.5 * lam));
+    };
+    let anyFree = 0; for (let u = 0; u <= total; u += ds) anyFree = Math.max(anyFree, freeAt(u));
+    if (anyFree < 0.1) return null;
+    // the channel to start from: the axis, nudged a little to one side and the other
+    let X = [], Y = [], A = [];
+    for (let u = 0; u <= total + 1e-9; u += ds) {
+      const c = at(Math.min(u, total), lam), j = 0.5 * ws * freeAt(u) * nz(u / (0.8 * ls), ri * 2.3, 9.1);
+      X.push(c.x + j * c.nx); Y.push(c.y + j * c.ny); A.push(Math.min(u, total));
+    }
+    if (A[A.length - 1] < total) { const c = at(total); X.push(c.x); Y.push(c.y); A.push(total); }
+    // how readily the ground gives way: patches about a bend across, fixed in place
+    const soft = (x, y) => 0.25 + 1.5 * smooth(0.5 + 0.8 * nz(x / (1.3 * ls) + ri * 0.37, y / (1.3 * ls), 3.3));
+    const belt = 3 * ls, decay = Math.exp(-ds / (1.0 * ws)), OM = -1, GA = 2.5;
+    const oxbows = [];
+    // (how soft the ground is under each point, and the banks' push, worked out every few steps: the
+    // points move a fraction of their spacing a step)
+    let sCache = [], rCache = [];
+    let work = 0;
+    const T = o.iterations ?? 600;
+    for (let it = 0; it < T; it++) {
+      const m = X.length;
+      if (m < 5) break;
+      work += m;
+      // curvature (signed, times the width) and the rate of migration
+      const th = new Float64Array(m - 1), sg = new Float64Array(m - 1);
+      for (let i = 0; i < m - 1; i++) { th[i] = Math.atan2(Y[i + 1] - Y[i], X[i + 1] - X[i]); sg[i] = Math.hypot(X[i + 1] - X[i], Y[i + 1] - Y[i]) || 1e-6; }
+      const C = new Float64Array(m), Rr = new Float64Array(m);
+      for (let i = 1; i < m - 1; i++) { let d = th[i] - th[i - 1]; d -= 2 * Math.PI * Math.round(d / (2 * Math.PI)); C[i] = (d / (0.5 * (sg[i - 1] + sg[i]))) * ws; }
+      // (smoothed over a few points: the local term would otherwise grow the shortest wiggles fastest)
+      for (let pass = 0; pass < 1; pass++) { let prev = C[0]; for (let i = 1; i < m - 1; i++) { const cur = C[i]; C[i] = (prev + 2 * cur + C[i + 1]) / 4; prev = cur; } }
+      let F = 0;
+      for (let i = 1; i < m - 1; i++) { Rr[i] = OM * C[i] + GA * F; F = decay * F + (1 - decay) * C[i]; }
+      // move each point along its normal (the ends stay); not out of the belt
+      const mv = new Float64Array(m), nx = new Float64Array(m), ny = new Float64Array(m), ax = new Array(m);
+      let big = 0;
+      for (let i = 1; i < m - 1; i++) {
+        const tx = X[i + 1] - X[i - 1], ty = Y[i + 1] - Y[i - 1], l = Math.hypot(tx, ty) || 1;
+        nx[i] = -ty / l; ny[i] = tx / l;
+        const r = (Rr[i - 1] + 2 * Rr[i] + Rr[i + 1]) / 4;
+        // (plus a small push from the banks' roughness that changes as they do: bars, slumps, logs; it
+        // seeds new bends where the river runs straight, as nothing upstream does at the window's edge)
+        if (it % 6 === 0 || sCache[i] === undefined || Number.isNaN(sCache[i])) { sCache[i] = soft(X[i], Y[i]) * freeAt(A[i]); rCache[i] = 0.12 * nz(X[i] / (0.45 * ls) + it * 0.07, Y[i] / (0.45 * ls), ri * 1.9 + 4.4); }
+        let v = (r + rCache[i]) * sCache[i];
+        const c = (ax[i] = at(A[i], lam, true)), off = (X[i] - c.x) * c.nx + (Y[i] - c.y) * c.ny, out = -v * (nx[i] * c.nx + ny[i] * c.ny) * Math.sign(off);
+        if (out > 0) v *= 1 - smooth((Math.abs(off) - 0.4 * belt) / (0.6 * belt));
+        mv[i] = v;
+      }
+      // the step: the typical fast stretch moves a tenth of the spacing (not the fastest point alone)
+      const mags = Array.from(mv, Math.abs).sort((a, b) => a - b);
+      big = mags[Math.floor(0.95 * (mags.length - 1))];
+      if (big < 1e-9) break;
+      const dt = (0.1 * ds) / big;
+      for (let i = 1; i < m - 1; i++) {
+        // (towards the outer bank where R > 0: for a bend curving towards the normal, against it)
+        const d = -clamp(dt * mv[i], -0.3 * ds, 0.3 * ds);
+        // (only over its floodplain: not onto ground more than a few metres above the river's level)
+        if (o.zAt && o.zAt(X[i] + d * nx[i], Y[i] + d * ny[i]) > ax[i].level + o.bank) continue;
+        X[i] += d * nx[i]; Y[i] += d * ny[i];
+        // (where along the valley the point now is: moved on by its offset along the axis's tangent)
+        const c = ax[i];
+        A[i] = clamp(A[i] + (X[i] - c.x) * c.ny - (Y[i] - c.y) * c.nx, 0, total);
+      }
+      // a little diffusion: damps what is finer than a channel's width
+      for (let pass = 0; pass < 1; pass++) {
+        const X0 = X.slice(), Y0 = Y.slice();
+        const e = 0.03;
+        for (let i = 1; i < m - 1; i++) { X[i] = X0[i] + e * (X0[i - 1] - 2 * X0[i] + X0[i + 1]); Y[i] = Y0[i] + e * (Y0[i - 1] - 2 * Y0[i] + Y0[i + 1]); }
+      }
+      // keep the points about ds apart
+      const X2 = [X[0]], Y2 = [Y[0]], A2 = [A[0]], S2 = [sCache[0]], R2 = [rCache[0]];
+      for (let i = 1; i < m; i++) {
+        const px = X2[X2.length - 1], py = Y2[Y2.length - 1], d = Math.hypot(X[i] - px, Y[i] - py);
+        if (d < 0.45 * ds && i < m - 1) continue;
+        if (d > 1.6 * ds) {
+          const k = Math.ceil(d / ds), a0 = A2[A2.length - 1], s0 = S2[S2.length - 1], r0 = R2[R2.length - 1];
+          for (let q = 1; q < k; q++) { const t = q / k; X2.push(px + (X[i] - px) * t); Y2.push(py + (Y[i] - py) * t); A2.push(a0 + (A[i] - a0) * t); S2.push(s0 + (sCache[i] - s0) * t); R2.push(r0 + (rCache[i] - r0) * t); }
+        }
+        X2.push(X[i]); Y2.push(Y[i]); A2.push(A[i]); S2.push(sCache[i]); R2.push(rCache[i]);
+      }
+      X = X2; Y = Y2; A = A2; sCache = S2; rCache = R2;
+      // neck cutoffs: two stretches far apart along the river but within a channel's width of each other
+      if (it % 2 === 0) {
+        const cell = Math.max(ds, 1.2 * w), grid = new Map(), key = (x, y) => Math.floor(x / cell) * 73856093 ^ Math.floor(y / cell) * 19349663;
+        for (let i = 0; i < X.length; i++) { const k = key(X[i], Y[i]); if (!grid.has(k)) grid.set(k, []); grid.get(k).push(i); }
+        const reach = Math.max(1.1 * w, 0.75 * ds), gap = Math.ceil((2 * ls) / ds);
+        let cutA = -1, cutB = -1;
+        for (let i = 0; i < X.length && cutA < 0; i++) {
+          const gx = Math.floor(X[i] / cell), gy = Math.floor(Y[i] / cell);
+          for (let a = -1; a <= 1 && cutA < 0; a++) for (let b = -1; b <= 1 && cutA < 0; b++) {
+            for (const j of grid.get(((gx + a) * 73856093) ^ ((gy + b) * 19349663)) || []) {
+              if (j > i + gap && Math.hypot(X[j] - X[i], Y[j] - Y[i]) < reach) { cutA = i; cutB = j; break; }
+            }
+          }
+        }
+        if (cutA >= 0) {
+          const loop = []; for (let k = cutA; k <= cutB; k++) loop.push([X[k], Y[k]]);
+          oxbows.push({ pts: loop, it });
+          for (const arr of [X, Y, A, sCache, rCache]) arr.splice(cutA + 1, cutB - cutA - 1);
+        }
+      }
+    }
+    // the channel as drawn: lightly smoothed; its flow from the valley it is in
+    let pts = X.map((x, i) => [x, Y[i]]);
+    pts = relax(pts);
+    const q = A.map((u) => pos(u).q);
+    // oxbows, the youngest first: each erased where the river or a younger oxbow has since passed (the
+    // floodplain reworked); the oldest (the first third of the history) silted up and grown over
+    const cell = Math.max(1, 1.5 * w), grid = new Set();
+    const mark = (p) => { for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) grid.add(`${Math.floor(p[0] / cell) + a},${Math.floor(p[1] / cell) + b}`); };
+    for (const p of pts) mark(p);
+    const lakes = [];
+    for (const ob of oxbows.slice().sort((a, b) => b.it - a.it)) {
+      if (ob.it < T / 3) continue;
+      const t = trimOxbow(ob.pts);
+      if (!t) continue;
+      let run = [];
+      const kept = [];
+      const flush = () => { if (run.length >= 5) { const r = relax(run); kept.push(r); lakes.push({ pts: r, w: wDraw, wTrue, age: 1 - ob.it / T }); } run = []; };
+      for (const p of t) { if (grid.has(`${Math.floor(p[0] / cell)},${Math.floor(p[1] / cell)}`)) flush(); else run.push(p); }
+      flush();
+      for (const r of kept) for (const p of r) mark(p);
+    }
+    return { pts, q, oxbows: lakes, work };
   }
 
   /* A moving average over five points (the ends kept): eases a line off the pixel grid's steps. */

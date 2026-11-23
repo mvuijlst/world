@@ -68,3 +68,44 @@ test('the same window twice: the same map (seeded)', () => {
   assert.deepEqual(again.z, reg.z);
   assert.equal(again.rivers.length, reg.rivers.length);
 });
+
+test('a close-up of the region agrees with it, and its big river runs through it', () => {
+  // on the region's largest river, away from its edges
+  let best = null;
+  for (const rv of reg.rivers) rv.pts.forEach((p, i) => { if (p[0] > 60 && p[1] > 60 && p[0] < 196 && p[1] < 196 && (!best || rv.q[i] > best.q)) best = { q: rv.q[i], p }; });
+  assert.ok(best, 'a river in the region');
+  const [la, lo] = R.latLonOf(reg, best.p[0], best.p[1]);
+  const cu = R.build(reg, null, { lat: la, lon: lo, span: 60, res: 192, seed: 8 });
+  assert.ok(cu.frame.north <= reg.frame.north + 1e-9 && cu.frame.south >= reg.frame.south - 1e-9, 'inside the region');
+  assert.ok(cu.frame.pxKm < reg.frame.pxKm / 10, `finer: ${cu.frame.pxKm} km a pixel`);
+  let same = 0, n = 0;
+  for (let y = 0; y < cu.H; y += 3) for (let x = 0; x < cu.W; x += 3) {
+    const [a, b] = R.latLonOf(cu, x + 0.5, y + 0.5), zr = reg.z[R.pixelOf(reg, a, b)], zc = cu.z[y * cu.W + x];
+    if (Math.abs(zr) < 10) continue;
+    n++; if ((zr > 0) === (zc > 0)) same++;
+  }
+  assert.ok(same / Math.max(1, n) > 0.97, `land and sea agree at ${same} of ${n}`);
+  const big = Math.max(...cu.rivers.map((rv) => Math.max(...rv.q)));
+  assert.ok(big > 0.5 * best.q, `its largest river ${big} m³/s, the region's there ${best.q}`);
+});
+
+test('a river on a flat plain meanders as rivers do: bends some 30 widths long, cut off into oxbow lakes', () => {
+  const pts = [], q = [], slope = [];
+  for (let i = 0; i < 900; i++) { pts.push([50 + i * 0.9, 300 + 15 * Math.sin(i / 140)]); q.push(2000); slope.push(5e-5); }
+  const pxKm = 0.0586, m = R.meanders([{ pts, q, slope, join: false }], { pxKm, minFlow: 0.44, seed: 3 });
+  const p = m.rivers[0].pts;
+  let L = 0; for (let i = 1; i < p.length; i++) L += Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+  const sinuosity = L / 810;
+  assert.ok(sinuosity > 1.5 && sinuosity < 4, `sinuosity ${sinuosity}`);
+  assert.ok(m.oxbows.length >= 5, `${m.oxbows.length} oxbow lakes`);
+  // bends: between turns of the smoothed curvature's sign
+  const th = []; for (let i = 1; i < p.length; i++) th.push(Math.atan2(p[i][1] - p[i - 1][1], p[i][0] - p[i - 1][0]));
+  const c = []; for (let i = 1; i < th.length; i++) { let d = th[i] - th[i - 1]; d -= 2 * Math.PI * Math.round(d / (2 * Math.PI)); c.push(d); }
+  const cs = c.map((_, i) => { let s = 0; for (let j = Math.max(0, i - 4); j <= Math.min(c.length - 1, i + 4); j++) s += c[j]; return s; });
+  let turns = 0; for (let i = 1; i < cs.length; i++) if (Math.sign(cs[i]) !== Math.sign(cs[i - 1]) && Math.abs(cs[i]) > 0.01) turns++;
+  const w = (2.7 * Math.sqrt(2000)) / 1000 / pxKm, perBend = (2 * L) / turns / w;
+  assert.ok(perBend > 15 && perBend < 60, `a bend ${perBend} widths along the channel`);
+  // and a steep one does not
+  const steep = R.meanders([{ pts, q, slope: slope.map(() => 0.01), join: false }], { pxKm, minFlow: 0.44, seed: 3 });
+  assert.equal(steep.oxbows.length, 0);
+});

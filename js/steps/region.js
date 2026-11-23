@@ -1,7 +1,9 @@
 /*
- * Region: a closer map of part of the World map, at a few hundred metres to a few km a pixel, that
- * agrees with it (region.js): its heights with finer detail, its own drainage, valleys, lakes, rivers
- * and biomes from the same climate. Pick the place on the world map; zoom and pan the closer map.
+ * Region and Close-up: closer maps (region.js), each agreeing with the one it is cut from. Region: part of
+ * the World map, at a few hundred metres to a few km a pixel. Close-up: part of the Region, at tens of
+ * metres a pixel. Each has its heights with finer detail, its own drainage, valleys, lakes, rivers (with
+ * meanders and oxbow lakes on flat ground) and biomes from the same climate. Pick the place on the map it
+ * is cut from; zoom and pan the closer map. The same step, twice (defineLevel).
  */
 (function () {
   'use strict';
@@ -15,12 +17,12 @@
   const SEA = [[0, [178, 226, 232]], [50, [160, 214, 228]], [200, [140, 202, 222]], [1000, [98, 162, 206]], [3000, [60, 114, 172]], [5000, [36, 76, 132]], [7000, [22, 46, 92]], [11000, [10, 20, 50]]];
   const LAND = [[0, [92, 146, 86]], [200, [118, 166, 94]], [500, [168, 188, 118]], [1000, [204, 182, 122]], [2000, [172, 132, 92]], [3500, [138, 110, 96]], [5000, [214, 208, 202]], [8000, [255, 255, 255]]];
   const FRESH = [74, 134, 196], SALT = [186, 210, 208], ICE = [238, 243, 247], RIVER = 'rgb(36, 92, 172)';
-  const SPANS = [[200, '200 km'], [400, '400 km'], [800, '800 km'], [1600, '1 600 km'], [3200, '3 200 km']];
   const RES = [[512, 'Quick · 512'], [1024, 'Fine · 1024'], [2048, 'Finest · 2048 (slow)']];
   const LAYERS = [['relief', 'Relief'], ['biomes', 'Biomes']];
+  const OXBOW = 'rgb(88, 146, 196)';
 
-  // ── the region of a world, kept while its map, climate and window stay the same ──
-  let cached = null, building = null, nextId = 1, worker = null;
+  // ── building off the page's thread (one worker for both steps) ──
+  let nextId = 1, worker = null;
   const pending = new Map();
   try {
     if (location.protocol !== 'file:' && typeof Worker !== 'undefined') {
@@ -29,8 +31,55 @@
       worker.onerror = () => { worker = null; for (const p of pending.values()) p.reject(new Error('worker failed')); pending.clear(); };
     }
   } catch { worker = null; }
+  const buildOff = (source, water, s) => {
+    const inPage = () => new Promise((resolve) => setTimeout(() => resolve(R.build(source, water, s)), 30));
+    if (!worker) return inPage();
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, map: source, water, opts: s });
+    }).catch(() => R.build(source, water, s));
+  };
+  const worldFrame = { north: 90, south: -90, west: -180, east: 180, dLat: 180, dLon: 360 };
 
-  /* Where the window goes when none is set: the mouth of the largest river away from the poles, else the highest point. */
+  /*
+   * A level of closer maps. cfg: key (the world's settings, and the step's id), parent(w, d) (a promise
+   * of {ref: what the map depends on, source and water for region.js build, picker: {W, H, z, factor,
+   * frame, wrap, rivers?}, centre: where to go by default, span: how far the parent reaches}).
+   * Returns ready(w, d): a promise of {ref, key, region, settings, parent}, built once per parent and
+   * window; and peek(): the last one built.
+   */
+  function level(cfg) {
+    let cached = null, building = null;
+    const settingsOf = (w, par) => {
+      const r = w[cfg.key] || {}, half = (km) => (km / 2) / ((Math.PI * 6371) / 180);
+      let c = r.lat == null || r.lon == null ? par.centre : [r.lat, r.lon];
+      const span = Math.min(r.span || cfg.defSpan, cfg.maxShare * par.span);
+      // (a close-up stays inside the region it is cut from)
+      if (!par.picker.wrap) {
+        const f = par.picker.frame, hLat = Math.min(f.dLat / 2, half(span) * 1.02), hLon = Math.min(f.dLon / 2, hLat / Math.max(0.1, Math.cos(c[0] * Math.PI / 180)));
+        c = [clamp(c[0], f.south + hLat, f.north - hLat), clamp(c[1], f.west + hLon, f.east - hLon)];
+      }
+      return { lat: c[0], lon: c[1], span, res: r.res || 1024, seed: (w.plates.seed ?? 1) + cfg.seedShift, erosion: w.map.erosion ?? 1 };
+    };
+    const ready = (w, d) => cfg.parent(w, d).then((par) => {
+      if (!par) return null;
+      const s = settingsOf(w, par), key = JSON.stringify(s);
+      if (cached && cached.ref === par.ref && cached.key === key) return cached;
+      if (building && building.ref === par.ref && building.key === key) return building.promise;
+      const me = { ref: par.ref, key };
+      me.promise = buildOff(par.source, par.water, s).then((region) => {
+        if (building === me) building = null;
+        cached = { ref: par.ref, key, region, settings: s, parent: par };
+        return cached;
+      });
+      building = me;
+      return me.promise;
+    });
+    return { ready, peek: () => cached, settingsOf };
+  }
+
+  /* Where a region goes when none is set: the mouth of the largest river away from the poles, else the highest point. */
   function defaultCentre(map) {
     const W = map.W, ml = map.rivers && map.rivers.mouthList ? map.rivers.mouthList.filter((m) => m.from >= 0) : [];
     for (const m of ml) {
@@ -39,54 +88,67 @@
     }
     return map.highest.at;
   }
-  const settingsOf = (w, map) => {
-    const r = w.region || {}, c = r.lat == null || r.lon == null ? defaultCentre(map) : [r.lat, r.lon];
-    return { lat: c[0], lon: c[1], span: r.span || 800, res: r.res || 1024, seed: w.plates.seed ?? 1, erosion: w.map.erosion ?? 1 };
-  };
-
-  /* The region (a promise): the world map and its climate first, then the window, in a worker. */
-  WS.regionReady = (w, d) => WS.climateReady(w, d).then((c) => {
-    if (!c) return null;
-    const map = c.mapRef.map, s = settingsOf(w, map), key = JSON.stringify(s);
-    if (cached && cached.mapRef === c.mapRef && cached.strokes === c.mapRef.strokes && cached.key === key) return cached;
-    if (building && building.mapRef === c.mapRef && building.strokes === c.mapRef.strokes && building.key === key) return building.promise;
-    const water = B.water(map, c.clim, B.planetOf(w, d));
-    const lean = { W: map.W, H: map.H, z: map.z, planet: map.planet, rivers: map.rivers ? { recv: map.rivers.recv, discharge: map.rivers.discharge } : null };
-    const inPage = () => new Promise((resolve) => setTimeout(() => resolve(R.build(lean, water, s)), 30));
-    const viaWorker = () => new Promise((resolve, reject) => {
-      const id = nextId++;
-      pending.set(id, { resolve, reject });
-      const wt = { runoff: water.runoff, P: water.P, PET: water.PET, Tw: water.Tw, Tc: water.Tc, Ta: water.Ta, Pw: water.Pw, liquid: water.liquid, tBoil: water.tBoil };
-      worker.postMessage({ id, map: lean, water: wt, opts: s });
-    }).catch(() => R.build(lean, water, s));
-    const me = { mapRef: c.mapRef, strokes: c.mapRef.strokes, key };
-    me.promise = (worker ? viaWorker() : inPage()).then((region) => {
-      if (building === me) building = null;
-      const out = { mapRef: me.mapRef, strokes: me.strokes, key, region, settings: s };
-      cached = out;
-      return out;
+  /* Where a close-up goes when none is set: on the region's largest river, where it is flattest (its meanders). */
+  function riverCentre(reg) {
+    let best = null;
+    const m = 0.15 * reg.W;
+    for (const rv of reg.rivers) rv.pts.forEach((p, i) => {
+      if (p[0] < m || p[1] < m || p[0] > reg.W - m || p[1] > reg.H - m) return;
+      const score = rv.q[i];
+      if (!best || score > best.score) best = { score, p };
     });
-    building = me;
-    return me.promise;
-  });
+    return best ? R.latLonOf(reg, best.p[0], best.p[1]) : R.latLonOf(reg, reg.W / 2, reg.H / 2);
+  }
 
+  let waterMemo = null;
+  const REGION = level({
+    key: 'region', defSpan: 800, maxShare: 1, seedShift: 0,
+    parent: (w, d) => WS.climateReady(w, d).then((c) => {
+      if (!c) return null;
+      // (the water budget on the world map's cells, worked out once per climate and planet)
+      const pk = JSON.stringify(B.planetOf(w, d));
+      if (!waterMemo || waterMemo.clim !== c.clim || waterMemo.pk !== pk) waterMemo = { clim: c.clim, pk, water: B.water(c.mapRef.map, c.clim, B.planetOf(w, d)) };
+      const map = c.mapRef.map, water = waterMemo.water;
+      const wt = { runoff: water.runoff, P: water.P, PET: water.PET, Tw: water.Tw, Tc: water.Tc, Ta: water.Ta, Pw: water.Pw, liquid: water.liquid, tBoil: water.tBoil };
+      return {
+        ref: `${c.mapRef.key}|${c.mapRef.strokes}`, water: wt, centre: defaultCentre(map), span: Math.PI * d.planet.radiusKm,
+        source: { W: map.W, H: map.H, z: map.z, planet: map.planet, rivers: map.rivers ? { recv: map.rivers.recv, discharge: map.rivers.discharge } : null },
+        picker: { W: map.W, H: map.H, z: map.z, factor: map.planet?.factor ?? 1, frame: worldFrame, wrap: true },
+      };
+    }),
+  });
+  const CLOSEUP = level({
+    key: 'closeup', defSpan: 50, maxShare: 0.5, seedShift: 977,
+    parent: (w, d) => REGION.ready(w, d).then((c) => {
+      if (!c) return null;
+      const r = c.region;
+      return {
+        ref: c, water: null, centre: riverCentre(r), span: r.frame.span,
+        source: { W: r.W, H: r.H, z: r.z, frame: r.frame, water: r.water, lake: r.lake, recv: r.recv, flow: r.flow, planet: r.planet, rivers: r.rivers },
+        picker: { W: r.W, H: r.H, z: r.z, factor: r.planet?.factor ?? 1, frame: r.frame, wrap: false, rivers: r.rivers, lake: r.lake },
+      };
+    }),
+  });
+  WS.regionReady = REGION.ready;
+  WS.closeupReady = CLOSEUP.ready;
+
+  function defineLevel(cfg) {
+  const L = cfg.level;
   WS.defineStep({
-    id: 'region', title: 'Region', code: '00_SURFACE/REGION', strip: 'A closer map',
-    blurb: 'A closer map of one part of the world: valleys, lakes and every stream, agreeing with the world map.',
-    lede: ['A closer look at one part of the world, some hundreds of km across: the world map’s land with the detail it is too coarse to hold, rivers down to brooks, lakes, valleys, and the biomes changing with height. Pick the place on the world map below; zoom and pan the map above.'],
+    id: cfg.key, title: cfg.title, code: cfg.code, strip: cfg.strip, blurb: cfg.blurb, lede: cfg.lede,
     build(ctx) {
-      const u = (ctx.ui.region = ctx.ui.region || { layer: 'relief', rivers: true, grid: true, zoom: 1, cx: 0.5, cy: 0.5 });
+      const u = (ctx.ui[cfg.key] = ctx.ui[cfg.key] || { layer: 'relief', rivers: true, grid: true, zoom: 1, cx: 0.5, cy: 0.5 });
       const host = h('div', { class: 'scene-host' }), hint = h('div', { class: 'scene-status mono' });
       const bar = h('div', { class: 'map-bar' }), whereHost = h('div'), statsHost = h('div'), keyHost = h('div'), expHost = h('div');
       const ovHost = h('div', { class: 'scene-host' });
       const el = h('div', { class: 'stack-gap' },
-        panel('Region', { ticks: true, tag: 'CLOSER', flush: true }, bar, host, h('div', { class: 'viz-caption' }, hint)),
+        panel(cfg.title, { ticks: true, tag: cfg.tag, flush: true }, bar, host, h('div', { class: 'viz-caption' }, hint)),
         h('div', { class: 'grid two' },
-          h('div', { class: 'stack-gap' }, panel('Where', { tag: 'WORLD MAP', flush: true }, ovHost, h('div', { style: { padding: '12px 14px' } }, whereHost)), statsHost),
+          h('div', { class: 'stack-gap' }, panel('Where', { tag: cfg.pickerTag, flush: true }, ovHost, h('div', { style: { padding: '12px 14px' } }, whereHost)), statsHost),
           h('div', { class: 'stack-gap' }, keyHost, panel('Take it away', { tag: 'EXPORT' }, expHost))));
-      const cv = h('canvas', { class: 'scene-canvas', tabindex: 0, role: 'img', 'aria-label': 'Closer map of a region' });
+      const cv = h('canvas', { class: 'scene-canvas', tabindex: 0, role: 'img', 'aria-label': cfg.title });
       host.appendChild(cv);
-      const ov = h('canvas', { class: 'scene-canvas', role: 'img', 'aria-label': 'World map: click to place the region' });
+      const ov = h('canvas', { class: 'scene-canvas', role: 'img', 'aria-label': `${cfg.pickerName}: click to place the ${cfg.noun}` });
       ovHost.appendChild(ov);
       const g = cv.getContext('2d'), og = ov.getContext('2d');
       let reg = null, regFor = null, off = null, busy = false, worldImg = null, worldFor = null, err = null;
@@ -98,8 +160,8 @@
         if (busy) return;
         busy = true; err = null;
         const t0 = performance.now();
-        const slow = setTimeout(() => { hint.textContent = 'Working out the world map, its climate, then the region…'; draw(); }, 60);
-        WS.regionReady(w, d).then((c) => {
+        const slow = setTimeout(() => { hint.textContent = cfg.working; draw(); }, 60);
+        L.ready(w, d).then((c) => {
           clearTimeout(slow); busy = false;
           if (!host.isConnected || !c) return;
           const again = c !== regFor;
@@ -108,14 +170,14 @@
           draw(); drawWorld();
           if (again) WS.app.refresh();                         // (the checks can read the region now)
           // (the window may have moved while this was built: build again if so)
-          if (JSON.stringify(settingsOf(ctx.world, c.mapRef.map)) !== c.key) ensure();
-        }, (e) => { clearTimeout(slow); busy = false; err = e; hint.textContent = `Could not build the region: ${e.message}`; draw(); });
+          if (JSON.stringify(L.settingsOf(ctx.world, c.parent)) !== c.key) ensure();
+        }, (e) => { clearTimeout(slow); busy = false; err = e; hint.textContent = `Could not build the ${cfg.noun}: ${e.message}`; draw(); });
       }
 
       /* RGBA for every pixel: the layer's colour, lit from the north-west (with a little exaggeration). */
       function paint() {
         if (!reg) return;
-        const { W, H, z, lake, biome } = reg, f = regFor.mapRef.map.planet?.factor ?? 1, px = new Uint8ClampedArray(W * H * 4);
+        const { W, H, z, lake, biome } = reg, f = reg.planet?.factor ?? 1, px = new Uint8ClampedArray(W * H * 4);
         const m = reg.frame.pxKm * 1000, ve = clamp(1.2 + reg.frame.pxKm * 0.6, 1.5, 4);
         const L = [-0.55, 0.55, 0.63], flat = L[2];
         for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
@@ -162,7 +224,7 @@
         g.fillStyle = css('--bg'); g.fillRect(0, 0, cv.width, cv.height);
         if (!reg || !off) {
           g.fillStyle = css('--muted'); g.font = `${16 * (cv.width / Math.max(1, cv.clientWidth))}px ${css('--font-mono') || 'monospace'}`;
-          g.fillText(err ? 'Could not build the region.' : busy ? 'Building the region…' : 'Make a world on the Plates step first.', 20, 40);
+          g.fillText(err ? `Could not build the ${cfg.noun}.` : busy ? `Building the ${cfg.noun}…` : 'Make a world on the Plates step first.', 20, 40);
           return;
         }
         clampView();
@@ -180,22 +242,33 @@
        * about twice as wide as a brook, never more than 2 pixels (times the zoom's scale). Each river is one stroke, in runs of nearly even width, so joints show
        * no beads.
        */
-      const riverWidth = (q, scale) => scale * R.riverWidth(q, reg.minFlow);
+      // (the drawn line, or the channel's true width, ≈ 2.7·√Q m, where that is wider: a big river seen
+      // close up is a ribbon; sc is screen pixels a map pixel)
+      const riverWidth = (q, scale, sc = 1) => Math.max(scale * R.riverWidth(q, reg.minFlow), (sc * 2.7 * Math.sqrt(Math.max(0, q))) / 1000 / reg.frame.pxKm);
       function drawRivers(gg, proj, scale, sc = 1) {
-        gg.strokeStyle = RIVER; gg.lineCap = 'round'; gg.lineJoin = 'round';
+        gg.lineCap = 'round'; gg.lineJoin = 'round';
+        // oxbow lakes first: the cut-off loops, as wide as the river that left them
+        gg.strokeStyle = OXBOW;
+        for (const ob of reg.oxbows || []) {
+          gg.lineWidth = Math.max(scale * ob.w * 0.9, sc * ob.wTrue * 0.9);
+          gg.beginPath();
+          ob.pts.forEach((pt, i) => { const p = proj(pt[0], pt[1]); if (i) gg.lineTo(p[0], p[1]); else gg.moveTo(p[0], p[1]); });
+          gg.stroke();
+        }
+        gg.strokeStyle = RIVER;
         const minQ = reg.minFlow * (sc < 0.6 ? 4 : sc < 1.2 ? 2 : 1);    // (fewer brooks when zoomed out)
         for (const rv of reg.rivers) {
           if (rv.q[rv.q.length - 1] < minQ) continue;
           let i = 0;
           while (i < rv.pts.length - 1 && rv.q[i] < minQ) i++;
           while (i < rv.pts.length - 1) {
-            const w0 = riverWidth(rv.q[i], scale);
+            const w0 = riverWidth(rv.q[i], scale, sc);
             gg.lineWidth = w0; gg.beginPath();
             let p = proj(rv.pts[i][0], rv.pts[i][1]); gg.moveTo(p[0], p[1]);
             let j = i + 1;
             for (; j < rv.pts.length; j++) {
               p = proj(rv.pts[j][0], rv.pts[j][1]); gg.lineTo(p[0], p[1]);
-              if (Math.abs(riverWidth(rv.q[j], scale) - w0) > 0.15 * scale) break;
+              if (Math.abs(riverWidth(rv.q[j], scale, sc) - w0) > 0.15 * scale) break;
             }
             gg.stroke();
             i = j;
@@ -205,12 +278,12 @@
       /* Lines of latitude and longitude at a round step, labelled at the edges. */
       function drawGrid(gg, v, dpr) {
         const fr = reg.frame, degPx = v.side / fr.dLat, want = 140 * dpr / degPx;
-        const step = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 15, 30].find((s) => s >= want) || 30;
+        const step = [0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 15, 30].find((s) => s >= want) || 30;
         gg.save();
         gg.strokeStyle = 'rgba(20, 20, 20, 0.28)'; gg.lineWidth = dpr; gg.fillStyle = 'rgba(20, 20, 20, 0.75)';
         gg.font = `${11 * dpr}px ${css('--font-mono') || 'monospace'}`;
         const lab = (t, x, y) => { gg.save(); gg.fillStyle = 'rgba(255,255,255,0.75)'; const w = gg.measureText(t).width; gg.fillRect(x - 2 * dpr, y - 11 * dpr, w + 4 * dpr, 14 * dpr); gg.restore(); gg.fillText(t, x, y); };
-        const deg = (a, pos, neg) => `${fmt.num(Math.abs(a), step < 1 ? (step < 0.25 ? 1 : 2) : 0)}°${a >= 0 ? pos : neg}`;
+        const deg = (a, pos, neg) => `${fmt.num(Math.abs(a), step < 0.1 ? 2 : step < 1 ? (step < 0.25 ? 1 : 2) : 0)}°${a >= 0 ? pos : neg}`;
         for (let la = Math.ceil(fr.south / step) * step; la <= fr.north; la += step) {
           const y = v.y0 + ((fr.north - la) / fr.dLat) * v.side;
           if (y < 0 || y > cv.height) continue;
@@ -283,25 +356,43 @@
       }, { passive: false });
       cv.style.touchAction = 'none'; cv.style.cursor = 'grab';
 
-      // ── the world map, to pick the place ──
+      // ── the map it is cut from, to pick the place ──
+      // (its frame: degrees to the picker's pixels; the world map wraps round, a region does not)
+      const pk = () => regFor && regFor.parent.picker;
+      const toPick = (la, lo) => {
+        const f = pk().frame; let d = lo - f.west;
+        if (pk().wrap) d = ((d % 360) + 360) % 360;
+        return [(d / f.dLon) * ov.width, ((f.north - la) / f.dLat) * ov.height];
+      };
       function paintWorld() {
-        const c = regFor && regFor.mapRef;
-        if (!c || worldFor === c.map) return;
-        const map = c.map, f = map.planet?.factor ?? 1, px = new Uint8ClampedArray(map.W * map.H * 4);
-        for (let k = 0; k < map.W * map.H; k++) { const v = map.z[k], col = v > 0 ? ramp(LAND, v * f) : ramp(SEA, -v); px[k * 4] = col[0]; px[k * 4 + 1] = col[1]; px[k * 4 + 2] = col[2]; px[k * 4 + 3] = 255; }
-        worldImg = h('canvas'); worldImg.width = map.W; worldImg.height = map.H; worldImg.getContext('2d').putImageData(new ImageData(px, map.W, map.H), 0, 0);
-        worldFor = map;
+        const p = pk();
+        if (!p || worldFor === p.z) return;
+        const f = p.factor, px = new Uint8ClampedArray(p.W * p.H * 4);
+        for (let k = 0; k < p.W * p.H; k++) {
+          const v = p.z[k], col = v <= 0 ? ramp(SEA, -v) : p.lake && p.lake[k] ? FRESH : ramp(LAND, v * f);
+          px[k * 4] = col[0]; px[k * 4 + 1] = col[1]; px[k * 4 + 2] = col[2]; px[k * 4 + 3] = 255;
+        }
+        worldImg = h('canvas'); worldImg.width = p.W; worldImg.height = p.H; worldImg.getContext('2d').putImageData(new ImageData(px, p.W, p.H), 0, 0);
+        worldFor = p.z;
       }
       function drawWorld() {
         if (!ov.width) return;
         og.fillStyle = css('--bg'); og.fillRect(0, 0, ov.width, ov.height);
         if (!worldImg) return;
         og.imageSmoothingEnabled = true; og.drawImage(worldImg, 0, 0, ov.width, ov.height);
+        const p = pk(), dpr = ov.width / Math.max(1, ov.clientWidth);
+        // the parent's rivers, lightly (a close-up is placed on them)
+        if (p.rivers) {
+          og.strokeStyle = 'rgba(36, 92, 172, 0.8)'; og.lineWidth = dpr; og.lineJoin = 'round';
+          const sx = ov.width / p.W, sy = ov.height / p.H;
+          for (const rv of p.rivers) { og.beginPath(); rv.pts.forEach((q, i) => (i ? og.lineTo(q[0] * sx, q[1] * sy) : og.moveTo(q[0] * sx, q[1] * sy))); og.stroke(); }
+        }
         if (!reg) return;
-        const fr = reg.frame, X = (lo) => ((lo + 180) / 360) * ov.width, Y = (la) => ((90 - la) / 180) * ov.height, dpr = ov.width / Math.max(1, ov.clientWidth);
+        const fr = reg.frame;
         const box = (w0, n0, w1, s1, colour, lw) => {
           og.strokeStyle = colour; og.lineWidth = lw * dpr;
-          for (const shift of [-360, 0, 360]) og.strokeRect(X(w0 + shift), Y(n0), X(w1 + shift) - X(w0 + shift), Y(s1) - Y(n0));
+          const [x0, y0] = toPick(n0, w0), wpx = ((w1 - w0) / p.frame.dLon) * ov.width, hpx = ((n0 - s1) / p.frame.dLat) * ov.height;
+          for (const shift of p.wrap ? [-ov.width, 0, ov.width] : [0]) og.strokeRect(x0 + shift, y0, wpx, hpx);
         };
         box(fr.west, fr.north, fr.east, fr.south, 'rgba(0,0,0,0.65)', 3);
         box(fr.west, fr.north, fr.east, fr.south, '#ffb238', 1.5);
@@ -313,9 +404,11 @@
         }
       }
       ov.addEventListener('click', (e) => {
-        const r = ov.getBoundingClientRect(), la = 90 - ((e.clientY - r.top) / r.height) * 180, lo = ((e.clientX - r.left) / r.width) * 360 - 180;
+        const p = pk(); if (!p) return;
+        const r = ov.getBoundingClientRect(), f = p.frame;
+        const la = f.north - ((e.clientY - r.top) / r.height) * f.dLat, lo = ((((f.west + ((e.clientX - r.left) / r.width) * f.dLon) + 540) % 360) + 360) % 360 - 180;
         u.zoom = 1; u.cx = 0.5; u.cy = 0.5;
-        ctx.mutate((w) => { w.region.lat = +la.toFixed(2); w.region.lon = +lo.toFixed(2); });
+        ctx.mutate((w) => { w[cfg.key].lat = +la.toFixed(4); w[cfg.key].lon = +lo.toFixed(4); });
       });
       ov.style.cursor = 'crosshair';
 
@@ -330,11 +423,11 @@
             h('button', { class: 'btn small', type: 'button', 'aria-label': 'Zoom in', disabled: u.zoom >= 8, onclick: () => zoomAt(1.6, cv.width / 2, cv.height / 2) }, '+')));
       }
       function renderWhere() {
-        const w = ctx.world, r0 = reg ? regFor.settings : { lat: 0, lon: 0 };
-        const s = { lat: w.region.lat ?? r0.lat, lon: w.region.lon ?? r0.lon, span: w.region.span, res: w.region.res };
+        const w = ctx.world, ws = w[cfg.key], r0 = reg ? regFor.settings : { lat: 0, lon: 0 }, pSpan = regFor ? regFor.parent.span : Infinity;
+        const s = { lat: ws.lat ?? r0.lat, lon: ws.lon ?? r0.lon, span: reg ? regFor.settings.span : ws.span, res: ws.res };
         const num = (key, label, min, max, value) => {
-          const i = h('input', { class: 'txt num', type: 'number', min, max, step: 0.1, value: +value.toFixed(2), 'aria-label': label });
-          i.addEventListener('change', () => { const v = Number(i.value); if (!Number.isFinite(v)) return; u.zoom = 1; ctx.mutate((ww) => { ww.region.lat = key === 'lat' ? clamp(v, -85, 85) : s.lat; ww.region.lon = key === 'lon' ? ((((v + 180) % 360) + 360) % 360) - 180 : s.lon; }); });
+          const i = h('input', { class: 'txt num', type: 'number', min, max, step: cfg.step, value: +value.toFixed(4), 'aria-label': label });
+          i.addEventListener('change', () => { const v = Number(i.value); if (!Number.isFinite(v)) return; u.zoom = 1; ctx.mutate((ww) => { ww[cfg.key].lat = key === 'lat' ? clamp(v, -85, 85) : s.lat; ww[cfg.key].lon = key === 'lon' ? ((((v + 180) % 360) + 360) % 360) - 180 : s.lon; }); });
           return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label), i);
         };
         const sel = (path, label, items, value, tip) => {
@@ -342,26 +435,27 @@
           el2.addEventListener('change', () => { u.zoom = 1; ctx.set(path, Number(el2.value)); });
           return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label, info(tip)), el2);
         };
-        const cellKm = reg ? reg.stats.worldCellKm : (2 * Math.PI * ctx.d.planet.radiusKm) / (w.map.res || 720);
+        const cellKm = reg ? reg.stats.worldCellKm : null;
+        const spans = cfg.spans.filter(([v]) => v <= pSpan * (cfg.key === 'closeup' ? 0.5 : 1) || v === cfg.spans[0][0]);
         replace(whereHost,
-          h('p', { class: 'muted', style: { fontSize: '13px', margin: '0 0 10px' } }, 'Click the world map to centre the region there.'),
+          h('p', { class: 'muted', style: { fontSize: '13px', margin: '0 0 10px' } }, cfg.pickText),
           h('div', { class: 'auto-grid' },
             num('lat', 'Centre latitude, °', -85, 85, s.lat), num('lon', 'Centre longitude, °', -180, 180, s.lon),
-            sel('region.span', 'Across', SPANS, s.span, `How far the region reaches, east to west and north to south. A world map cell here is about ${fmt.int(cellKm)} km across; the region adds the detail below that.`),
-            sel('region.res', 'Detail', RES, s.res, 'Pixels across the region. Finer takes longer: 2048 can take half a minute.')),
-          w.region.lat != null ? h('div', { class: 'btn-row', style: { marginTop: '10px' } }, h('button', { class: 'btn small', type: 'button', onclick: () => { u.zoom = 1; ctx.mutate((ww) => { ww.region.lat = null; ww.region.lon = null; }); } }, 'Back to the largest river’s mouth')) : null);
+            sel(`${cfg.key}.span`, 'Across', spans, s.span, `How far the ${cfg.noun} reaches, east to west and north to south.${cellKm ? ` A cell of ${cfg.sourceName} is about ${cellKm < 1 ? `${fmt.int(cellKm * 1000)} m` : `${fmt.int(cellKm)} km`} across here; the ${cfg.noun} adds the detail below that.` : ''}`),
+            sel(`${cfg.key}.res`, 'Detail', RES, s.res, `Pixels across the ${cfg.noun}. Finer takes longer: 2048 can take half a minute.`)),
+          ws.lat != null ? h('div', { class: 'btn-row', style: { marginTop: '10px' } }, h('button', { class: 'btn small', type: 'button', onclick: () => { u.zoom = 1; ctx.mutate((ww) => { ww[cfg.key].lat = null; ww[cfg.key].lon = null; }); } }, cfg.backText)) : null);
       }
       function renderStats() {
         if (!reg) { replace(statsHost); return; }
         const s = reg.stats, k = (n) => fmt.int(n);
         const rows = [
-          ['Across', `${k(reg.frame.span)} km`, `${fmt.num(s.pxKm, 2)} km a pixel · the world map’s cells ${k(s.worldCellKm)} km`],
+          ['Across', `${k(reg.frame.span)} km`, `${s.pxKm < 1 ? `${k(s.pxKm * 1000)} m` : `${fmt.num(s.pxKm, 2)} km`} a pixel · ${cfg.sourceName}: ${s.worldCellKm < 1 ? `${k(s.worldCellKm * 1000)} m` : `${k(s.worldCellKm)} km`}`],
           ['Land', `${k(s.land * 100)} %`, `${k(s.landKm2)} km²`],
           ['Highest point', `${k(s.highest.m)} m`, `${fmt.num(s.highest.at[0], 2)}°, ${fmt.num(s.highest.at[1], 2)}°`],
-          ['Rivers', `${k(s.rivers)}`, `from ${k(reg.minFlow)} m³/s · ${reg.inflows.length ? `${k(reg.inflows.length)} enter from outside` : 'all rise here'}`],
-          ['Largest river', s.biggest ? `${k(s.biggest.q)} m³/s` : '—', s.biggest ? `leaves at ${fmt.num(s.biggest.at[0], 2)}°, ${fmt.num(s.biggest.at[1], 2)}°` : 'no river leaves the region'],
+          ['Rivers', `${k(s.rivers)}`, `${reg.oxbows && reg.oxbows.length ? `${k(reg.oxbows.length)} oxbow lakes · ` : ''}from ${fmt.num(reg.minFlow, reg.minFlow < 1 ? 1 : 0)} m³/s · ${reg.inflows.length ? `${k(reg.inflows.length)} enter from outside` : 'all rise here'}`],
+          ['Largest river', s.biggest ? `${k(s.biggest.q)} m³/s` : '—', s.biggest ? `leaves at ${fmt.num(s.biggest.at[0], 2)}°, ${fmt.num(s.biggest.at[1], 2)}°` : `no river leaves the ${cfg.noun}`],
           ['Lakes', `${k(s.lakes)}`, `${k(s.saltLakes)} of them salt · ${k(s.lakeKm2)} km²`],
-          ['Deepest valley', `${k(s.deepestCut)} m`, 'cut by its river into the world map’s land'],
+          ['Deepest valley', `${k(s.deepestCut)} m`, `cut by its river into ${cfg.sourceName}’s land`],
         ];
         replace(statsHost, h('div', { class: 'readouts' }, rows.map(([l, v, sub]) => h('div', { class: 'readout' }, h('div', { class: 'lbl' }, l), h('div', { class: 'val' }, v), h('div', { class: 'sub' }, sub)))));
       }
@@ -372,14 +466,15 @@
           const order = reg.stats.biomeShare.map((v, i) => [i, v]).filter(([, v]) => v > 0.001).sort((a, b) => b[1] - a[1]);
           items = order.map(([i, v]) => [hex(B.BIOMES[i][2]), `${B.BIOMES[i][1]} ${v < 0.01 ? '<1' : fmt.int(v * 100)} %`]);
         } else {
-          const f = regFor ? regFor.mapRef.map.planet?.factor ?? 1 : 1;
+          const f = reg ? reg.planet?.factor ?? 1 : 1;
           items = [[SEA[6][1], 'deep sea'], [SEA[3][1], 'slope'], [SEA[0][1], 'shallows'], ...[0, 200, 500, 1000, 2000, 3500, 5000].map((m) => [ramp(LAND, m), `${fmt.int(m / f)} m`]), [ICE, 'ice']];
         }
         items.push([FRESH, 'fresh lake'], [SALT, 'salt lake']);
+        if (reg && reg.oxbows && reg.oxbows.length) items.push([hex('#5892c4'), 'oxbow lake']);
         replace(keyHost, panel('Key', { tag: LAYERS.find((l) => l[0] === u.layer)[1].toUpperCase() }, h('div', { class: 'map-key mono', style: { marginLeft: 0 } }, items.map(([c, t]) => h('span', null, sw(c), t)),
-          h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '3px', background: RIVER, verticalAlign: 'middle', marginRight: '6px' } }), `river (from ${fmt.int(reg ? reg.minFlow : 8)} m³/s)`))));
+          h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '3px', background: RIVER, verticalAlign: 'middle', marginRight: '6px' } }), `river (from ${reg ? fmt.num(reg.minFlow, reg.minFlow < 1 ? 1 : 0) : 8} m³/s)`))));
       }
-      const fileName = (what, ext) => `${(ctx.world.name || 'world').replace(/[^\w-]+/g, '_')}-region-${what}.${ext}`;
+      const fileName = (what, ext) => `${(ctx.world.name || 'world').replace(/[^\w-]+/g, '_')}-${cfg.key}-${what}.${ext}`;
       const save = (blob, name) => { const a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); };
       function exportPng() {
         if (!off) return;
@@ -401,12 +496,13 @@
           const q = rv.q.reduce((a, b) => Math.max(a, b), 0);
           return `<polyline points="${rv.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(R.riverWidth(q, reg.minFlow))}" data-flow="${Math.round(q)}"/>`;
         });
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${reg.W} ${reg.H}" width="${reg.W}" height="${reg.H}">\n<!-- ${fmt.num(fr.north, 3)}N to ${fmt.num(fr.south, 3)}, ${fmt.num(fr.west, 3)} to ${fmt.num(fr.east, 3)} (degrees, equirectangular); ${fmt.num(fr.pxKm, 3)} km a pixel at the centre -->\n<g fill="none" stroke="#245cac" stroke-linecap="round" stroke-linejoin="round">\n${lines.join('\n')}\n</g>\n</svg>\n`;
+        const ox = (reg.oxbows || []).map((ob) => `<polyline points="${ob.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(Math.max(ob.w, ob.wTrue))}"/>`);
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${reg.W} ${reg.H}" width="${reg.W}" height="${reg.H}">\n<!-- ${fmt.num(fr.north, 4)}N to ${fmt.num(fr.south, 4)}, ${fmt.num(fr.west, 4)} to ${fmt.num(fr.east, 4)} (degrees, equirectangular); ${fmt.num(fr.pxKm, 4)} km a pixel at the centre -->\n<g id="oxbows" fill="none" stroke="#5892c4" stroke-linecap="round" stroke-linejoin="round">\n${ox.join('\n')}\n</g>\n<g id="rivers" fill="none" stroke="#245cac" stroke-linecap="round" stroke-linejoin="round">\n${lines.join('\n')}\n</g>\n</svg>\n`;
         save(new Blob([svg], { type: 'image/svg+xml' }), fileName('rivers', 'svg'));
       }
       function renderExport() {
         replace(expHost,
-          h('p', { class: 'muted', style: { fontSize: '13px', marginBottom: '10px' } }, 'At the region’s full detail, in the same frame, so they stack in an image editor.'),
+          h('p', { class: 'muted', style: { fontSize: '13px', marginBottom: '10px' } }, `At the ${cfg.noun}’s full detail, in the same frame, so they stack in an image editor.`),
           h('div', { class: 'btn-row' },
             h('button', { class: 'btn small primary', type: 'button', disabled: !reg, onclick: exportPng }, 'This map (PNG)'),
             h('button', { class: 'btn small', type: 'button', disabled: !reg, onclick: exportHeight }, 'Heightmap (16-bit PNG)'),
@@ -426,9 +522,30 @@
     },
     checks(w) {
       if (!w.plates.features.some((f) => f.kind === 'crust')) return [{ level: 'info', text: 'No continents yet: make a world on the Plates step.' }];
-      if (!cached) return [{ level: 'info', text: 'Open this step to build a closer map.' }];
-      const s = cached.region.stats;
-      return [{ level: 'ok', text: `${fmt.int(cached.region.frame.span)} km across at ${fmt.num(s.pxKm, 2)} km a pixel: ${fmt.int(s.rivers)} rivers, ${fmt.int(s.lakes)} lakes.` }];
+      const c = L.peek();
+      if (!c) return [{ level: 'info', text: `Open this step to build the ${cfg.noun}.` }];
+      const s = c.region.stats, px = s.pxKm < 1 ? `${fmt.int(s.pxKm * 1000)} m` : `${fmt.num(s.pxKm, 2)} km`;
+      return [{ level: 'ok', text: `${fmt.int(c.region.frame.span)} km across at ${px} a pixel: ${fmt.int(s.rivers)} rivers, ${fmt.int(s.lakes)} lakes${c.region.oxbows && c.region.oxbows.length ? `, ${fmt.int(c.region.oxbows.length)} oxbow lakes` : ''}.` }];
     },
+  });
+  }
+
+  defineLevel({
+    level: REGION, key: 'region', title: 'Region', code: '00_SURFACE/REGION', strip: 'A closer map', tag: 'CLOSER', noun: 'region',
+    blurb: 'A closer map of one part of the world: valleys, lakes and every stream, agreeing with the world map.',
+    lede: ['A closer look at one part of the world, some hundreds of km across: the world map’s land with the detail it is too coarse to hold, rivers down to brooks, lakes, valleys, meanders on the plains, and the biomes changing with height. Pick the place on the world map below; zoom and pan the map above. For closer still, the Close-up step.'],
+    pickerTag: 'WORLD MAP', pickerName: 'World map', sourceName: 'the world map', step: 0.1,
+    spans: [[200, '200 km'], [400, '400 km'], [800, '800 km'], [1600, '1 600 km'], [3200, '3 200 km']],
+    pickText: 'Click the world map to centre the region there.', backText: 'Back to the largest river’s mouth',
+    working: 'Working out the world map, its climate, then the region…',
+  });
+  defineLevel({
+    level: CLOSEUP, key: 'closeup', title: 'Close-up', code: '00_SURFACE/CLOSE_UP', strip: 'Closer still', tag: 'CLOSEST', noun: 'close-up',
+    blurb: 'Part of the Region, closer still: tens of metres a pixel, rivers wide as they are, meanders and oxbow lakes.',
+    lede: ['Part of the Region, a few tens of km across at tens of metres a pixel, cut from it as the Region is cut from the world map, and agreeing with it: its land with finer detail still, every stream, and big rivers as wide as they really are, meandering over their floodplains and leaving oxbow lakes. Pick the place on the Region below.'],
+    pickerTag: 'REGION', pickerName: 'Region', sourceName: 'the region', step: 0.01,
+    spans: [[10, '10 km'], [25, '25 km'], [50, '50 km'], [100, '100 km'], [200, '200 km']],
+    pickText: 'Click the region to centre the close-up there.', backText: 'Back to the region’s largest river',
+    working: 'Working out the world map, the region, then the close-up…',
   });
 })();
