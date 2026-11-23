@@ -71,7 +71,7 @@
           cached = { key, map, strokes: w.map.strokes.length };
           building = false;
           colour();
-          renderStats(); renderSet(); draw();
+          renderStats(); renderSet(); renderExport(); draw();
           hint.textContent = `${map.W} × ${map.H} cells · built in ${fmt.int(performance.now() - t0)} ms`;
           WS.app.refresh();                                   // the checks can read the map now
         }, 30);
@@ -264,7 +264,8 @@
         replace(expHost,
           h('p', { class: 'muted', style: { fontSize: '13px', marginBottom: '10px' } }, 'Equirectangular, ready for an image editor, Wilbur or Blender (as Artifexian maps onto a sphere).'),
           h('div', { class: 'btn-row' },
-            h('button', { class: 'btn small primary', type: 'button', disabled: !map, onclick: exportColour }, 'Colour map (PNG)'),
+            h('button', { class: 'btn small primary', type: 'button', disabled: !map, onclick: (e) => WS.exportDrawingKit(ctx, e.currentTarget) }, 'Drawing kit (ZIP)'),
+            h('button', { class: 'btn small', type: 'button', disabled: !map, onclick: exportColour }, 'Colour map (PNG)'),
             h('button', { class: 'btn small', type: 'button', disabled: !map, onclick: exportHeight }, 'Heightmap (16-bit PNG)')));
       }
       const fileName = (what) => `${(ctx.world.name || 'world').replace(/[^\w-]+/g, '_')}-${what}`;
@@ -283,8 +284,9 @@
         el,
         update() {
           if (!ro._on) { ro.observe(host); ro._on = true; }
-          renderView(); renderTools(); renderSet(); renderExport(); renderKey();
+          renderView(); renderTools(); renderSet(); renderKey();
           if (ensure()) { if (!colours || offFor === null) colour(); renderStats(); fit(); } else { renderStats(); fit(); }
+          renderExport();                                      // (after the map is built: its buttons need it)
         },
         destroy() { ro.disconnect(); },
       };
@@ -303,22 +305,6 @@
     },
   });
 
-  /* A 16-bit greyscale PNG (deflated with the browser's CompressionStream). */
-  async function png16(W, H, values) {
-    const crcT = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcT[n] = c >>> 0; }
-    const crc = (bytes) => { let c = 0xffffffff; for (const b of bytes) c = crcT[(c ^ b) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
-    const chunk = (type, data) => {
-      const out = new Uint8Array(12 + data.length), dv = new DataView(out.buffer);
-      dv.setUint32(0, data.length); for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
-      out.set(data, 8); dv.setUint32(8 + data.length, crc(out.subarray(4, 8 + data.length)));
-      return out;
-    };
-    const ihdr = new Uint8Array(13), dv = new DataView(ihdr.buffer);
-    dv.setUint32(0, W); dv.setUint32(4, H); ihdr[8] = 16; ihdr[9] = 0; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    const raw = new Uint8Array(H * (1 + W * 2));
-    for (let j = 0; j < H; j++) { const o = j * (1 + W * 2); raw[o] = 0; for (let i = 0; i < W; i++) { const v = values[j * W + i]; raw[o + 1 + i * 2] = v >> 8; raw[o + 2 + i * 2] = v & 255; } }
-    const z = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
-    return new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', z), chunk('IEND', new Uint8Array(0))], { type: 'image/png' });
-  }
+  /* A 16-bit greyscale PNG (in the drawing kit's module). */
+  const png16 = (W, H, values) => WS.drawkit.png16(W, H, values);
 })();

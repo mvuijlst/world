@@ -28,6 +28,22 @@
     return cache;
   };
 
+  /* Everything for drawing, as one ZIP: works out the climate and the rivers first if need be. */
+  WS.exportDrawingKit = async (ctx, button) => {
+    const w = ctx.world, d = ctx.d;
+    if (!w.plates.features.some((f) => f.kind === 'crust')) { WS.ui.toast('Make a world on the Plates step first.'); return; }
+    const label = button ? button.textContent : '';
+    if (button) { button.disabled = true; button.textContent = 'Working it out…'; }
+    try {
+      await new Promise((r) => setTimeout(r, 30));
+      const c = WS.currentBiomes(w, d);
+      const k = await WS.drawkit.kit(w, c.climRef.mapRef.map, c.climRef.clim, c.bio, { radiusKm: d.planet.radiusKm, gravity: d.planet.gravity, tilt: w.planet.tilt });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(k.blob); a.download = k.name;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      WS.ui.toast(`Drawing kit: ${k.files.length} files`);
+    } finally { if (button) { button.disabled = false; button.textContent = label; } }
+  };
+
   WS.defineStep({
     id: 'biomes', title: 'Rivers & biomes', code: '00_SURFACE/BIOMES', strip: 'Rivers, lakes, biomes',
     blurb: 'Rivers, lakes, inland basins and biomes, from the map and its climate.',
@@ -222,7 +238,8 @@
       }
       function renderExport() {
         replace(expHost, h('div', { class: 'btn-row' },
-          h('button', { class: 'btn small primary', type: 'button', onclick: exportPng }, 'This map (PNG)'),
+          h('button', { class: 'btn small primary', type: 'button', onclick: (e) => WS.exportDrawingKit(ctx, e.currentTarget) }, 'Drawing kit (ZIP)'),
+          h('button', { class: 'btn small', type: 'button', onclick: exportPng }, 'This map (PNG)'),
           h('button', { class: 'btn small', type: 'button', onclick: exportSvg }, 'Rivers (SVG)')));
       }
 
