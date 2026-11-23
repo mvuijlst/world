@@ -353,6 +353,22 @@ python tools/dev_server.py
 
 then open <http://127.0.0.1:5179>. Tests: `cd server; $env:DJANGO_DEBUG=1; .venv/Scripts/python manage.py test worlds`.
 
+## Example worlds
+
+`examples/` holds unusual planets, made to test the surface pipeline at its edges (and checked by
+`tests/examples.test.js`). Import them from **Worlds → Import JSON** (several at once is fine):
+
+| File | World | What is unusual |
+|------|-------|-----------------|
+| `featherfall` | Featherfall · Thistledown, moon Puffball | 0.51 g: mountains over 20 km, deep valleys, a thin hold on its air |
+| `the-anvil` | The Anvil · Ironvault, moon Tongs | a 2 g super-Earth: low broad ranges, compact deltas |
+| `halfnight` | Halfnight · Gloaming around the red dwarf Ruddlecoal | tidally locked, one circulation cell, no moon and no tides: deltas only |
+| `dustvault` | Dustvault · Ashkettle, moon Cinderpip | air at 0.004 atm: no liquid water, no rivers, nothing grows |
+| `widows-tilt` | Widow’s Tilt · Vagrance | no moon, axis tipped 62° |
+| `tidewrack` | Tidewrack · Brinemaw, The Gnawing Moon | a 3-Moon-mass moon at 220,000 km: tides ~11× Earth’s, estuaries |
+| `whirligig` | Whirligig · Spindrift, moon Thimble | a five-hour day, seven circulation cells; history carried on 500 Myr |
+| `rimewater` | Rimewater · Hoarfrost, moon Snowglobe | about 1 °C, ice ages 12 °C colder: glaciers, fjords, lake country |
+
 ## Deployment
 
 Live at <https://world.yusupov.cloud>, from `/home/django/world-yusupov` on the VPS:

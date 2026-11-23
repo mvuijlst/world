@@ -242,12 +242,19 @@
   function worldsMenu() {
     const pop = h('div', { class: 'menu-pop', role: 'menu' });
     const btn = h('button', { class: 'icon-btn', type: 'button', 'aria-haspopup': 'true', 'aria-expanded': 'false', onclick: (e) => { e.stopPropagation(); open(!pop.classList.contains('open')); } }, icon('globe'), h('span', { class: 'worlds-label' }, 'Worlds'));
-    const fileIn = h('input', { type: 'file', accept: '.json,application/json', class: 'sr-only', id: 'import-file' });
+    const fileIn = h('input', { type: 'file', accept: '.json,application/json', multiple: true, class: 'sr-only', id: 'import-file' });
     fileIn.addEventListener('change', async () => {
-      const f = fileIn.files && fileIn.files[0];
-      if (!f) return;
-      try { const w = await WS.store.importJson(f); loadWorld(w, true); toast(`Imported “${w.name}”`); }
-      catch (err) { toast(`Import failed: ${err.message}`); }
+      const files = [...(fileIn.files || [])];
+      if (!files.length) return;
+      // several at once: each is saved (and synced); the last one opens
+      const done = [], failed = [];
+      for (const f of files) {
+        try { const w = await WS.store.importJson(f); if (files.length > 1) { w.updated = new Date().toISOString(); WS.store.save(w); WS.sync.touched(w.id); } done.push(w); }
+        catch (err) { failed.push(`${f.name}: ${err.message}`); }
+      }
+      if (done.length) loadWorld(done[done.length - 1], true);
+      if (files.length > 1) runSync();
+      toast(failed.length ? `Imported ${done.length}; failed: ${failed.join('; ')}` : done.length === 1 ? `Imported “${done[0].name}”` : `Imported ${done.length} worlds: ${done.map((w) => w.name).join(', ')}`);
       fileIn.value = '';
       open(false);
     });
