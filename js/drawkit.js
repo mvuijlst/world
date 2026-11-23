@@ -265,6 +265,7 @@
     const cellLL = (k) => [+(90 - ((Math.floor(k / W) + 0.5) * 180) / H).toFixed(3), +(-180 + (((k % W) + 0.5) * 360) / W).toFixed(3)];
     const waters = {
       map: { width: W, height: H, degreesPerPixel: 360 / W, radiusKm: map.planet?.radiusKm, gravity: map.planet?.gravity, carving: map.carving ? { erosion: map.carving.erosion, seed: map.carving.seed, rain: map.rivers ? map.rivers.rain : null } : null },
+      glaciers: map.glaciers ? { iceAgeCoolingC: map.glaciers.iceAge, glaciatedKm2: Math.round(map.glaciers.area), fjordsKm2: Math.round(map.glaciers.fjords), deepestTroughM: Math.round(map.glaciers.deepest) } : null,
       tides: { timesEarth: map.tideX ?? null, note: 'tidal range on the coasts: about 1 m × this on a narrow shelf, up to 4 m × this on a wide one' },
       mouths: map.rivers ? map.rivers.mouthList.map((m) => ({ at: cellLL(m.cell), pixel: [m.cell % W, Math.floor(m.cell / W)], kind: m.kind, dischargeM3s: Math.round(m.discharge), sedimentKm3: Math.round(m.sediment), tideM: +m.tide.toFixed(2) })) : [],
     };

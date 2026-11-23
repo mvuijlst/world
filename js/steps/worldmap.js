@@ -25,7 +25,7 @@
   let cached = null;
   const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, w.map.erosion, w.map.carve, w.planet.pressure >= WET, d.planet.gravity, d.planet.radiusKm, d.planet.cells.count, w.tectonics.scaling, w.tectonics.ridgeDepth,
     // (the rivers carve with the climate's water: what the climate depends on)
-    w.map.carve !== false ? [WS.climate.planetOf(w, d), WS.biomes.planetOf(w, d), +tidesOf(w, d).toFixed(3)] : null]);
+    w.map.carve !== false ? [WS.climate.planetOf(w, d), WS.biomes.planetOf(w, d), +tidesOf(w, d).toFixed(3), w.map.iceAge ?? 6] : null]);
   /* The map of a world (built if need be, synchronously): shared with the Climate step. */
   WS.currentMap = (w, d) => {
     if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
@@ -45,7 +45,7 @@
     if (!s.carve) return M.build(w.plates, { ...s, carve: false, strokes: w.map.strokes });
     const map = M.build(w.plates, { ...s, carve: false, strokes: [] });
     const pl = WS.climate.planetOf(w, d), clim = WS.climate.build(map, pl);
-    M.carveMap(map, { water: WS.biomes.water(map, clim, WS.biomes.planetOf(w, d)), strokes: w.map.strokes });
+    M.carveMap(map, { water: WS.biomes.water(map, clim, WS.biomes.planetOf(w, d)), strokes: w.map.strokes, iceAge: w.map.iceAge ?? 6 });
     map.climate = { clim, pl, strokes: w.map.strokes.length };
     return map;
   }
@@ -363,11 +363,12 @@
             num('map.land', 'Land, % of surface', 1, 95, 0.5, 'How much of the surface stands above the sea. By default the Population step’s land share; the crust can only hold so much.', +(w.map.land ?? w.population.land).toFixed(1)),
             num('map.shelf', 'Shelf width ×', 0.2, 4, 0.1, 'Continental shelves: about 150 km wide on quiet coasts, 40 km where a plate subducts, on Earth.', w.map.shelf),
             num('map.relief', 'Relief ×', 0.2, 3, 0.1, 'Mountain heights on top of what gravity allows.', w.map.relief),
+            num('map.iceAge', 'Ice ages, °C', 0, 15, 0.5, 'How much colder the ice ages were than today (Earth’s last: about 6 °C, more towards the poles). Glaciers then covered more ground and carved it: troughs, lake basins, fjords. 0: only where there is ice today.', w.map.iceAge ?? 6),
             num('map.erosion', 'Erosion ×', 0.2, 4, 0.1, `How fast the land wears down once it stops rising, × Earth’s: mountain belts and the raised ground beneath them, flood basalts, volcanoes. Faster where it rains (the equator, the fronts between this planet’s ${ctx.d.planet.cells.count} circulation cells), slower in the dry belts and near the poles; how deep the rivers cut follows it too. Earth = 1.`, w.map.erosion ?? 1),
             num('tectonics.scaling', 'Gravity scaling', 1, 2, 0.05, 'How strongly heights and widths shrink as gravity grows: they are divided by g^scaling (Artifexian: 1–2). At 1 g it makes no difference.', w.tectonics.scaling),
             num('tectonics.ridgeDepth', 'Ridge depth, m', 0, 6000, 50, 'Depth of the mid-ocean ridge crests below sea level; the ocean floor deepens from there as it ages and cools. On Earth about 2,600 m; stay within about ±500 m of that.', w.tectonics.ridgeDepth),
             h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Detail'), res)),
-          h('label', { class: 'check', style: { marginTop: '10px' } }, carveBox, 'Rivers carve valleys and build deltas', info(w.planet.pressure < WET ? 'This planet’s air is too thin for liquid water: no rivers.' : 'Rivers cut down into the land, deepest where the most water gathers: the rain the Climate step gives this map, less what evaporates (big rivers through wet uplands and mountains, little in deserts). They carry the rock off: it partly fills basins and builds deltas at the mouths of the largest rivers. A basin spills over its rim only if more water flows in than its lake could evaporate; otherwise it stays closed. How deep they cut follows Erosion ×. (Working out the climate first makes the map slower to build.)')),
+          h('label', { class: 'check', style: { marginTop: '10px' } }, carveBox, 'Rivers and glaciers carve the land', info(w.planet.pressure < WET ? 'This planet’s air is too thin for liquid water: no rivers.' : 'Rivers cut down into the land, deepest where the most water gathers: the rain the Climate step gives this map, less what evaporates (big rivers through wet uplands and mountains, little in deserts). They carry the rock off: it partly fills basins and builds deltas at the mouths of the largest rivers. A basin spills over its rim only if more water flows in than its lake could evaporate; otherwise it stays closed. How deep they cut follows Erosion ×. (Working out the climate first makes the map slower to build.)')),
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             w.map.land != null ? h('button', { class: 'btn small', type: 'button', onclick: () => ctx.set('map.land', null) }, `Follow Population (${fmt.num(w.population.land, 1)} %)`) : null,
             auto ? h('button', { class: 'btn small', type: 'button', onclick: () => ctx.set('map.land', +auto.toFixed(1)) }, `Earth-like for this crust: ${fmt.num(auto, 1)} %`) : null),
@@ -385,6 +386,7 @@
             ['Mean land height', `${fmt.int(land ? sum / land : 0)} m`, 'Earth ≈ 840 m'],
             ['Plates', `${new Set(map.plate).size}`, 'with their boundaries'],
             ...(map.rivers ? [['Carved by rivers', `${fmt.num(map.rivers.eroded / 1e6, 2)} M km³`, `deepest valley ${fmt.int(map.rivers.deepest)} m · ${map.rivers.rain === 'climate' ? 'with the climate’s rain' : 'rain by latitude'}`],
+              ...(map.glaciers && map.glaciers.area ? [['Glaciers', `${fmt.num(map.glaciers.area / 1e6, 2)} M km²`, `glaciated now or in the ice ages · troughs to ${fmt.int(map.glaciers.deepest)} m · fjords ${fmt.int(map.glaciers.fjords)} km²`]] : []),
               ['River mouths', `${map.rivers.mouthList.filter((x) => /delta/.test(x.kind)).length} deltas · ${map.rivers.mouthList.filter((x) => x.kind === 'estuary').length} estuaries`, `${fmt.int(map.rivers.deltaArea)} km² of delta land · tides ${fmt.num(map.tideX, 2)} × Earth’s (Moon, star, gravity)`]] : [])]
             .map(([l, v, sub]) => h('div', { class: 'readout' }, h('div', { class: 'lbl' }, l), h('div', { class: 'val' }, v), h('div', { class: 'sub' }, sub)))),
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },

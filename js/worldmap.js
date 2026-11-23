@@ -236,6 +236,101 @@
     return out;
   }
 
+  /* The eight neighbours of a cell (wrapping in longitude), with their offsets and the cell's row. */
+  const neighbours = (gr, k, f) => {
+    const { W, H } = gr, j = Math.floor(k / W), i = k - j * W;
+    for (let dj = -1; dj <= 1; dj++) {
+      const jj = j + dj; if (jj < 0 || jj >= H) continue;
+      for (let di = -1; di <= 1; di++) if (di || dj) f(jj * W + ((i + di + W) % W), di, dj, j);
+    }
+  };
+  /*
+   * Where the water (or ice) goes: flood the land up from the coast (a priority flood over zr, the
+   * heights with a little unevenness), so every land cell drains to the lowest way out. Returns recv
+   * (the cell each drains to), dist (km to it), fill and spill (the level water must rise to over zr
+   * and over z, to get out), and the land cells in order, downstream first (order, no of them).
+   */
+  function drain(gr, z, land, zr, kmDeg) {
+    const N = gr.N, fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), dist = new Float32Array(N), done = new Uint8Array(N), order = new Int32Array(N);
+    const spill = new Float32Array(N);
+    let no = 0;
+    const q = heap(fill);
+    for (let k = 0; k < N; k++) if (!land[k]) { done[k] = 1; let coast = false; neighbours(gr, k, (n) => { if (land[n]) coast = true; }); if (coast) { fill[k] = 0; q.push(k); } }
+    if (!q.size) return { fill, recv, dist, spill, order, no: 0 };
+    while (q.size) {
+      const c = q.pop();
+      if (land[c]) order[no++] = c;
+      neighbours(gr, c, (n, di, dj, j) => {
+        if (done[n]) return;
+        done[n] = 1; fill[n] = Math.max(zr[n], fill[c] + 1e-3); recv[n] = c; dist[n] = gr.dx * kmDeg * Math.hypot(di * Math.max(0.02, gr.cosl[j]), dj); q.push(n);
+        spill[n] = Math.max(z[n], land[c] ? spill[c] : 0);
+      });
+    }
+    return { fill, recv, dist, spill, order, no };
+  }
+
+  /*
+   * Glaciers: where ice lies now, or lay in the ice ages, and what it carved. Ice forms where summers
+   * are cold: the warmest season below freezing now, or below the ice ages' cooling (iceAge, °C, more
+   * towards the poles) with snow enough to feed it. It flows downhill as water does, but erodes where
+   * it slides fast, fed by heavy snow (wet coastal ranges: Norway, Patagonia, Alaska), and barely
+   * where it is frozen to its bed (polar deserts). It cuts troughs wider than a river's, deepest where
+   * most ice gathers; it can dig below the cell it drains to (a basin: a lake, once the ice is gone),
+   * and at the coast below the sea: a fjord. Inland it stays above the sea.
+   * gr, z (changed in place); opts: water {Tw (warmest season °C), P (mm a year)}, iceAge (°C, 6),
+   * erosion (1), gravity (1), radiusKm, seed, k (strength). Returns {ice (0-1 per cell: how glaciated),
+   * cut (m), area (km² glaciated), fjords (km² of land become sea), deepest (m)}.
+   */
+  function glaciate(gr, z, opts = {}) {
+    const { W, N } = gr, kmDeg = (Math.PI * (opts.radiusKm ?? 6371)) / 180, wt = opts.water;
+    const ice = new Float32Array(N), cut = new Float32Array(N);
+    if (!wt) return { ice, cut, area: 0, fjords: 0, deepest: 0 };
+    const E = Math.max(0, opts.erosion ?? 1), g = Math.max(0.05, opts.gravity ?? 1), dT = Math.max(0, opts.iceAge ?? 6);
+    const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0)), area = new Float32Array(N), wI = new Float32Array(N);
+    let glaciated = 0;
+    for (let k = 0; k < N; k++) {
+      if (!land[k]) continue;
+      const j = Math.floor(k / W), s = Math.sin(gr.lat[j] * D2R);
+      area[k] = (gr.dx * kmDeg) ** 2 * Math.max(0.02, gr.cosl[j]);
+      const now = smooth(-wt.Tw[k] / 3) * smooth(wt.P[k] / 20);
+      const past = smooth((dT * (0.6 + 1.4 * s * s) - wt.Tw[k]) / 4) * smooth((wt.P[k] - 50) / 300);
+      ice[k] = Math.max(now, past);
+      // what slides: the snow that feeds it (little in a polar desert, much on a wet range)
+      wI[k] = area[k] * ice[k] * clamp(wt.P[k] / 500, 0.03, 3);
+      if (ice[k] > 0.5) glaciated += area[k];
+    }
+    if (!glaciated) return { ice, cut, area: 0, fjords: 0, deepest: 0 };
+    const { recv, order, no } = drain(gr, z, land, z, kmDeg);
+    const Ai = Float64Array.from(wI);
+    for (let o = no - 1; o >= 0; o--) { const k = order[o], r = recv[k]; if (r >= 0 && land[r]) Ai[r] += Ai[k]; }
+    // troughs: deepest along the main ice streams, wide (a U, not a V), the floor uneven (scoured hollows)
+    const nz = noise3(((opts.seed ?? 1) ^ 0x1ce) >>> 0), C = (opts.k ?? 400) * E * Math.sqrt(g);
+    for (let k = 0; k < N; k++) if (land[k] && ice[k] > 0.05) cut[k] = C * ice[k] * Math.pow(Ai[k] / 1e4, 0.4) * (0.7 + 0.9 * (nz(gr.xyz[k * 3], gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], 12, 3) + 0.35));
+    const wide = Float32Array.from(cut);
+    for (let k = 0; k < N; k++) {
+      if (!land[k]) continue;
+      let s = 0, n = 0; neighbours(gr, k, (q) => { if (land[q]) { s += cut[q]; n++; } });
+      if (n) wide[k] = Math.max(cut[k], (0.7 * s) / n);
+    }
+    // downstream first: below the sea only where a main ice stream cuts through high ground to it (a
+    // fjord); low ground under the ice is scoured into hollows (lakes) but stays land; inland, a basin
+    const z0 = Float32Array.from(z), high = new Uint8Array(N);
+    for (let k = 0; k < N; k++) if (land[k]) { let m = z0[k]; neighbours(gr, k, (q) => { if (z0[q] > m) m = z0[q]; }); high[k] = z0[k] > 250 || m > 500 ? 1 : 0; }
+    let fjords = 0;
+    for (let o = 0; o < no; o++) {
+      const k = order[o], r = recv[k], c = Math.min(wide[k], 2000);
+      if (c <= 0) continue;
+      const open = (r < 0 || !land[r] || z[r] <= 0) && high[k] && Ai[k] > 2e4;
+      const h = z[k] - c;
+      // (where it cannot reach the sea: at most 60 % of the ground's height, and never below 2 m)
+      const nh = open ? Math.max(h, -0.8 * c) : Math.max(h, 0.4 * z0[k], Math.min(z0[k], 2));
+      if (nh <= 0 && z[k] > 0) fjords += area[k];
+      cut[k] = z[k] - nh; z[k] = nh;
+    }
+    let deepest = 0; for (let k = 0; k < N; k++) if (cut[k] > deepest) deepest = cut[k];
+    return { ice, cut, area: glaciated, fjords, deepest };
+  }
+
   /*
    * Rivers carving the land, and what they carry away (the stream-power law, solved implicitly as in
    * Braun & Willett 2013, so a few long steps stay stable):
@@ -285,24 +380,10 @@
         for (let di = -1; di <= 1; di++) if (di || dj) f(jj * W + ((i + di + W) % W), di, dj, j);
       }
     };
-    const distKm = (di, dj, j) => gr.dx * kmDeg * Math.hypot(di * Math.max(0.02, gr.cosl[j]), dj);
 
     // where the water goes: flood the land up from the coast
-    const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), dist = new Float32Array(N), done = new Uint8Array(N), order = new Int32Array(N);
-    const spill = new Float32Array(N);                                     // the height water must rise to, to get out
-    let no = 0;
-    const q = heap(fill);
-    for (let k = 0; k < N; k++) if (!land[k]) { done[k] = 1; let coast = false; nb(k, (n) => { if (land[n]) coast = true; }); if (coast) { fill[k] = 0; q.push(k); } }
-    if (!q.size) return { cut, laid, mouths: 0, mouthList: [], eroded: 0, delta: 0, basins: 0, deltaArea: 0, estuaryArea: 0, deepest: 0, recv, discharge: new Float32Array(N) };
-    while (q.size) {
-      const c = q.pop();
-      if (land[c]) order[no++] = c;
-      nb(c, (n, di, dj, j) => {
-        if (done[n]) return;
-        done[n] = 1; fill[n] = Math.max(zr[n], fill[c] + 1e-3); recv[n] = c; dist[n] = distKm(di, dj, j); q.push(n);
-        spill[n] = Math.max(z[n], land[c] ? spill[c] : 0);
-      });
-    }
+    const { fill, recv, dist, spill, order, no } = drain(gr, z, land, zr, kmDeg);
+    if (!no) return { cut, laid, mouths: 0, mouthList: [], eroded: 0, delta: 0, basins: 0, deltaArea: 0, estuaryArea: 0, deepest: 0, recv, discharge: new Float32Array(N) };
     // basins: hollows deeper than the unevenness. Whether one overflows depends on its rain against
     // what its lake can evaporate: in a dry belt its water stays (an endorheic basin, its rim uncut), in
     // a wet one it spills over the rim and on to the sea (and the river cuts the rim down)
@@ -695,6 +776,8 @@
    */
   function carveMap(map, opts = {}) {
     const s = map.carving || {}, wt = opts.water;
+    // glaciers first (their troughs, basins and fjords), then the rivers in what they left
+    map.glaciers = wt ? Object.assign(glaciate(map.grid, map.z, { water: wt, iceAge: opts.iceAge ?? s.iceAge, erosion: s.erosion, gravity: map.planet.gravity, radiusKm: map.planet.radiusKm, seed: s.seed, k: opts.glacierK }), { iceAge: opts.iceAge ?? s.iceAge ?? 6 }) : null;
     const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides });
     for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); });
     map.rivers = riversOf(carved, wt ? 'climate' : 'latitude');
@@ -704,7 +787,7 @@
   /* Sample a built map at [lat, lon] (nearest cell). */
   const sample = (map, la, lo) => map.z[cellOf(map.grid, la, lo)];
 
-  const api = { build, carve, carveMap, tidalRange, planetTides, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
+  const api = { build, carve, carveMap, glaciate, tidalRange, planetTides, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.worldmap = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

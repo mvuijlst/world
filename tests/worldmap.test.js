@@ -151,3 +151,28 @@ test('tides: from the moon, star, size and gravity; small tides build deltas, la
   assert.ok(small.r.recv[from] >= 0 && small.z[small.r.recv[from]] <= 3, 'the mouth’s land cell drains to the sea');
   assert.ok(small.r.discharge[from] > 100 && Math.abs(small.r.mouthList[0].discharge - small.r.discharge[from]) < 1e-6 * small.r.discharge[from] + 1e-3);
 });
+
+test('glaciers: troughs where it is cold and snowy, fjords only where the sea reaches, none where it is warm', () => {
+  // a mountain island at 65° N on a 1° grid, 2.5 km high, a shelf round it
+  const gr = M.makeGrid(360), base = new Float32Array(gr.N).fill(-3000), c = S.vec([65, 0]);
+  const dist = (k) => Math.acos(Math.max(-1, Math.min(1, gr.xyz[k * 3] * c[0] + gr.xyz[k * 3 + 1] * c[1] + gr.xyz[k * 3 + 2] * c[2]))) * 180 / Math.PI;
+  for (let k = 0; k < gr.N; k++) { const d = dist(k); if (d < 8) base[k] = 30 + 2500 * (1 - d / 8); else if (d < 10) base[k] = -100; }
+  const water = (tw, p) => ({ Tw: new Float32Array(gr.N).fill(tw), P: new Float32Array(gr.N).fill(p) });
+  const cold = Float32Array.from(base), r = M.glaciate(gr, cold, { water: water(4, 1200), iceAge: 6, seed: 2 });
+  assert.ok(r.area > 0 && r.deepest > 300, `glaciated ${r.area} km², troughs ${r.deepest} m`);
+  assert.ok(r.fjords > 0, 'the ice cut below the sea at the coast');
+  // every cell that went below the sea is joined to it through other such cells
+  const sea = (k) => cold[k] <= 0;
+  const seen = new Uint8Array(gr.N), stack = [];
+  for (let k = 0; k < gr.N; k++) if (base[k] <= 0) { seen[k] = 1; stack.push(k); }
+  while (stack.length) {
+    const k = stack.pop(), j = Math.floor(k / gr.W), i = k % gr.W;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const jj = j + dj; if (jj < 0 || jj >= gr.H) continue; const q = jj * gr.W + ((i + di + gr.W) % gr.W); if (!seen[q] && sea(q)) { seen[q] = 1; stack.push(q); } }
+  }
+  for (let k = 0; k < gr.N; k++) if (sea(k)) assert.ok(seen[k], 'no inland sea');
+  // warm, no ice ages: no ice; cold but a polar desert: ice that barely erodes
+  const warm = Float32Array.from(base), rw = M.glaciate(gr, warm, { water: water(18, 1200), iceAge: 0, seed: 2 });
+  assert.equal(rw.area, 0); assert.deepEqual(warm, base);
+  const dry = Float32Array.from(base), rd = M.glaciate(gr, dry, { water: water(-5, 30), iceAge: 6, seed: 2 });
+  assert.ok(rd.area > 0 && rd.deepest < r.deepest / 3, `polar desert ice cuts ${rd.deepest} m vs ${r.deepest} m`);
+});

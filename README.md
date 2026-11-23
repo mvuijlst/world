@@ -203,6 +203,13 @@ following Worldbuilder's Log 20–26:
   volcanoes), at **Erosion ×** Earth's rate, faster where it rains (the equator and the fronts between
   the planet's circulation cells), slower in the dry belts and near the poles. The latitude stands in for
   the climate, which is worked out from the finished map, and is where a feature is today.
+- **Glaciers carve** first (`glaciate` in `js/worldmap.js`): ice lies where the warmest season is
+  below freezing, or was in the ice ages (**Ice ages, °C** colder than now, Earth's last about 6 °C,
+  more towards the poles) with snow enough to feed it. It flows downhill as water does and erodes
+  where heavy snow makes it slide (wet ranges: Norway, Patagonia, Alaska), barely where it is frozen to
+  its bed (polar deserts): wide troughs, deepest along the main ice streams, with scoured hollows that
+  become lakes. Where a main ice stream cuts through high ground to the coast it digs below the sea, a
+  fjord; low ground under the ice is scoured but stays land, and inland nothing sinks below the sea.
 - **Rivers carve** (`carve` and `carveMap` in `js/worldmap.js`): the map is built, its climate worked
   out (Climate step), and the water each cell sheds after evaporation (`water` in `js/biomes.js`, as
   for the rivers) drains to the lowest way out (a priority flood from the sea), gathering on the way; each cell is cut down towards the one it drains to
@@ -301,12 +308,13 @@ image editor or a vector program:
   for a graticule (with the tropics and polar circles for the planet's tilt), the coast, the lakes and
   the rivers;
 - `9-waters.json`: every river mouth (where, delta or estuary, flow in m³/s, sediment, tidal range),
-  the planet's tides, and how the map was made (seed, erosion, rain), for labels or a closer map of a
+  the glaciers (area, fjords, deepest trough, ice-age cooling), the planet's tides, and how the map was made (seed, erosion, rain), for labels or a closer map of a
   region that agrees with this one;
 - `README.txt`: the scale (km a pixel), the heightmap's range and sea level, and the keys.
 
 In the app the built map also keeps, for a closer map later, the drainage of every land cell (where it
-drains to) and the water through it (m³/s), the tidal range on the sea, and how it was carved; the map
+drains to) and the water through it (m³/s), the tidal range on the sea, how glaciated each cell is and
+  what the ice cut, and how it was carved; the map
 is rebuilt the same from the saved world (every random choice is seeded).
 
 The coast and lake shores are traced from the map's cells (marching squares), smoothed and cut where
