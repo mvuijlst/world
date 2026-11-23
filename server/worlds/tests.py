@@ -114,6 +114,10 @@ class ApiTokenTests(TestCase):
         self.assertEqual(self.c.get('/api/worlds', **self.auth).json()['worlds'], [])
         self.assertEqual(self.c.get('/api/worlds/b1', **self.auth).status_code, 404)
 
+    def test_a_token_pasted_with_its_prefix_or_text_around_it(self):
+        for header in (f'Bearer Bearer {self.token}', f'Bearer {self.token}  Copy it now', f'Bearer token: {self.token}'):
+            self.assertEqual(self.c.get('/api/worlds', HTTP_AUTHORIZATION=header).status_code, 200, header)
+
     def test_bad_missing_and_revoked_tokens(self):
         self.assertEqual(self.c.get('/api/worlds', HTTP_AUTHORIZATION='Bearer ws_nope').status_code, 401)
         self.assertEqual(self.c.get('/api/worlds').status_code, 401)
@@ -150,7 +154,7 @@ class ApiTokenTests(TestCase):
         self.assertEqual(r.status_code, 200)
         shown = [str(m) for m in r.context['messages']]
         self.assertTrue(any('ws_' in m for m in shown), shown)
-        token = next(m for m in shown if 'ws_' in m).split(': ', 1)[1].split()[0]
+        token = next(m for m in shown if 'ws_' in m).rsplit(' ', 1)[1]
         self.assertTrue(ApiToken.objects.filter(digest=ApiToken.digest_of(token), owner=self.alice, name='Claude, test worlds').exists())
         self.assertEqual(Client().get('/api/worlds', HTTP_AUTHORIZATION=f'Bearer {token}').status_code, 200)
         listing = admin.get('/admin/worlds/apitoken/')

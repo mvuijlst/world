@@ -5,6 +5,7 @@ and the CSRF check is skipped for it: a browser never sends this header by itsel
 site cannot make it. A request with a bad token is refused outright rather than treated as
 anonymous, so a mistyped token is noticed. Without the header nothing changes.
 """
+import re
 from datetime import timedelta
 
 from django.http import JsonResponse
@@ -13,6 +14,8 @@ from django.utils import timezone
 from .models import ApiToken
 
 PATHS = ('/api/worlds',)
+# the token itself, wherever it sits in the header (a pasted 'Bearer ws_…', or the text around it)
+TOKEN = re.compile(r'ws_[A-Za-z0-9_-]{20,}')
 
 
 class ApiTokenMiddleware:
@@ -22,7 +25,8 @@ class ApiTokenMiddleware:
     def __call__(self, request):
         header = request.META.get('HTTP_AUTHORIZATION', '')
         if header[:7].lower() == 'bearer ' and request.path.startswith(PATHS):
-            token = header[7:].strip()
+            found = TOKEN.search(header)
+            token = found.group(0) if found else ''
             row = ApiToken.objects.select_related('owner').filter(digest=ApiToken.digest_of(token)).first() if token else None
             if row is None or not row.owner.is_active:
                 return JsonResponse({'error': 'That API token is not valid.'}, status=401)

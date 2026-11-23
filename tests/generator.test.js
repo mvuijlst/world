@@ -57,3 +57,20 @@ test('rolled worlds still sit in the habitable zone', () => {
     assert.ok(G.homeIsHabitable(w), `seed ${seed}`);
   }
 });
+
+test('the home world lands where it is about as warm as Earth, not mid-zone', () => {
+  for (const mass of [0.3, 0.6, 1, 1.3, 3]) {
+    const w = D.defaultWorld();
+    w.star.mass = mass;
+    w.star.age = 0.5;
+    const p = G.regenerateSystem(w, 4);
+    Object.assign(w.planet, p.planet);
+    w.system = p.system;
+    const T = C.computeAll(w).planet.temperatureC;
+    assert.ok(T >= 5 && T <= 22, `${mass} M☉: ${T} °C`);
+  }
+  for (let seed = 1; seed <= 20; seed++) {
+    const T = C.computeAll(G.randomWorld(seed)).planet.temperatureC;
+    assert.ok(T >= 5 && T <= 22, `rolled world ${seed}: ${T} °C`);
+  }
+});

@@ -28,4 +28,4 @@ class ApiTokenAdmin(admin.ModelAdmin):
             return
         row, token = ApiToken.issue(obj.owner, obj.name)
         obj.pk, obj.prefix, obj.digest, obj.created = row.pk, row.prefix, row.digest, row.created
-        messages.warning(request, f'The token for “{row.name}”: {token}  Copy it now: it is not kept and will not be shown again.')
+        messages.warning(request, f'Copy the token for “{row.name}” now; it is not kept and will not be shown again: {token}')

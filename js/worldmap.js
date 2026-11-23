@@ -229,8 +229,9 @@
     return ((moon + sun) / 1.46) * (R * R) / Math.max(0.05, o.gravity ?? 1);
   }
 
-  function tidalRange(gr, z, tideX = 1, radiusKm = 6371) {
-    const kmDeg = (Math.PI * radiusKm) / 180, deep = Uint8Array.from(z, (v) => (v < -200 ? 1 : 0));
+  function tidalRange(gr, z, tideX = 1, radiusKm = 6371, factor = 1) {
+    // (the shelf edge, 200 m on Earth, is shallower under stronger gravity, as every depth is: ÷ factor)
+    const kmDeg = (Math.PI * radiusKm) / 180, deep = Uint8Array.from(z, (v) => (v < -200 / factor ? 1 : 0));
     const d = distance(gr, deep).d, out = new Float32Array(gr.N);
     for (let k = 0; k < gr.N; k++) if (z[k] <= 0) out[k] = deep[k] ? 0.5 * tideX : tideX * (1 + 3 * smooth((d[k] * kmDeg) / 500));
     return out;
@@ -456,7 +457,7 @@
     // a delta cannot hold, go out over the shelf and down the slope.
     const tides = opts.tides, cellKm = gr.dx * kmDeg;
     let deltaArea = 0, delta = 0, estuaryArea = 0;
-    const shelf = -250, cellA = cellKm * cellKm, mouthList = [];
+    const shelf = -250 / (opts.factor ?? 1), cellA = cellKm * cellKm, mouthList = [];
     const big = [...mouths].sort((a, b) => b[1] - a[1]), biggest = big.length ? big[0][1] : 0;
     for (const [m, vol] of big) {
       const kl = mouthLand.get(m), tr = tides ? tides[m] : 1.5;
@@ -735,8 +736,8 @@
     }
 
     // 8. rivers cut valleys into it, and lay what they carry in hollows and in deltas
-    const tideX = Math.max(0, opts.tides ?? 1), tides = tidalRange(gr, z, tideX, radius);
-    const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, rough: 300 / f, seed, k: opts.carveK, gravity: g, tides });
+    const tideX = Math.max(0, opts.tides ?? 1), tides = tidalRange(gr, z, tideX, radius, f);
+    const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, rough: 300 / f, seed, k: opts.carveK, gravity: g, tides, factor: f });
 
     // 9. what was drawn on it
     for (const s of opts.strokes || []) stamp(gr, [s.lat, s.lon], s.r, (k, dd) => { z[k] += s.dz * smooth(1 - dd / s.r); });
@@ -778,7 +779,7 @@
     const s = map.carving || {}, wt = opts.water;
     // glaciers first (their troughs, basins and fjords), then the rivers in what they left
     map.glaciers = wt ? Object.assign(glaciate(map.grid, map.z, { water: wt, iceAge: opts.iceAge ?? s.iceAge, erosion: s.erosion, gravity: map.planet.gravity, radiusKm: map.planet.radiusKm, seed: s.seed, k: opts.glacierK }), { iceAge: opts.iceAge ?? s.iceAge ?? 6 }) : null;
-    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides });
+    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides, factor: map.planet.factor });
     for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); });
     map.rivers = riversOf(carved, wt ? 'climate' : 'latitude');
     return measure(map);

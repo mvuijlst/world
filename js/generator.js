@@ -15,6 +15,7 @@
   }
 
   const round = (x, d) => Math.round(x * 10 ** d) / 10 ** d;
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 
   /*
    * Lay out the planetary system around the world's current star: orbit 1 and
@@ -33,8 +34,12 @@
     const nameFor = (kind) => (pool[kind] && pool[kind].length ? pool[kind].shift() : kind === 'belt' ? `${name()} Belt` : name());
 
     // Orbits: pick spacing, then nudge the first orbit so one lands mid-HZ.
-    const hzMid = (st.hzIn + st.hzOut) / 2;
+    // aim for the orbit where this planet (its albedo and greenhouse) is about as warm as Earth,
+    // 15 °C: Earth-like sunlight, near the inner part of the zone (its middle is some 20 °C colder)
+    const T1 = C.surfaceTemperature(st.luminosity, Math.sqrt(st.luminosity), w.planet.albedo ?? 0.29, w.planet.greenhouse ?? 1).kelvin;
+    const hzMid = clamp(Math.sqrt(st.luminosity) * (T1 / 288) ** 2, st.hzIn * 1.04, st.hzOut * 0.96);
     const fits = (o) => o.a > st.hzIn * 1.03 && o.a < st.hzOut * 0.97 && !o.crowded && !o.insideLimit;
+    const nearest = (orbits) => orbits.filter(fits).sort((x, y) => Math.abs(x.a - hzMid) - Math.abs(y.a - hzMid))[0] || null;
     let sys = null, homeOrbit = null;
     for (let attempt = 0; attempt < 8 && !homeOrbit; attempt++) {
       w.system.spacing = round(U(0.22, 0.4), 2);
@@ -44,7 +49,7 @@
       w.system.firstOrbit = round(first, 3);
       sys = C.system(w.system, st);
       if (!sys.orbits.some(fits)) { w.system.firstOrbit = round(hzMid, 3); sys = C.system(w.system, st); }
-      homeOrbit = sys.orbits.find(fits) || null;
+      homeOrbit = nearest(sys.orbits);
     }
     if (!homeOrbit) { // a star too small or odd for the rules above: put the home world on orbit 1, mid-zone
       w.system.firstOrbit = Math.max(round(hzMid, 4), 1e-4);
