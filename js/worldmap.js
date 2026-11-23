@@ -192,12 +192,143 @@
     return land / all;
   }
 
+  /* A min-heap of cell indices keyed by an array of values. */
+  function heap(key) {
+    const a = [];
+    return {
+      get size() { return a.length; },
+      push(k) { let i = a.length; a.push(k); while (i > 0) { const p = (i - 1) >> 1; if (key[a[p]] <= key[k]) break; a[i] = a[p]; i = p; } a[i] = k; },
+      pop() {
+        const top = a[0], last = a.pop(), n = a.length;
+        if (n) {
+          let i = 0;
+          for (;;) { let c = 2 * i + 1; if (c >= n) break; if (c + 1 < n && key[a[c + 1]] < key[a[c]]) c++; if (key[a[c]] >= key[last]) break; a[i] = a[c]; i = c; }
+          a[i] = last;
+        }
+        return top;
+      },
+    };
+  }
+
+  /*
+   * Rivers carving the land, and what they carry away (the stream-power law, solved implicitly as in
+   * Braun & Willett 2013, so a few long steps stay stable):
+   *  - the water: every land cell drains to the lowest way out, found by flooding the land up from the
+   *    sea (with a little unevenness, so streams gather into valleys, as on the Rivers step); the rain
+   *    it gathers is the area upstream, weighted by how wet each cell is;
+   *  - the cutting: a cell is lowered towards the cell it drains to by F = K·√(wet area)/distance,
+   *    h ← (h + F·h_below) / (1 + F), downstream first, so big rivers cut down nearly to the sea
+   *    and headwaters and divides barely change; never below the cell below, never below the sea;
+   *  - the rock: what is cut goes downstream; hollows it reaches fill up with it (basin floors), and
+   *    what reaches the sea builds deltas on the shelf in front of the mouth, up to a few metres above
+   *    the sea; what the shelf cannot hold goes to the deep sea.
+   * gr: the grid; z: heights (changed in place). opts: radiusKm, erosion (× Earth's, 1), wet(lat)
+   * (rain, 1 on average), rough (m of unevenness for the routing), seed, steps (3), k (strength, 0.8).
+   * Returns {cut, laid} (m, per cell), {mouths}, the volumes (km³) and the deltas' new land (km²).
+   */
+  function carve(gr, z, opts = {}) {
+    const { W, H, N } = gr, R = opts.radiusKm ?? 6371, kmDeg = (Math.PI * R) / 180;
+    const E = Math.max(0, opts.erosion ?? 1), wet = opts.wet || (() => 1), steps = Math.max(1, opts.steps ?? 3);
+    // F = K·(A / 10⁴ km²)^0.6 · (100 km / distance): calibrated by eye and in the tests
+    const K = ((opts.k ?? 0.8) * E) / steps, mExp = 0.6;
+    const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0));
+    const cut = new Float32Array(N), laid = new Float32Array(N);
+    const area = new Float32Array(N), wA = new Float32Array(N);
+    for (let k = 0; k < N; k++) { const j = Math.floor(k / W); area[k] = (gr.dx * kmDeg) ** 2 * Math.max(0.02, gr.cosl[j]); wA[k] = area[k] * wet(gr.lat[j]); }
+    const nz = noise3(((opts.seed ?? 1) ^ 0x71ae) >>> 0), rough = opts.rough ?? 300;
+    const zr = Float32Array.from(z, (v, k) => (v > 0 ? v + rough * (1 + nz(gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], gr.xyz[k * 3], 7, 5)) : v));
+    const nb = (k, f) => {
+      const j = Math.floor(k / W), i = k - j * W;
+      for (let dj = -1; dj <= 1; dj++) {
+        const jj = j + dj; if (jj < 0 || jj >= H) continue;
+        for (let di = -1; di <= 1; di++) if (di || dj) f(jj * W + ((i + di + W) % W), di, dj, j);
+      }
+    };
+    const distKm = (di, dj, j) => gr.dx * kmDeg * Math.hypot(di * Math.max(0.02, gr.cosl[j]), dj);
+
+    // where the water goes: flood the land up from the coast
+    const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), dist = new Float32Array(N), done = new Uint8Array(N), order = new Int32Array(N);
+    let no = 0;
+    const q = heap(fill);
+    for (let k = 0; k < N; k++) if (!land[k]) { done[k] = 1; let coast = false; nb(k, (n) => { if (land[n]) coast = true; }); if (coast) { fill[k] = 0; q.push(k); } }
+    if (!q.size) return { cut, laid, mouths: 0, eroded: 0, delta: 0, basins: 0, deltaArea: 0, deepest: 0 };
+    while (q.size) {
+      const c = q.pop();
+      if (land[c]) order[no++] = c;
+      nb(c, (n, di, dj, j) => {
+        if (done[n]) return;
+        done[n] = 1; fill[n] = Math.max(zr[n], fill[c] + 1e-3); recv[n] = c; dist[n] = distKm(di, dj, j); q.push(n);
+      });
+    }
+    // the rain gathered on the way down (upstream cells first)
+    const A = Float64Array.from(wA);
+    for (let o = no - 1; o >= 0; o--) { const k = order[o], r = recv[k]; if (r >= 0 && land[r]) A[r] += A[k]; }
+
+    // the cutting, downstream first; hollows (a cell whose way out is higher) are left alone
+    const z0 = Float32Array.from(z);
+    for (let s = 0; s < steps; s++) {
+      for (let o = 0; o < no; o++) {
+        const k = order[o], r = recv[k], hr = land[r] ? z[r] : 0;
+        if (hr >= z[k]) continue;
+        const F = (K * Math.pow(A[k] / 1e4, mExp) * 100) / Math.max(1e-3, dist[k]);
+        z[k] = Math.max(hr, (z[k] + F * hr) / (1 + F));
+      }
+    }
+    // valleys have sides: the ground beside a deep channel slopes down to it (half its depth, a cell
+    // either side); land stays land
+    for (let k = 0; k < N; k++) if (land[k]) cut[k] = z0[k] - z[k];
+    const side = new Float32Array(N);
+    for (let k = 0; k < N; k++) {
+      if (!land[k]) continue;
+      let s = 0, n = 0; nb(k, (q) => { if (land[q]) { s += cut[q]; n++; } });
+      side[k] = n ? (0.5 * s) / n : 0;
+    }
+    for (let k = 0; k < N; k++) if (land[k] && side[k] > cut[k]) { cut[k] = side[k]; z[k] = Math.max(z0[k] - cut[k], Math.min(z0[k], 1)); cut[k] = z0[k] - z[k]; }
+
+    // the rock goes downstream: hollows on the way fill up with it, the rest reaches the sea
+    const Qs = new Float64Array(N), mouths = new Map();
+    let eroded = 0, basins = 0;
+    for (let o = no - 1; o >= 0; o--) {
+      const k = order[o], r = recv[k];
+      Qs[k] += cut[k] * area[k] / 1000; eroded += cut[k] * area[k] / 1000;      // km³
+      const room = r >= 0 && land[r] && z[r] > z[k] ? z[r] - z[k] : 0;          // a hollow: fill it to its lip
+      if (room > 0 && Qs[k] > 0) { const d = Math.min(room, (Qs[k] * 1000) / area[k]); z[k] += d; laid[k] += d; Qs[k] -= (d * area[k]) / 1000; basins += (d * area[k]) / 1000; }
+      if (land[r]) Qs[r] += Qs[k]; else mouths.set(r, (mouths.get(r) || 0) + Qs[k]);
+    }
+
+    let deltaArea = 0;
+    // deltas: where a big river meets the shelf, the biggest first: a fan of new land a few metres
+    // above the sea in front of the mouth, as big as its load allows (a few cells for the largest);
+    // small rivers' loads, and what a delta cannot hold, go out over the shelf and down the slope
+    let delta = 0;
+    const shelf = -250, top = 3, cellA = (gr.dx * kmDeg) ** 2;
+    const big = [...mouths].sort((a, b) => b[1] - a[1]), biggest = big.length ? big[0][1] : 0;
+    for (const [m, vol] of big) {
+      if (vol < biggest * 0.08) break;
+      let left = vol * 0.5, cells = clamp(Math.round(Math.sqrt(vol / (cellA * 2))), 1, 30);
+      const seen = new Set([m]), front = [m];
+      for (let s = 0; s < front.length && left > 0 && cells > 0; s++) {
+        const k = front[s];
+        if (z[k] > shelf && z[k] < top) {
+          const need = ((top - z[k]) * area[k]) / 1000, d = need <= left ? top - z[k] : (left * 1000) / area[k];
+          const wasSea = z[k] <= 0;
+          z[k] += d; laid[k] += d; left -= (d * area[k]) / 1000; delta += (d * area[k]) / 1000; cells--;
+          if (wasSea && z[k] > 0) deltaArea += area[k];
+        }
+        if (front.length < 400) nb(k, (n) => { if (!seen.has(n) && !land[n] && z[n] > shelf && z[n] < top) { seen.add(n); front.push(n); } });
+      }
+    }
+    let deepest = 0; for (let k = 0; k < N; k++) if (cut[k] > deepest) deepest = cut[k];
+    return { cut, laid, mouths: mouths.size, eroded, delta, basins, deltaArea, deepest };
+  }
+
   /*
    * Build the map. P: the world's plates {plates, features, start}. opts: res (cells round, 720),
    * land (share of the surface above the sea, 0-1; by default crust × 29/41 as on Earth), shelf
    * (width factor), relief (height factor), seed, strokes [{lat, lon, r, dz}], age (0, the present),
    * gravity (Earth g, 1), scaling (1-2, 2), radiusKm (6371), ridgeDepth (m, 2600), erosion (how
-   * fast the land wears down, × Earth's, 1), cells (circulation cells per hemisphere, 3).
+   * fast the land wears down, × Earth's, 1), cells (circulation cells per hemisphere, 3), carve
+   * (rivers cut valleys and build deltas, true).
    */
   function build(P, opts = {}) {
     const W = Math.max(90, Math.round((opts.res ?? 720) / 2) * 2), gr = makeGrid(W), { N } = gr;
@@ -422,10 +553,13 @@
       }
     }
 
-    // 8. what was drawn on it
+    // 8. rivers cut valleys into it, and lay what they carry in hollows and in deltas
+    const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, rough: 300 / f, seed, k: opts.carveK });
+
+    // 9. what was drawn on it
     for (const s of opts.strokes || []) stamp(gr, [s.lat, s.lon], s.r, (k, dd) => { z[k] += s.dz * smooth(1 - dd / s.r); });
 
-    // 9. plate boundaries (Log 20): convergent near a trench, divergent on a young ridge, else transform
+    // 10. plate boundaries (Log 20): convergent near a trench, divergent on a young ridge, else transform
     const boundary = new Uint8Array(N);
     const nearTrench = new Uint8Array(N), nearRidge = new Uint8Array(N);
     for (const t of trenches) stamp(gr, S.latLon(t.v), Math.max(2 * gr.dx, km(280)), (k) => { nearTrench[k] = 1; });
@@ -442,13 +576,14 @@
       W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr,
       land: shareAbove(gr, z, 0), crust: crustShare, target, sea,
       highest: { m: hiZ, at: ll(hiK) }, deepest: { m: loZ, at: ll(loK) }, cells: { land: landCells }, at,
+      rivers: carved && { cut: carved.cut, laid: carved.laid, eroded: carved.eroded, delta: carved.delta, basins: carved.basins, mouths: carved.mouths, deltaArea: carved.deltaArea, deepest: carved.deepest },
     };
   }
 
   /* Sample a built map at [lat, lon] (nearest cell). */
   const sample = (map, la, lo) => map.z[cellOf(map.grid, la, lo)];
 
-  const api = { build, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
+  const api = { build, carve, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.worldmap = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

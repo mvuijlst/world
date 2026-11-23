@@ -135,7 +135,8 @@
     // The map's slopes are smooth, and water on an even slope runs down in parallel lines that never
     // meet; real land is uneven at every scale and its streams gather into valleys. So the water is
     // routed over the heights plus a gentle unevenness (scaled like the map's relief).
-    const rough = (opts.rough ?? 450) / (map.planet?.factor ?? 1);
+    // (a map carved by its rivers already has its valleys: the water need only find them)
+    const rough = (opts.rough ?? (map.rivers ? 120 : 450)) / (map.planet?.factor ?? 1);
     const zr = Float32Array.from(z, (v, k) => (v > 0 ? v + rough * (1 + noise(gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], gr.xyz[k * 3], 7, 5)) : v));
     const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), done = new Uint8Array(N), order = new Int32Array(N);
     let no = 0;

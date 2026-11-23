@@ -23,7 +23,7 @@
 
   // the map of a world, kept while nothing it depends on changes
   let cached = null;
-  const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, w.map.erosion, d.planet.gravity, d.planet.radiusKm, d.planet.cells.count, w.tectonics.scaling, w.tectonics.ridgeDepth]);
+  const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, w.map.erosion, w.map.carve, w.planet.pressure >= WET, d.planet.gravity, d.planet.radiusKm, d.planet.cells.count, w.tectonics.scaling, w.tectonics.ridgeDepth]);
   /* The map of a world (built if need be, synchronously): shared with the Climate step. */
   WS.currentMap = (w, d) => {
     if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
@@ -37,7 +37,9 @@
     res: w.map.res || 720, land: (w.map.land ?? w.population.land) / 100, shelf: w.map.shelf, relief: w.map.relief, seed: w.plates.seed,
     gravity: d.planet.gravity, scaling: w.tectonics.scaling, radiusKm: d.planet.radiusKm, ridgeDepth: w.tectonics.ridgeDepth,
     erosion: w.map.erosion ?? 1, cells: d.planet.cells.count,
+    carve: w.map.carve !== false && w.planet.pressure >= WET,          // rivers need liquid water
   });
+  const WET = 0.0061;                                                     // atm: below it water cannot be liquid
 
   // ── mountain range profiles: the workbook's TECTONICS sheet, kept as a reference ──
   function suggested(type, gravity, scaling) {
@@ -330,6 +332,8 @@
           return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label, info(tip)), i);
         };
         const fg = ctx.d.planet.gravity ** w.tectonics.scaling;
+        const carveBox = h('input', { type: 'checkbox', checked: w.map.carve !== false, disabled: w.planet.pressure < WET });
+        carveBox.addEventListener('change', () => ctx.set('map.carve', carveBox.checked));
         const res = h('select', { class: 'sel', 'aria-label': 'Detail' }, [[360, 'Coarse · 360'], [720, 'Fine · 720'], [1440, 'Finest · 1440 (slow)']].map(([v, t]) => h('option', { value: v, selected: (w.map.res || 720) === v }, t)));
         res.addEventListener('change', () => ctx.set('map.res', Number(res.value)));
         replace(setHost,
@@ -337,10 +341,11 @@
             num('map.land', 'Land, % of surface', 1, 95, 0.5, 'How much of the surface stands above the sea. By default the Population step’s land share; the crust can only hold so much.', +(w.map.land ?? w.population.land).toFixed(1)),
             num('map.shelf', 'Shelf width ×', 0.2, 4, 0.1, 'Continental shelves: about 150 km wide on quiet coasts, 40 km where a plate subducts, on Earth.', w.map.shelf),
             num('map.relief', 'Relief ×', 0.2, 3, 0.1, 'Mountain heights on top of what gravity allows.', w.map.relief),
-            num('map.erosion', 'Erosion ×', 0.2, 4, 0.1, `How fast the land wears down once it stops rising, × Earth’s: mountain belts and the raised ground beneath them, flood basalts, volcanoes. Faster where it rains (the equator, the fronts between this planet’s ${ctx.d.planet.cells.count} circulation cells), slower in the dry belts and near the poles. Earth = 1.`, w.map.erosion ?? 1),
+            num('map.erosion', 'Erosion ×', 0.2, 4, 0.1, `How fast the land wears down once it stops rising, × Earth’s: mountain belts and the raised ground beneath them, flood basalts, volcanoes. Faster where it rains (the equator, the fronts between this planet’s ${ctx.d.planet.cells.count} circulation cells), slower in the dry belts and near the poles; how deep the rivers cut follows it too. Earth = 1.`, w.map.erosion ?? 1),
             num('tectonics.scaling', 'Gravity scaling', 1, 2, 0.05, 'How strongly heights and widths shrink as gravity grows: they are divided by g^scaling (Artifexian: 1–2). At 1 g it makes no difference.', w.tectonics.scaling),
             num('tectonics.ridgeDepth', 'Ridge depth, m', 0, 6000, 50, 'Depth of the mid-ocean ridge crests below sea level; the ocean floor deepens from there as it ages and cools. On Earth about 2,600 m; stay within about ±500 m of that.', w.tectonics.ridgeDepth),
             h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Detail'), res)),
+          h('label', { class: 'check', style: { marginTop: '10px' } }, carveBox, 'Rivers carve valleys and build deltas', info(w.planet.pressure < WET ? 'This planet’s air is too thin for liquid water: no rivers.' : 'Rivers cut down into the land, deepest where the most rain gathers (big rivers through uplands and mountains), and carry the rock off: it fills hollows into flat basin floors and builds deltas at the mouths of the largest rivers. How deep they cut follows Erosion ×.')),
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             w.map.land != null ? h('button', { class: 'btn small', type: 'button', onclick: () => ctx.set('map.land', null) }, `Follow Population (${fmt.num(w.population.land, 1)} %)`) : null,
             auto ? h('button', { class: 'btn small', type: 'button', onclick: () => ctx.set('map.land', +auto.toFixed(1)) }, `Earth-like for this crust: ${fmt.num(auto, 1)} %`) : null),
@@ -356,7 +361,8 @@
             ['Highest point', `${fmt.int(map.highest.m)} m`, `${fmt.num(map.highest.at[0], 1)}°, ${fmt.num(map.highest.at[1], 1)}°`],
             ['Deepest point', `${fmt.int(-map.deepest.m)} m`, `${fmt.num(map.deepest.at[0], 1)}°, ${fmt.num(map.deepest.at[1], 1)}°`],
             ['Mean land height', `${fmt.int(land ? sum / land : 0)} m`, 'Earth ≈ 840 m'],
-            ['Plates', `${new Set(map.plate).size}`, 'with their boundaries']]
+            ['Plates', `${new Set(map.plate).size}`, 'with their boundaries'],
+            ...(map.rivers ? [['Carved by rivers', `${fmt.num(map.rivers.eroded / 1e6, 2)} M km³`, `deepest valley ${fmt.int(map.rivers.deepest)} m · deltas ${fmt.int(map.rivers.deltaArea)} km²`]] : [])]
             .map(([l, v, sub]) => h('div', { class: 'readout' }, h('div', { class: 'lbl' }, l), h('div', { class: 'val' }, v), h('div', { class: 'sub' }, sub)))),
           h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             h('button', { class: 'btn small', type: 'button', onclick: () => { ctx.mutate((w) => { w.population.land = +(map.land * 100).toFixed(1); if (w.map.land != null) w.map.land = +(map.land * 100).toFixed(1); }); toast(`Population land set to ${fmt.num(map.land * 100, 1)} %`); } }, `Use ${fmt.num(map.land * 100, 1)} % as land on Population`)));

@@ -34,7 +34,7 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 07 | Orrery | a navigable 3D model of the system: Kepler orbits in motion, habitable zone, frost line, debris disk |
 | 08 | Vista | the sky and land from any latitude on any world, at any time: sky colour, star, moon phases, planets, stars at night, fields and plants |
 | 09 | Plates | the supercontinent and its breakup, as in Worldbuilder's Log 10–19: cratons, crust and rifts on a globe, splitting along rifts, rotation poles through time, plate speeds, new ocean floor by age, subduction zones and island arcs, a second rifting event and splitting comoving plates, microcontinents, arc and continent collisions, mountain belts, hotspots and LIPs, a land estimate for Population, GPlates export/import; **Advance** carries a finished history on, 25–500 Myr at a time (Wilson cycle, break up, drift apart, wander, come together), with undo, until the world looks right |
-| 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity (with the gravity scaling factor) and radius, ridge depth, erosion; map or globe, a brush to raise and lower, colour and 16-bit height PNGs, and the drawing kit; the workbook's `TECTONICS` sheet as a reference (range cross-sections, erosion, max peak, ocean depth by crust age) |
+| 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity (with the gravity scaling factor) and radius, ridge depth, erosion, with valleys carved by rivers and deltas at their mouths; map or globe, a brush to raise and lower, colour and 16-bit height PNGs, and the drawing kit; the workbook's `TECTONICS` sheet as a reference (range cross-sections, erosion, max peak, ocean depth by crust age) |
 | 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
 | 12 | Rivers & biomes | from the map and its climate: rivers down to the sea, fresh and salt lakes, basins that drain inland, and biomes; map or globe, a PNG of the map and the rivers as SVG |
 | 13 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
@@ -203,6 +203,14 @@ following Worldbuilder's Log 20–26:
   volcanoes), at **Erosion ×** Earth's rate, faster where it rains (the equator and the fronts between
   the planet's circulation cells), slower in the dry belts and near the poles. The latitude stands in for
   the climate, which is worked out from the finished map, and is where a feature is today.
+- **Rivers carve** (`carve` in `js/worldmap.js`): the water drains to the lowest way out (a priority
+  flood from the sea), gathering the rain on the way; each cell is cut down towards the one it drains to
+  by the stream-power law, solved implicitly (Braun & Willett 2013), so big rivers cut deep valleys
+  through uplands and mountain belts (to some 1.5 km at Erosion ×1) and divides barely change; valley
+  sides slope down to them. The rock goes downstream: hollows fill into flat basin floors, and the
+  largest rivers build deltas a few metres above the sea on the shelf in front of their mouths. Land
+  stays land; the Rivers step's rivers then run in the valleys. It can be switched off, and is off
+  where the air is too thin for liquid water.
 - **Islands** (Log 22): island arcs, and hotspot volcanoes that sink into seamounts as they age.
 - **Sea topography** (Log 26): the world's depth curve from its ridge depth (ridge + 350·√age, flattening
   on old floor), continental slopes, trenches and oceanic plateaus.

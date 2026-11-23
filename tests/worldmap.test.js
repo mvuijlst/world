@@ -84,3 +84,39 @@ test('erosion: faster erosion, lower land; an old belt no longer holds the groun
   const young = dryUnderBelt(0), old = dryUnderBelt(990);   // (active: when it stopped rising, Ma)
   assert.ok(young > old + 0.15, `young belt ${young} dry vs old ${old}`);
 });
+
+test('rivers carve: big rivers cut deep, divides barely change, land stays land, deltas at big mouths only', () => {
+  // a broad dome of an island, 2.5 km high in the middle, on a 1° grid
+  const gr = M.makeGrid(360), z = new Float32Array(gr.N).fill(-3000);
+  const c = S.vec([0, 0]);
+  for (let k = 0; k < gr.N; k++) {
+    const d = Math.acos(Math.max(-1, Math.min(1, gr.xyz[k * 3] * c[0] + gr.xyz[k * 3 + 1] * c[1] + gr.xyz[k * 3 + 2] * c[2]))) * 180 / Math.PI;
+    if (d < 25) z[k] = 20 + 2500 * (1 - d / 25);
+    else if (d < 28) z[k] = -100;                                     // a shelf round it
+  }
+  const z0 = Float32Array.from(z);
+  const r = M.carve(gr, z, { seed: 3 });
+  const cuts = [];
+  for (let k = 0; k < gr.N; k++) if (z0[k] > 0) { cuts.push(r.cut[k]); assert.ok(z[k] > 0, 'land stays land'); assert.ok(z[k] <= z0[k] + r.laid[k] + 1e-3); }
+  cuts.sort((a, b) => a - b);
+  const median = cuts[cuts.length >> 1], top = cuts[Math.floor(cuts.length * 0.99)];
+  assert.ok(top > 300 && top > 4 * median, `valleys ${top} m deep vs ${median} m typical`);
+  assert.ok(r.eroded > 0 && r.delta > 0 && r.delta < r.eroded, `${r.delta} of ${r.eroded} km³ in deltas`);
+  let coast = 0, built = 0;
+  for (let k = 0; k < gr.N; k++) if (z0[k] === -100) { coast++; if (r.laid[k] > 0) built++; }
+  assert.ok(built > 0 && built < coast * 0.15, `deltas on ${built} of ${coast} shelf cells`);
+  // the same input, the same valleys; more erosion, deeper
+  const again = Float32Array.from(z0), more = Float32Array.from(z0);
+  M.carve(gr, again, { seed: 3 });
+  assert.deepEqual(again, z);
+  const rm = M.carve(gr, more, { seed: 3, erosion: 3 });
+  assert.ok(rm.eroded > 2 * r.eroded);
+});
+
+test('a built map is carved by its rivers unless told not to', () => {
+  const w = G.makeWorld({ seed: 7, plates: 4 });
+  const carved = M.build(w, { res: 180 }), plain = M.build(w, { res: 180, carve: false });
+  assert.ok(carved.rivers && carved.rivers.eroded > 0 && carved.rivers.deepest > 100);
+  assert.equal(plain.rivers, null);
+  assert.ok(Math.abs(carved.land - plain.land) < 0.01, `land ${carved.land} vs ${plain.land}`);
+});
