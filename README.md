@@ -18,6 +18,9 @@ python tools/serve.py
 
 then open <http://127.0.0.1:5178>. `tools/serve.py` disables caching, so edits show up on reload.
 Opening `index.html` straight from disk also works (it uses classic scripts, not ES modules).
+Served over HTTP, the World map, its climate and the rivers are built in a background worker
+(`js/mapworker.js`), so the page stays responsive while they work; from disk, where browsers allow no
+workers, they are built in the page, which then pauses for a few seconds.
 The only network use is Google Fonts; without it the UI falls back to system fonts.
 
 ## The build sequence

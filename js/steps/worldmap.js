@@ -26,14 +26,54 @@
   const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, w.map.erosion, w.map.carve, w.planet.pressure >= WET, d.planet.gravity, d.planet.radiusKm, d.planet.cells.count, w.tectonics.scaling, w.tectonics.ridgeDepth,
     // (the rivers carve with the climate's water: what the climate depends on)
     w.map.carve !== false ? [WS.climate.planetOf(w, d), WS.biomes.planetOf(w, d), +tidesOf(w, d).toFixed(3), w.map.iceAge ?? 6] : null]);
-  /* The map of a world (built if need be, synchronously): shared with the Climate step. */
-  WS.currentMap = (w, d) => {
+  /*
+   * The map of a world, shared with the Climate and Rivers steps. With {peek: true}, only one already
+   * built (or null): what the lamps and checks use, so that they never start a build. Without, it is
+   * built here and now if need be, on the page's thread (a fallback: the steps wait for mapReady).
+   */
+  WS.currentMap = (w, d, opts = {}) => {
     if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
     const key = keyOf(w, d);
     if (cached && cached.key === key && cached.strokes === w.map.strokes.length) return cached;
+    if (opts.peek) return null;
     const map = buildMap(w, d);
     cached = { key, map, strokes: w.map.strokes.length };
     return cached;
+  };
+  /*
+   * The map of a world when it is ready (a promise of what currentMap gives): built in a worker, so the
+   * page stays responsive meanwhile, or (where workers cannot run) in the page after a moment. A build
+   * already under way for the same world and settings is shared; a newer one replaces it.
+   */
+  let worker = null, building = null, nextId = 1;
+  const pending = new Map();
+  try {
+    if (location.protocol !== 'file:' && typeof Worker !== 'undefined') {
+      worker = new Worker('js/mapworker.js');
+      worker.onmessage = (e) => { const p = pending.get(e.data.id); if (p) { pending.delete(e.data.id); e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.map); } };
+      worker.onerror = () => { worker = null; for (const p of pending.values()) p.reject(new Error('worker failed')); pending.clear(); };
+    }
+  } catch { worker = null; }
+  WS.mapReady = (w, d) => {
+    if (!w.plates.features.some((f) => f.kind === 'crust')) return Promise.resolve(null);
+    const key = keyOf(w, d), strokes = w.map.strokes.length;
+    if (cached && cached.key === key && cached.strokes === strokes) return Promise.resolve(cached);
+    if (building && building.key === key && building.strokes === strokes) return building.promise;
+    const inPage = () => new Promise((resolve) => setTimeout(() => resolve(buildMap(w, d)), 30));
+    const viaWorker = () => new Promise((resolve, reject) => {
+      const id = nextId++, s = settingsOf(w, d);
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, plates: w.plates, settings: s, strokes: w.map.strokes, carve: s.carve, iceAge: w.map.iceAge ?? 6, climPlanet: WS.climate.planetOf(w, d), bioPlanet: WS.biomes.planetOf(w, d) });
+    }).catch(() => buildMap(w, d));                                // (a worker that fails: build in the page)
+    const me = { key, strokes };
+    me.promise = (worker ? viaWorker() : inPage()).then((map) => {
+      if (building === me) building = null;
+      // a newer build may have finished first: keep whichever matches the world as it is now
+      if (!(cached && cached.key === key && cached.strokes === strokes)) cached = { key, map, strokes };
+      return cached.key === key ? cached : { key, map, strokes };
+    });
+    building = me;
+    return me.promise;
   };
   /*
    * Build the map: the land from the plates' history, then (unless switched off) its climate, and the
@@ -42,7 +82,11 @@
    */
   function buildMap(w, d) {
     const s = settingsOf(w, d);
-    if (!s.carve) return M.build(w.plates, { ...s, carve: false, strokes: w.map.strokes });
+    if (!s.carve) {
+      const plain = M.build(w.plates, { ...s, carve: false, strokes: w.map.strokes }), pl = WS.climate.planetOf(w, d);
+      plain.climate = { clim: WS.climate.build(plain, pl), pl, strokes: w.map.strokes.length };
+      return plain;
+    }
     const map = M.build(w.plates, { ...s, carve: false, strokes: [] });
     const pl = WS.climate.planetOf(w, d), clim = WS.climate.build(map, pl);
     M.carveMap(map, { water: WS.biomes.water(map, clim, WS.biomes.planetOf(w, d)), strokes: w.map.strokes, iceAge: w.map.iceAge ?? 6 });
@@ -192,16 +236,17 @@
         if (building) return false;
         building = true;
         hint.textContent = settingsOf(w, d).carve ? 'Building the map, its climate and its rivers…' : 'Building the map…';
-        setTimeout(() => {
-          const t0 = performance.now();
-          map = buildMap(w, d);
-          cached = { key, map, strokes: w.map.strokes.length };
+        const t0 = performance.now();
+        // (in a worker: the page stays responsive meanwhile)
+        WS.mapReady(w, d).then((c) => {
           building = false;
+          if (!host.isConnected || !c) return;
+          map = c.map;
           colour();
           renderStats(); renderSet(); renderExport(); draw();
           hint.textContent = `${map.W} × ${map.H} cells · built in ${fmt.int(performance.now() - t0)} ms`;
-          WS.app.refresh();                                   // the checks can read the map now
-        }, 30);
+          WS.app.refresh();                                   // the checks can read the map now (and a newer world is built)
+        }, (err) => { building = false; hint.textContent = `Could not build the map: ${err.message}`; });
         return false;
       }
       /* RGBA for every cell: the atlas colour, shaded by the slope (light from the north-west). */

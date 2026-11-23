@@ -64,7 +64,7 @@
         if (!w.plates.features.some((f) => f.kind === 'crust')) { shares = null; replace(mapHost, h('p', { class: 'muted' }, 'Make a world on the Plates step and its climate zones show here.')); return; }
         const have = WS.currentClimate(w, c.d, { peek: true });
         if (!have) {
-          replace(mapHost, h('button', { class: 'btn small primary', type: 'button', disabled: busy, onclick: () => { busy = true; renderMap(c); setTimeout(() => { WS.currentClimate(ctx.world, ctx.d); busy = false; renderMap(ctx); }, 30); } }, busy ? 'Working out the climate…' : 'Work out the climate zones'));
+          replace(mapHost, h('button', { class: 'btn small primary', type: 'button', disabled: busy, onclick: () => { busy = true; renderMap(c); WS.climateReady(ctx.world, ctx.d).finally(() => { busy = false; renderMap(ctx); }); } }, busy ? 'Working out the climate…' : 'Work out the climate zones'));
           if (shares) { shares = null; drawCards(); }
           return;
         }
@@ -177,7 +177,7 @@
         if (!w.plates.features.some((f) => f.kind === 'crust')) { replace(fromHost, h('p', { class: 'muted' }, 'Make a world on the Plates step to fill these in from its map.')); return; }
         const have = WS.currentBiomes(w, c.d, { peek: true });
         if (!have) {
-          replace(fromHost, h('button', { class: 'btn small primary', type: 'button', disabled: busy, onclick: () => { busy = true; renderFrom(c); setTimeout(() => { WS.currentBiomes(ctx.world, ctx.d); busy = false; renderFrom(ctx); }, 30); } }, busy ? 'Working out the biomes…' : 'Work it out from the map'));
+          replace(fromHost, h('button', { class: 'btn small primary', type: 'button', disabled: busy, onclick: () => { busy = true; renderFrom(c); WS.climateReady(ctx.world, ctx.d).then(() => WS.currentBiomes(ctx.world, ctx.d)).finally(() => { busy = false; renderFrom(ctx); }); } }, busy ? 'Working out the biomes…' : 'Work it out from the map'));
           return;
         }
         if (luOf !== have.bio) { lu = WS.biomes.landUse(have.bio, have.climRef.mapRef.map); luOf = have.bio; }

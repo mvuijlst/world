@@ -21,9 +21,14 @@
   let cache = null;
   /* The climate of a world, kept while its map and planet stay the same: shared with Rivers & biomes.
      With {peek: true}, only what is already worked out (or null). */
+  /* When it is ready (a promise): the map built off the page's thread first, then this (at once, if the
+     map came with its climate). */
+  WS.climateReady = (w, d) => WS.mapReady(w, d).then((m) => (m ? WS.currentClimate(w, d) : null));
   WS.currentClimate = (w, d, opts = {}) => {
     if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
-    const pl = K.planetOf(w, d), m = WS.currentMap(w, d);
+    // (peeking never builds the map either: a lamp or a check must not start a build)
+    const pl = K.planetOf(w, d), m = WS.currentMap(w, d, { peek: opts.peek });
+    if (!m) return null;
     // (the World map's brush changes the map in place: its stroke count says when)
     if (cache && cache.mapRef === m && cache.strokes === m.strokes && JSON.stringify(cache.pl) === JSON.stringify(pl)) return cache;
     if (opts.peek) return null;
@@ -58,14 +63,16 @@
         if (busy) return;
         const pl = K.planetOf(w, d), have = WS.currentClimate(w, d, { peek: true });
         if (have) { if (clim !== have.clim || !off) { clim = have.clim; fmap = have.mapRef.map; paint(); renderStats(); renderKey(); hint.textContent = `${clim.W} × ${clim.H} cells · hover for a place${pl.locked ? ' · tidally locked' : ''}`; } return; }   // nothing changed
-        busy = true; hint.textContent = 'Working out the climate…';
-        setTimeout(() => {
-          const t0 = performance.now();
-          const c = WS.currentClimate(w, d); clim = c.clim; fmap = c.mapRef.map; busy = false;
+        busy = true; hint.textContent = 'Working out the map and its climate…';
+        const t0 = performance.now();
+        WS.climateReady(w, d).then((c) => {
+          busy = false;
+          if (!host.isConnected || !c) return;
+          clim = c.clim; fmap = c.mapRef.map;
           paint(); renderStats(); renderIn(); renderKey(); draw();
           hint.textContent = `${clim.W} × ${clim.H} cells · ${fmt.int(performance.now() - t0)} ms${pl.locked ? ' · tidally locked' : ''}`;
           WS.app.refresh();
-        }, 30);
+        }, (err) => { busy = false; hint.textContent = `Could not work out the climate: ${err.message}`; });
       }
       const season = () => clim.seasons[u.season];
       /* The climate cell for a cell of the map, of the same kind (land or sea) where there is one near. */

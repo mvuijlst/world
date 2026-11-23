@@ -35,7 +35,7 @@
     const label = button ? button.textContent : '';
     if (button) { button.disabled = true; button.textContent = 'Working it out…'; }
     try {
-      await new Promise((r) => setTimeout(r, 30));
+      await WS.climateReady(w, d);                         // (the map and its climate off the page's thread)
       const c = WS.currentBiomes(w, d);
       const k = await WS.drawkit.kit(w, c.climRef.mapRef.map, c.climRef.clim, c.bio, { radiusKm: d.planet.radiusKm, gravity: d.planet.gravity, tilt: w.planet.tilt });
       const a = document.createElement('a'); a.href = URL.createObjectURL(k.blob); a.download = k.name;
@@ -68,14 +68,17 @@
         if (busy) return;
         const have = WS.currentBiomes(w, d, { peek: true });
         if (have) { if (bio !== have.bio || !off) { bio = have.bio; map = have.climRef.mapRef.map; clim = have.climRef.clim; paint(); renderStats(); renderKey(); hint.textContent = `${bio.W} × ${bio.H} cells · hover for a place`; } return; }
-        busy = true; hint.textContent = 'Working out rivers and biomes…'; draw();
-        setTimeout(() => {
-          const t0 = performance.now(), c = WS.currentBiomes(w, d);
-          bio = c.bio; map = c.climRef.mapRef.map; clim = c.climRef.clim; busy = false;
+        busy = true; hint.textContent = 'Working out the map, its climate, rivers and biomes…'; draw();
+        const t0 = performance.now();
+        WS.climateReady(w, d).then(() => new Promise((r) => setTimeout(r, 0))).then(() => {
+          busy = false;
+          const c = host.isConnected && WS.currentBiomes(w, d);
+          if (!c) return;
+          bio = c.bio; map = c.climRef.mapRef.map; clim = c.climRef.clim;
           paint(); renderStats(); renderKey(); draw();
           hint.textContent = `${bio.W} × ${bio.H} cells · ${fmt.int(performance.now() - t0)} ms`;
           WS.app.refresh();
-        }, 30);
+        }, (err) => { busy = false; hint.textContent = `Could not work it out: ${err.message}`; });
       }
 
       /* Colours for every cell, lightly shaded by the slope. */
