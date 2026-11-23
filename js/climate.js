@@ -105,10 +105,15 @@
     // the seasons: very large swings in sunlight are damped (snow and ice, the sea, melting) rather than
     // followed degree for degree
     const damp = (x) => 30 * Math.tanh(x / 30);
-    // a tidally locked world keeps one face to its star: no seasons, a hot spot under the star
-    const locked = !!planet.locked, sub = locked ? S2vec(0, planet.subsolarLon ?? 0) : null;
+    // a tidally locked world keeps one face to its star: no seasons, a hot spot under the star. The
+    // air carries heat round: a fast wind blowing east (superrotation) moves the hot spot east of the
+    // point under the star, and the night side is not one even cold but coldest at its middle, milder
+    // towards the day (heat carried over the terminator), so its ice edge is no straight line
+    const locked = !!planet.locked, atmL = planet.pressure ?? 1;
+    const hotShift = locked ? clamp(15 * Math.pow(Math.max(atmL, 0.01), 0.3), 4, 35) * (planet.retrograde ? -1 : 1) : 0;
+    const sub = locked ? S2vec(0, (planet.subsolarLon ?? 0) + hotShift) : null;
     let fm = 0;
-    const face = locked ? Float32Array.from({ length: N }, (_, k) => { const c = grid.xyz[k * 3] * sub[0] + grid.xyz[k * 3 + 1] * sub[1] + grid.xyz[k * 3 + 2] * sub[2]; return Math.sqrt(Math.max(0, c)); }) : null;
+    const face = locked ? Float32Array.from({ length: N }, (_, k) => { const c = grid.xyz[k * 3] * sub[0] + grid.xyz[k * 3 + 1] * sub[1] + grid.xyz[k * 3 + 2] * sub[2]; return 0.6 * Math.sqrt(0.18 * Math.log1p(Math.exp(c / 0.18))) + 0.4 * (c + 1) / 2; }) : null;   // (no corner at the terminator)
     if (locked) { let wsum = 0; for (let k = 0; k < N; k++) { const wgt = grid.cosl[Math.floor(k / W)]; fm += face[k] * wgt; wsum += wgt; } fm /= wsum; }
     const dayNight = 70 * clamp(1 / (1 + 0.3 * Math.log(atm)), 0.3, 1.8);
 
@@ -130,7 +135,13 @@
       // ── temperature (before currents) ──
       const T = new Float32Array(N), Tzon = new Float32Array(H), raw = (seaRaw[name] = new Float32Array(N));
       if (locked) {
-        for (let k = 0; k < N; k++) T[k] = Tg + dayNight * (face[k] - fm) * (land[k] ? 1 : 0.7) - (land[k] ? (lapse * belowTropo(zs[k])) / 1000 : 0);
+        // the sea carries heat far (and the coasts share it); land interiors keep their own extremes
+        const raw0 = Float32Array.from({ length: N }, (_, k) => Tg + dayNight * (face[k] - fm) * (land[k] ? 1 : 0.7));
+        const wide = blurField(grid, raw0, Math.max(1, Math.round(1500 / (grid.dx * kmDeg))));
+        for (let k = 0; k < N; k++) {
+          const mix = land[k] ? 0.45 * Math.exp(-(toSea[k] * kmDeg) / 600) : 0.55;
+          T[k] = raw0[k] * (1 - mix) + wide[k] * mix - (land[k] ? (lapse * belowTropo(zs[k])) / 1000 : 0);
+        }
         for (let k = 0; k < N; k++) if (!land[k]) { raw[k] = T[k]; T[k] = Math.max(-1.8, T[k]); }
       }
       for (let j = 0; j < H && !locked; j++) {

@@ -56,6 +56,10 @@ test('other worlds: high tilt warms the poles, retrograde spin turns the winds, 
   const locked = K.build(map, { ...EARTH, locked: true, tilt: 0, subsolarLon: 0, cells: C.circulationCells(5000).bands });
   const at = (c, la, lo) => c.seasons.jul.T[c.lat.findIndex((x) => Math.abs(x - la) <= 180 / c.H) * c.W + Math.floor(((lo + 180) / 360) * c.W)];
   assert.ok(at(locked, 0, 0) > at(locked, 0, 179) + 40, 'day face far warmer than the night face');
+  // heat carried round: the night side is coldest at its middle, milder towards the terminator, and a
+  // wind blowing east moves the hot spot east of the point under the star (no straight ice edge)
+  assert.ok(at(locked, 0, 115) > at(locked, 0, 179) + 3, `night side graded: ${at(locked, 0, 115)} vs ${at(locked, 0, 179)}`);
+  assert.ok(at(locked, 0, 30) > at(locked, 0, -30), `hot spot east: ${at(locked, 0, 30)} vs ${at(locked, 0, -30)}`);
   assert.deepEqual(Array.from(locked.seasons.jan.T.slice(0, 50)), Array.from(locked.seasons.jul.T.slice(0, 50)), 'no seasons');
 });
 
