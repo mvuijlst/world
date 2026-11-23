@@ -62,3 +62,25 @@ test('not only Earth: heavier gravity, lower mountains and shallower trenches (Ã
   assert.ok(heavy.deepest.m > earth.deepest.m, 'trenches shallower under more gravity');
   assert.deepEqual(heavy.planet, { gravity: 1.5, factor: 2.25, radiusKm: 6371, ridgeDepth: 2600 });
 });
+
+test('erosion: faster erosion, lower land; an old belt no longer holds the ground up', () => {
+  const w = G.makeWorld({ seed: 7, plates: 4 });
+  const slow = M.build(w, { res: 180, erosion: 0.3 }), fast = M.build(w, { res: 180, erosion: 3 });
+  const mean = (map) => { let s = 0, n = 0; for (const v of map.z) if (v > 0) { s += v; n++; } return s / n; };
+  assert.ok(fast.highest.m < slow.highest.m, `highest ${fast.highest.m} vs ${slow.highest.m}`);
+  assert.ok(mean(fast) < mean(slow), `mean land ${mean(fast)} vs ${mean(slow)}`);
+  // one continent with a belt along its edge: young, the ground under it stays land; worn for a
+  // billion years, it no longer does more than the rest of the coast
+  const dryUnderBelt = (active) => {
+    const P = { start: 1000, plates: [{ id: 1, rotations: [] }], features: [
+      { id: 'c', kind: 'crust', plateId: 1, coords: cap(0, 0, 30) },
+      { id: 'o', kind: 'orogen', type: 'collision', plateId: 1, coords: cap(0, 26, 5), begin: 999, active },
+    ] };
+    const map = M.build(P, { res: 180, land: 0.035 });
+    let n = 0, dry = 0;
+    M.fillPolygon(map.grid, cap(0, 26, 5), (k) => { n++; if (map.z[k] > 0) dry++; });
+    return dry / n;
+  };
+  const young = dryUnderBelt(0), old = dryUnderBelt(990);   // (active: when it stopped rising, Ma)
+  assert.ok(young > old + 0.15, `young belt ${young} dry vs old ${old}`);
+});

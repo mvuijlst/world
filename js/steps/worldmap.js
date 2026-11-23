@@ -23,7 +23,7 @@
 
   // the map of a world, kept while nothing it depends on changes
   let cached = null;
-  const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, d.planet.gravity, d.planet.radiusKm, w.tectonics.scaling, w.tectonics.ridgeDepth]);
+  const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, w.map.erosion, d.planet.gravity, d.planet.radiusKm, d.planet.cells.count, w.tectonics.scaling, w.tectonics.ridgeDepth]);
   /* The map of a world (built if need be, synchronously): shared with the Climate step. */
   WS.currentMap = (w, d) => {
     if (!w.plates.features.some((f) => f.kind === 'crust')) return null;
@@ -36,6 +36,7 @@
   const settingsOf = (w, d) => ({
     res: w.map.res || 720, land: (w.map.land ?? w.population.land) / 100, shelf: w.map.shelf, relief: w.map.relief, seed: w.plates.seed,
     gravity: d.planet.gravity, scaling: w.tectonics.scaling, radiusKm: d.planet.radiusKm, ridgeDepth: w.tectonics.ridgeDepth,
+    erosion: w.map.erosion ?? 1, cells: d.planet.cells.count,
   });
 
   // ── mountain range profiles: the workbook's TECTONICS sheet, kept as a reference ──
@@ -336,6 +337,7 @@
             num('map.land', 'Land, % of surface', 1, 95, 0.5, 'How much of the surface stands above the sea. By default the Population step’s land share; the crust can only hold so much.', +(w.map.land ?? w.population.land).toFixed(1)),
             num('map.shelf', 'Shelf width ×', 0.2, 4, 0.1, 'Continental shelves: about 150 km wide on quiet coasts, 40 km where a plate subducts, on Earth.', w.map.shelf),
             num('map.relief', 'Relief ×', 0.2, 3, 0.1, 'Mountain heights on top of what gravity allows.', w.map.relief),
+            num('map.erosion', 'Erosion ×', 0.2, 4, 0.1, `How fast the land wears down once it stops rising, × Earth’s: mountain belts and the raised ground beneath them, flood basalts, volcanoes. Faster where it rains (the equator, the fronts between this planet’s ${ctx.d.planet.cells.count} circulation cells), slower in the dry belts and near the poles. Earth = 1.`, w.map.erosion ?? 1),
             num('tectonics.scaling', 'Gravity scaling', 1, 2, 0.05, 'How strongly heights and widths shrink as gravity grows: they are divided by g^scaling (Artifexian: 1–2). At 1 g it makes no difference.', w.tectonics.scaling),
             num('tectonics.ridgeDepth', 'Ridge depth, m', 0, 6000, 50, 'Depth of the mid-ocean ridge crests below sea level; the ocean floor deepens from there as it ages and cools. On Earth about 2,600 m; stay within about ±500 m of that.', w.tectonics.ridgeDepth),
             h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Detail'), res)),

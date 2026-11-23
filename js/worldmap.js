@@ -196,7 +196,8 @@
    * Build the map. P: the world's plates {plates, features, start}. opts: res (cells round, 720),
    * land (share of the surface above the sea, 0-1; by default crust × 29/41 as on Earth), shelf
    * (width factor), relief (height factor), seed, strokes [{lat, lon, r, dz}], age (0, the present),
-   * gravity (Earth g, 1), scaling (1-2, 2), radiusKm (6371), ridgeDepth (m, 2600).
+   * gravity (Earth g, 1), scaling (1-2, 2), radiusKm (6371), ridgeDepth (m, 2600), erosion (how
+   * fast the land wears down, × Earth's, 1), cells (circulation cells per hemisphere, 3).
    */
   function build(P, opts = {}) {
     const W = Math.max(90, Math.round((opts.res ?? 720) / 2) * 2), gr = makeGrid(W), { N } = gr;
@@ -273,6 +274,20 @@
     const oro = new Float32Array(N), plat = new Float32Array(N);
     const PEAK = { collision: 6600, cordillera: 4600, accretion: 2600, plateau: 3800 };
     const worn = (since) => 0.12 + 0.88 * Math.exp(-since / 110);
+    // erosion: × opts.erosion, and by latitude as a stand-in for the climate (which is worked out from
+    // this map): faster where air rises and it rains (the equator, the fronts between circulation cells),
+    // slower in the dry belts where it sinks, and near the frozen poles. Averaged over the globe it is 1.
+    // Times since a feature stopped growing are scaled by it, as if that much more time had passed.
+    const E = clamp(opts.erosion ?? 1, 0, 5), nCells = clamp(Math.round(opts.cells ?? 3), 1, 9);
+    const wetRaw = (lat) => { const a = Math.abs(lat); return (0.35 + 1.3 * (0.5 + 0.5 * Math.cos((Math.PI * nCells * a) / 90))) * (1 - 0.7 * smooth((a - 60) / 25)); };
+    let wetMean = 0, wetW = 0;
+    for (let l = 0.25; l < 90; l += 0.5) { const c = Math.cos(l * D2R); wetMean += wetRaw(l) * c; wetW += c; }
+    wetMean /= wetW;
+    const rate = (lat) => (E * wetRaw(lat)) / wetMean;
+    const latOf = (coords) => S.latLon(S.centroid(coords))[0];
+    // the thickened crust under a belt holds the ground up after the peaks are gone (the Appalachians),
+    // but it is worn away too: after a billion years or so a belt is a flat shield (the Grenville)
+    const rootW = new Float32Array(N);
     // A belt is not a flat-topped block: it rises from its edges to a crest along its middle, has peaks
     // and passes along its length, and parallel ranges within it. So each belt's height follows the
     // distance in from its edge (relative to its half-width), times a slow variation along it, times
@@ -281,10 +296,12 @@
     const dyDeg = 180 / gr.H;
     let beltNo = 0;
     for (const o of P.features.filter((x) => x.kind === 'orogen' && live(x) && x.coords.length >= 3)) {
-      const since = Math.max(0, (o.active ?? 0) - age), into = o.type === 'plateau' ? plat : oro;
+      const pl = placed(o), into = o.type === 'plateau' ? plat : oro;
+      const since = Math.max(0, (o.active ?? 0) - age) * rate(latOf(pl));
       const h = (PEAK[o.type] ?? 3000) * (o.type === 'plateau' ? Math.exp(-since / 60) : worn(since) * (since > 500 ? Math.exp(-(since - 500) / 500) : 1)) * relief;
+      const root = Math.exp(-since / 500);
       const cells = [], id = beltNo++;
-      fillPolygon(gr, placed(o), (k) => { if (inBelt[k] !== id) { inBelt[k] = id; cells.push(k); } });
+      fillPolygon(gr, pl, (k) => { if (inBelt[k] !== id) { inBelt[k] = id; cells.push(k); } if (root > rootW[k]) rootW[k] = root; });
       if (!cells.length) continue;
       if (o.type === 'plateau') { for (const k of cells) if (h > into[k]) into[k] = h; continue; }
       // distance in from the edge (degrees), by relaxing over the belt's cells
@@ -324,7 +341,7 @@
     // 450 km, bays and headlands by 140 km, coves by 45 km
     // a mountain belt stands on crust thickened beneath it, and stays high long after it is worn down
     // (the Appalachians, the Urals): the ground under any belt, however old, is lifted
-    const beltS = blur(gr, Float32Array.from(inBelt, (b) => (b >= 0 ? 1 : 0)), Math.max(1, Math.round(km(90) / gr.dx)), 2);
+    const beltS = blur(gr, rootW, Math.max(1, Math.round(km(90) / gr.dx)), 2);
     const reachK = km(3000), Pot = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       const sd = cont[k] ? dIn[k] : -dOut[k];
@@ -351,8 +368,10 @@
     // large igneous provinces: ragged basalt plateaus on land, raised ocean floor at sea
     const lip = new Float32Array(N);
     for (const f of P.features.filter((x) => x.kind === 'lip' && live(x) && x.coords.length >= 3)) {
-      const old = Math.max(0, (f.begin ?? start) - age), h = f.type === 'oceanic plateau' ? H(2400) : H(450) * (0.4 + 0.6 * Math.exp(-old / 150));
-      fillPolygon(gr, placed(f), (k) => { const v = h * clamp(0.55 + 0.9 * warped(k, 8, 4, 0.3), 0, 1); if (v > lip[k]) lip[k] = v; });
+      // a flood basalt is planed down too: the Deccan stands, the Keweenawan basalts are gone
+      const pl = placed(f), old = Math.max(0, (f.begin ?? start) - age) * rate(latOf(pl));
+      const h = f.type === 'oceanic plateau' ? H(2400) : H(450) * (0.4 * Math.exp(-old / 600) + 0.6 * Math.exp(-old / 150));
+      fillPolygon(gr, pl, (k) => { const v = h * clamp(0.55 + 0.9 * warped(k, 8, 4, 0.3), 0, 1); if (v > lip[k]) lip[k] = v; });
     }
     const lipS = blur(gr, lip, Math.max(1, Math.round(km(60) / gr.dx)), 2);
     for (let k = 0; k < N; k++) {
@@ -394,9 +413,9 @@
     const cache = new Map();
     for (const h of P.features.filter((x) => x.kind === 'hotspot' && (x.begin ?? start) >= age)) {
       for (const t of G.hotspotTrack(P, m, h, age, { cache, span: 120, step: 4 })) {
-        const a = t.age - age, summit = H(4200) - H(5600) * (1 - Math.exp(-a / 14)) - 6 * a, r = km(60) + km(28) * Math.min(1, a / 20);
+        const a = t.age - age, ea = a * rate(t.at[0]), summit = H(4200) - H(5600) * (1 - Math.exp(-a / 14)) - 6 * ea, r = km(60) + km(28) * Math.min(1, a / 20);
         stamp(gr, t.at, r, (k, dd) => {
-          const floor = z[k], top = cont[k] ? floor + H(1600) * Math.exp(-a / 10) : summit;
+          const floor = z[k], top = cont[k] ? floor + H(1600) * Math.exp(-ea / 10) : summit;
           if (top <= floor) return;
           z[k] = Math.max(z[k], floor + (top - floor) * Math.max(0, 1 - dd / r) ** 1.6);
         });
