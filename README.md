@@ -335,6 +335,17 @@ It agrees with the world map:
   twice a brook's width, one stroke each. Rivers grade to the water they flow into (a lake's surface, not
   its bed), and a small hollow on a big river's course is silted up rather than a lake; sea narrower than a
   few pixels (a world map estuary) is the river's floor.
+- **Meanders**: on flat ground a river swings from side to side (`meanders` in `js/region.js`). Its path
+  follows the Kinoshita curve (skewed, overhanging bends, not a sine) about the valley's axis, swinging
+  more the flatter it is (none above about 0.2 % slope, fully below 0.02 %) and the larger the river (a
+  brook barely), with every bend a little different in length and swing and the belt wandering slowly.
+  A bend is about 11 channel widths long (width ≈ 2.7·√Q m), but never shorter than about 12 widths of
+  the line drawn, or the loops would only thicken it: on a region of 800 km a big river's bends are
+  drawn larger than life, on one of 200 km nearly true. Bends ease off at the ends, stay inside sharp
+  turns of the valley, and where one would cross itself its neck is cut off, as a river does it.
+  Tributaries are joined to the main river's bends. Each line follows its main stem (the branch with
+  the most water at each confluence) from source to mouth. Water is routed over the land plus a faint
+  unevenness, so on flats it wanders instead of running ruler-straight; a lake must be deeper than that.
 - **Biomes**: the world map's climate between its cells (looked up a little off each pixel, so biome
   edges do not follow its cells' sides), colder with height by the planet's lapse rate: forest in the
   valleys, tundra and ice on the crests.

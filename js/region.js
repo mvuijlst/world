@@ -301,9 +301,12 @@
     const toM3s = (mm, km2) => ((mm / 1000) * km2 * 1e6) / YEAR_S;
 
     // ── 2. where the water goes: flood the land up from the sea and the open edges ──
-    // silted floors are flat; water on them follows a faint unevenness (about a metre), not a ruler
-    const silt = new Uint8Array(N), nf = gradNoise(seed ^ 0xf1a7), lumpKm = Math.max(3 * pxKm, 4);
-    const routeZ = (zz) => Float32Array.from(zz, (v, k) => (silt[k] ? v + (1.2 / f) * (1 + nf(xyz[k * 3] / lumpKm, xyz[k * 3 + 1] / lumpKm, xyz[k * 3 + 2] / lumpKm)) : v));
+    // water is routed over the land plus a faint unevenness (a few metres at most, in lumps a few pixels
+    // across and some five times larger): on a flat (a silted floor, a filled hollow) it then wanders as
+    // real water does, rather than running off in ruler-straight lines; on a slope it makes no difference
+    const silt = new Uint8Array(N), nf = gradNoise(seed ^ 0xf1a7), lumpKm = 4 * pxKm, LUMP = 1.5 / f;
+    const lump = (k) => { const X = xyz[k * 3] / lumpKm, Y = xyz[k * 3 + 1] / lumpKm, Z = xyz[k * 3 + 2] / lumpKm; return clamp(1.6 + 0.6 * nf(X, Y, Z) + nf(X / 5 + 7.7, Y / 5, Z / 5), 0, 3.2); };
+    const routeZ = (zz) => Float32Array.from(zz, (v, k) => (v > 0 ? v + LUMP * lump(k) : v));
     function flood(zz0) {
       const zz = routeZ(zz0);
       const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), done = new Uint8Array(N), order = new Int32Array(N);
@@ -422,7 +425,8 @@
 
     // ── 4. the water again over the carved land: lakes, salt lakes and rivers ──
     const fl = flood(z), recv = fl.recv;
-    const hs = hollows(fl.zr, fl.fill, 1 / f);
+    // (a lake must be deeper than the unevenness the water was routed over: no ponds in every dimple)
+    const hs = hollows(fl.zr, fl.fill, 1 / f + 3.2 * LUMP);
     const minLake = 4 * pxKm * pxKm;
     // (a hollow under the ice holds no lake: most of it below freezing all summer)
     for (const hlw of hs.list) {
@@ -496,31 +500,72 @@
     for (let k = 0; k < N; k++) if (isRiver(k) && !kids[k]) starts.push(k);
     for (const fl0 of inflows) if (isRiver(fl0.k) && !starts.includes(fl0.k)) starts.push(fl0.k);
     starts.sort((a, b) => flow[b] - flow[a]);
+    // each line follows a river down for as long as it is the main stem (the branch with the most water
+    // at each confluence); a smaller branch ends where it joins, so a main river is one unbroken line
+    const mainKid = new Int32Array(N).fill(-1);
+    for (let k = 0; k < N; k++) {
+      if (!isRiver(k)) continue;
+      const r = recv[k];
+      if (r >= 0 && (mainKid[r] < 0 || flow[k] > flow[mainKid[r]])) mainKid[r] = k;
+    }
     const seen = new Uint8Array(N), raw = [];
     for (const s of starts) {
       if (seen[s]) continue;
-      let cur = s, line = [], qs = [];
-      const flush = () => { if (line.length > 1) raw.push({ pts: line, q: qs }); line = []; qs = []; };
+      let cur = s, line = [], qs = [], ks = [];
+      const flush = (join = false) => { if (line.length > 1) raw.push({ pts: line, q: qs, k: ks, join }); line = []; qs = []; ks = []; };
+      let join = false;
       while (cur >= 0) {
-        if (hid(cur)) { if (line.length) { line.push(pt(cur)); qs.push(flow[cur]); } flush(); }
-        else { line.push(pt(cur)); qs.push(flow[cur]); }
-        if (seen[cur] && line.length > 1) break;
+        if (hid(cur)) { if (line.length) { line.push(pt(cur)); qs.push(flow[cur]); ks.push(cur); } flush(); }
+        else { line.push(pt(cur)); qs.push(flow[cur]); ks.push(cur); }
+        if (seen[cur] && line.length > 1) { join = true; break; }
         seen[cur] = 1;
         if (terminal[cur]) break;
         const r = recv[cur];
-        if (r < 0 || !(z[r] > 0)) { if (r >= 0) { const y = (r / W) | 0; line.push([r - y * W + 0.5, y + 0.5]); qs.push(flow[cur]); } break; }
+        if (r < 0 || !(z[r] > 0)) { if (r >= 0) { const y = (r / W) | 0; line.push([r - y * W + 0.5, y + 0.5]); qs.push(flow[cur]); ks.push(cur); } break; }
         // leaving a lake or the ice: start again from its edge, unless that outlet is already drawn
         // (every stream into a lake would otherwise add a stub over its outlet)
-        if (hid(cur) && !hid(r)) { if (seen[r]) break; line = [pt(cur)]; qs = [flow[cur]]; }
+        if (hid(cur) && !hid(r)) { if (seen[r]) break; line = [pt(cur)]; qs = [flow[cur]]; ks = [cur]; }
+        // a tributary: it ends on the main stem (the point where they meet), which is its own line
+        else if (!hid(r) && isRiver(cur) && mainKid[r] >= 0 && mainKid[r] !== cur) { line.push(pt(r)); qs.push(flow[cur]); ks.push(r); join = true; break; }
         cur = r;
       }
-      flush();
+      flush(join);
+    }
+    // the main stems not yet drawn (fed only by tributaries' ends, or from a lake): from their own heads
+    for (let k = 0; k < N; k++) {
+      if (seen[k] || !isRiver(k)) continue;
+      let up = k; while (mainKid[up] >= 0 && !seen[mainKid[up]] && !hid(mainKid[up])) up = mainKid[up];
+      if (seen[up]) continue;
+      let cur = up; const line = [], qs = [], ks = [];
+      let join = false;
+      while (cur >= 0 && !hid(cur)) {
+        line.push(pt(cur)); qs.push(flow[cur]); ks.push(cur);
+        if (seen[cur] && line.length > 1) { join = true; break; }
+        seen[cur] = 1;
+        if (terminal[cur]) break;
+        const r = recv[cur];
+        if (r < 0 || !(z[r] > 0)) { if (r >= 0) { const y = (r / W) | 0; line.push([r - y * W + 0.5, y + 0.5]); qs.push(flow[cur]); ks.push(cur); } break; }
+        if (!hid(r) && mainKid[r] >= 0 && mainKid[r] !== cur) { line.push(pt(r)); qs.push(flow[cur]); ks.push(r); join = true; break; }
+        cur = r;
+      }
+      if (line.length > 1) raw.push({ pts: line, q: qs, k: ks, join });
     }
     // short stubs (a little coastal stream, a tributary that joins at once) are left out unless they
     // carry real water; the rest are smoothed beyond the grid's 45° steps, then rounded off
     const minLen = Math.max(6, Math.round(12 / Math.sqrt(Math.max(0.05, pxKm))));
-    const rivers = raw.filter((rv) => rv.pts.length >= minLen || rv.q[rv.q.length - 1] >= 30 * minFlow)
-      .map((rv) => { const pts = chaikin(chaikin(relax(relax(relax(relax(relax(rv.pts))))))); return { pts, q: resample(rv.q, pts.length) }; });
+    const kept = raw.filter((rv) => rv.pts.length >= minLen || rv.q[rv.q.length - 1] >= 30 * minFlow);
+    // the river's own slope along it (m per m, over a few pixels either side), for its meanders
+    for (const rv of kept) {
+      const n = rv.k.length, sl = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const a = Math.max(0, i - 4), b = Math.min(n - 1, i + 4);
+        let d = 0; for (let j = a; j < b; j++) d += Math.hypot(rv.pts[j + 1][0] - rv.pts[j][0], rv.pts[j + 1][1] - rv.pts[j][1]);
+        sl[i] = d > 0 ? Math.max(0, Math.max(0, z[rv.k[a]]) - Math.max(0, z[rv.k[b]])) / (d * pxKm * 1000) : 1;
+      }
+      rv.slope = Array.from(sl);
+    }
+    const smoothRivers = kept.map((rv) => { const pts = chaikin(chaikin(relax(relax(relax(relax(relax(rv.pts))))))); return { pts, q: resample(rv.q, pts.length), slope: resample(rv.slope, pts.length), join: rv.join }; });
+    const rivers = meanders(smoothRivers, { pxKm, minFlow, seed, gravityFactor: f, off: opts.meanders === false });
 
     // ── figures ──
     let landPx = 0, hiZ = -Infinity, loZ = Infinity, hiK = 0, loK = 0, landKm2 = 0, bigQ = 0, bigK = -1;
@@ -539,6 +584,167 @@
         biomeShare: Array.from(share.slice(1), (v) => v / Math.max(1, landKm2)), pxKm, worldCellKm: gkm,
       },
     };
+  }
+
+  /*
+   * The drawn width of a river (pixels, before any zoom): a hairline for a brook, growing slowly with
+   * its flow. Shared with the page, so meanders can be sized to the line that draws them.
+   */
+  const riverWidth = (q, minFlow = 8) => Math.min(2, 0.45 + 0.28 * Math.log10(1 + q / minFlow));
+
+  /*
+   * Meanders: on flat ground a river does not run down its valley's middle but swings from side to side
+   * in loops. Its path follows the Kinoshita curve (Kinoshita 1961; Parker et al. 1983), the direction
+   * θ = θ0·sin φ + θ0³·(Js·cos 3φ − Jf·sin 3φ) as the phase φ runs along the channel: skewed, overhanging
+   * bends, not a sine. How far it swings (θ0, up to ~77°, for a sinuosity of about 2) grows as the slope falls (none above about
+   * 0.2 %, fully below 0.02 %) and with the river's size (a brook barely), and varies from bend to bend, as
+   * does each bend's length; the whole meander belt wanders slowly across the floodplain. A bend is about 11 channel widths long
+   * (width ≈ 2.7·√Q m, Leopold & Wolman), but never shorter than about 12 widths of the line drawn,
+   * or it would only thicken the line (on most maps a river is drawn far wider than it is). The
+   * bends ease off towards each end, so the river still leaves its lake and reaches its mouth where it
+   * did; a tributary is joined to the main river's bends where it meets it.
+   * rivers: [{pts, q, slope, join}] in pixels; o: pxKm, minFlow, seed, gravityFactor, off.
+   */
+  function meanders(rivers, o) {
+    if (o.off) return rivers.map(({ pts, q }) => ({ pts, q }));
+    const nz = gradNoise((o.seed ^ 0x3e4d) | 0), out = [];
+    for (let ri = 0; ri < rivers.length; ri++) {
+      const rv = rivers[ri];
+      let hasFlat0 = false; for (const sl of rv.slope) if (sl < 0.002) { hasFlat0 = true; break; }
+      // the bends swing about the valley's axis: the line smoothed over about a bend's length, so that
+      // a sharp turn of the valley does not fold the bends inside it over each other
+      let P = rv.pts;
+      if (hasFlat0) {
+        const qMax = rv.q.reduce((a, b) => Math.max(a, b), 0), lamMax = Math.max((11 * 2.7 * Math.sqrt(qMax)) / 1000 / o.pxKm, 12 * riverWidth(qMax, o.minFlow));
+        let arc = 0; for (let i = 1; i < P.length; i++) arc += Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]);
+        const step = Math.max(0.05, arc / Math.max(1, P.length - 1));
+        const passes = clamp(Math.round((lamMax / step) ** 2 / 12), 0, 60);
+        for (let i = 0; i < passes; i++) P = relax(P);
+      }
+      const n = P.length;
+      // the centreline by arc length, for C(u) and its normal
+      const L = new Float64Array(n);
+      for (let i = 1; i < n; i++) L[i] = L[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]);
+      const total = L[n - 1];
+      let hasFlat = false; for (const sl of rv.slope) if (sl < 0.002) { hasFlat = true; break; }
+      if (total < 4 || !hasFlat) { out.push({ pts: P, q: rv.q, join: rv.join }); continue; }
+      const pos = (u) => {
+        u = clamp(u, 0, total);
+        let lo = 0, hi = n - 1;
+        while (hi - lo > 1) { const m = (lo + hi) >> 1; if (L[m] <= u) lo = m; else hi = m; }
+        const t = (u - L[lo]) / (L[hi] - L[lo] || 1);
+        return { x: P[lo][0] + (P[hi][0] - P[lo][0]) * t, y: P[lo][1] + (P[hi][1] - P[lo][1]) * t, q: rv.q[lo] + (rv.q[hi] - rv.q[lo]) * t, s: rv.slope[lo] + (rv.slope[hi] - rv.slope[lo]) * t };
+      };
+      /* The axis at u: its point, its normal (over a pixel or two either way), and how sharply it turns
+         there (its radius, from the turn over about a bend's length w). */
+      const at = (u, w = 8) => {
+        const c0 = pos(u), d = Math.max(1, w / 6), a0 = pos(u - d), b0 = pos(u + d);
+        const dx = b0.x - a0.x, dy = b0.y - a0.y, l = Math.hypot(dx, dy) || 1;
+        // (the tightest of the turns over a bend, half a bend and a quarter: a hairpin shorter than a
+        // bend must not be missed)
+        let radius = 1e9;
+        for (const ww of [w, w / 2, w / 4]) {
+          if (ww < 2) continue;
+          const pa = pos(u - ww / 2), pb = pos(u + ww / 2);
+          let turn = Math.abs(Math.atan2(pb.y - c0.y, pb.x - c0.x) - Math.atan2(c0.y - pa.y, c0.x - pa.x));
+          if (turn > Math.PI) turn = 2 * Math.PI - turn;
+          if (turn > 1e-3) radius = Math.min(radius, ww / turn);
+        }
+        return { x: c0.x, y: c0.y, nx: -dy / l, ny: dx / l, radius, q: c0.q, s: c0.s };
+      };
+      const h = (ri * 2654435761) >>> 0, phase0 = ((h & 0xffff) / 0xffff) * 2 * Math.PI, skew = (h >>> 16) & 1 ? 1 : -1;
+      const Js = skew / 32, Jf = 1 / 192;
+      let u = 0, v = 0, phi = phase0;
+      const pts = [], qs = [];
+      let c = at(0);
+      pts.push([c.x, c.y]); qs.push(c.q);
+      for (let guard = 0; u < total && guard < 200000; guard++) {
+        c = at(u);
+        const wTrue = (2.7 * Math.sqrt(Math.max(0, c.q))) / 1000 / o.pxKm;             // channel width, pixels
+        const lam0 = Math.max(11 * wTrue, 12 * riverWidth(c.q, o.minFlow));
+        // no two bends alike: each a little longer or shorter (±40 %), swinging more or less
+        const lam = lam0 * (0.6 + 0.8 * (0.5 + 0.5 * nz(phi / 6.283, ri * 1.7, 0.3)));
+        const flat = smooth((Math.log10(0.002) - Math.log10(Math.max(1e-6, c.s))) / 1);  // 0 at 0.2 %, 1 at 0.02 %
+        const big = smooth(Math.log10(Math.max(1, c.q / o.minFlow)) / 2);                // a brook barely, a river fully
+        const ends = smooth(Math.min(u, total - u) / (0.8 * lam0));
+        const swing = 0.35 + 0.65 * smooth(0.5 + 0.9 * nz(phi / 6.283 + 0.37, ri * 3.1, 5.5));
+        // (kept below about 80°, skew included: past 90° a bend overhangs and, with the belt wandering,
+        // can cross itself; a real loop that would is cut off and left as an oxbow)
+        const theta0 = Math.min(1.35, 1.35 * flat * big * ends * swing);
+        const ds = theta0 > 0.05 ? lam / 32 : 0.5;
+        const th = theta0 * Math.sin(phi) + theta0 ** 3 * (Js * Math.cos(3 * phi) - Jf * Math.sin(3 * phi));
+        u += Math.cos(th) * ds; v += Math.sin(th) * ds;
+        // where it straightens (steeper, or near the ends), back towards the valley's middle
+        // (and always a little, over a few bends: the bends' small asymmetries must not add up to a drift)
+        v -= v * Math.min(1, ds / (0.6 * lam)) * (1 - Math.min(1, theta0 / 0.6)) + v * Math.min(1, ds / (4 * lam));
+        phi += (2 * Math.PI * ds) / lam;
+        if (u >= total) break;
+        const p = at(u, lam0);
+        // the meander belt itself wanders slowly across the floodplain, a few bends at a time
+        let belt = v + 0.25 * lam0 * flat * big * ends * nz(u / (3 * lam0), ri * 0.9 + 11.3, 2.2);
+        // (never more than most of the way to the centre of a turn of the axis: a soft limit, no kinks)
+        const lim = 0.55 * p.radius; belt = lim * Math.tanh(belt / lim);
+        pts.push([p.x + belt * p.nx, p.y + belt * p.ny]); qs.push(p.q);
+      }
+      c = at(total);
+      pts.push([c.x, c.y]); qs.push(c.q);
+      const cut = cutoffs(pts, qs);
+      out.push({ pts: cut.pts, q: cut.q, join: rv.join });
+    }
+    // join each tributary to the main river's bends: its end moved onto the nearest point of a larger
+    // river's drawn line, the last stretch of it bent over to meet it
+    const cell = 3, grid = new Map(), keyOf = (x, y) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
+    out.forEach((rv, ri) => rv.pts.forEach((p, i) => { const k = keyOf(p[0], p[1]); if (!grid.has(k)) grid.set(k, []); grid.get(k).push([ri, i]); }));
+    for (let ri = 0; ri < out.length; ri++) {
+      const rv = out[ri];
+      if (!rv.join || rv.pts.length < 2) continue;
+      const e = rv.pts[rv.pts.length - 1], qEnd = rv.q[rv.q.length - 1];
+      let best = null, bd = Infinity;
+      const cx = Math.floor(e[0] / cell), cy = Math.floor(e[1] / cell);
+      for (let gy = cy - 4; gy <= cy + 4; gy++) for (let gx = cx - 4; gx <= cx + 4; gx++) {
+        for (const [rj, j] of grid.get(`${gx},${gy}`) || []) {
+          if (rj === ri || out[rj].q[j] < qEnd) continue;
+          const p = out[rj].pts[j], d = Math.hypot(p[0] - e[0], p[1] - e[1]);
+          if (d < bd) { bd = d; best = p; }
+        }
+      }
+      if (!best || bd < 1e-3) continue;
+      const dx = best[0] - e[0], dy = best[1] - e[1], reach = Math.max(3, 3 * bd);
+      let acc = 0;
+      for (let i = rv.pts.length - 1; i >= 0; i--) {
+        if (i < rv.pts.length - 1) acc += Math.hypot(rv.pts[i + 1][0] - rv.pts[i][0], rv.pts[i + 1][1] - rv.pts[i][1]);
+        const t = smooth(1 - acc / reach);
+        if (t <= 0) break;
+        rv.pts[i] = [rv.pts[i][0] + dx * t, rv.pts[i][1] + dy * t];
+      }
+    }
+    return out.map(({ pts, q }) => ({ pts, q }));
+  }
+
+  /*
+   * Neck cutoffs: where a river's line crosses itself (a bend grown round until its neck meets), the
+   * loop is cut off at the crossing, as a river does it (leaving an oxbow lake, not drawn). Looks for
+   * crossings within a few hundred points of each other.
+   */
+  function cutoffs(pts, qs) {
+    const cross = (a, b, c, d) => {
+      const r0 = b[0] - a[0], r1 = b[1] - a[1], s0 = d[0] - c[0], s1 = d[1] - c[1], den = r0 * s1 - r1 * s0;
+      if (Math.abs(den) < 1e-12) return null;
+      const t = ((c[0] - a[0]) * s1 - (c[1] - a[1]) * s0) / den, u = ((c[0] - a[0]) * r1 - (c[1] - a[1]) * r0) / den;
+      return t > 0 && t < 1 && u > 0 && u < 1 ? [a[0] + t * r0, a[1] + t * r1] : null;
+    };
+    const P = [], Q = [];
+    for (let i = 0; i < pts.length; i++) {
+      P.push(pts[i]); Q.push(qs[i]);
+      const n = P.length;
+      if (n < 4) continue;
+      const a = P[n - 2], b = P[n - 1];
+      for (let j = n - 4; j >= Math.max(0, n - 400); j--) {
+        const x = cross(P[j], P[j + 1], a, b);
+        if (x) { P.length = j + 1; Q.length = j + 1; P.push(x, b); Q.push(Q[j], qs[i]); break; }
+      }
+    }
+    return { pts: P, q: Q };
   }
 
   /* A moving average over five points (the ends kept): eases a line off the pixel grid's steps. */
@@ -571,7 +777,7 @@
   /* [lat, lon] of a point in pixels. */
   const latLonOf = (reg, x, y) => { const fr = reg.frame; return [fr.north - (y / reg.H) * fr.dLat, ((fr.west + (x / reg.W) * fr.dLon + 540) % 360) - 180]; };
 
-  const api = { build, frame, pixelOf, latLonOf, gradNoise };
+  const api = { build, frame, pixelOf, latLonOf, gradNoise, riverWidth, meanders };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.region = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

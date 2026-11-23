@@ -180,7 +180,7 @@
        * about twice as wide as a brook, never more than 2 pixels (times the zoom's scale). Each river is one stroke, in runs of nearly even width, so joints show
        * no beads.
        */
-      const riverWidth = (q, scale) => scale * Math.min(2, 0.45 + 0.28 * Math.log10(1 + q / reg.minFlow));
+      const riverWidth = (q, scale) => scale * R.riverWidth(q, reg.minFlow);
       function drawRivers(gg, proj, scale, sc = 1) {
         gg.strokeStyle = RIVER; gg.lineCap = 'round'; gg.lineJoin = 'round';
         const minQ = reg.minFlow * (sc < 0.6 ? 4 : sc < 1.2 ? 2 : 1);    // (fewer brooks when zoomed out)
@@ -399,7 +399,7 @@
         const f2 = (x) => Math.round(x * 10) / 10, fr = reg.frame;
         const lines = reg.rivers.map((rv) => {
           const q = rv.q.reduce((a, b) => Math.max(a, b), 0);
-          return `<polyline points="${rv.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(Math.min(2, 0.45 + 0.28 * Math.log10(1 + q / reg.minFlow)))}" data-flow="${Math.round(q)}"/>`;
+          return `<polyline points="${rv.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(R.riverWidth(q, reg.minFlow))}" data-flow="${Math.round(q)}"/>`;
         });
         const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${reg.W} ${reg.H}" width="${reg.W}" height="${reg.H}">\n<!-- ${fmt.num(fr.north, 3)}N to ${fmt.num(fr.south, 3)}, ${fmt.num(fr.west, 3)} to ${fmt.num(fr.east, 3)} (degrees, equirectangular); ${fmt.num(fr.pxKm, 3)} km a pixel at the centre -->\n<g fill="none" stroke="#245cac" stroke-linecap="round" stroke-linejoin="round">\n${lines.join('\n')}\n</g>\n</svg>\n`;
         save(new Blob([svg], { type: 'image/svg+xml' }), fileName('rivers', 'svg'));
