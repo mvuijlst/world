@@ -14,12 +14,118 @@
     return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   }
 
+  const round = (x, d) => Math.round(x * 10 ** d) / 10 ** d;
+
+  /*
+   * Lay out the planetary system around the world's current star: orbit 1 and
+   * the spacing are chosen so a stable orbit falls inside the habitable zone,
+   * the home world moves onto it, and the other bodies fill the remaining
+   * orbits (terrestrials inside the frost line, the largest giant on the first
+   * orbit past it, often a belt just inside). Changes w.system and w.planet.a
+   * (and w.planet.e, trimmed so the orbit stays inside the zone).
+   * keepNames: names to reuse, by kind, before rolling new ones.
+   */
+  function layoutSystem(w, st, r, name, keepNames = {}) {
+    const C = WS.calc;
+    const U = (a, b) => a + (b - a) * r();
+    const pool = {};
+    Object.keys(keepNames).forEach((k) => { pool[k] = keepNames[k].slice(); });
+    const nameFor = (kind) => (pool[kind] && pool[kind].length ? pool[kind].shift() : kind === 'belt' ? `${name()} Belt` : name());
+
+    // Orbits: pick spacing, then nudge the first orbit so one lands mid-HZ.
+    const hzMid = (st.hzIn + st.hzOut) / 2;
+    const fits = (o) => o.a > st.hzIn * 1.03 && o.a < st.hzOut * 0.97 && !o.crowded && !o.insideLimit;
+    let sys = null, homeOrbit = null;
+    for (let attempt = 0; attempt < 8 && !homeOrbit; attempt++) {
+      w.system.spacing = round(U(0.22, 0.4), 2);
+      const k = Math.max(0, Math.round(Math.log2(Math.max(1e-3, (hzMid - 0.3 * Math.sqrt(st.luminosity)) / w.system.spacing)) + 1));
+      let first = hzMid - (k === 0 ? 0 : w.system.spacing * 2 ** (k - 1));
+      if (first < 0.08) first = hzMid; // the home world becomes orbit 1
+      w.system.firstOrbit = round(first, 3);
+      sys = C.system(w.system, st);
+      if (!sys.orbits.some(fits)) { w.system.firstOrbit = round(hzMid, 3); sys = C.system(w.system, st); }
+      homeOrbit = sys.orbits.find(fits) || null;
+    }
+    if (!homeOrbit) { // a star too small or odd for the rules above: put the home world on orbit 1, mid-zone
+      w.system.firstOrbit = Math.max(round(hzMid, 4), 1e-4);
+      sys = C.system(w.system, st);
+      homeOrbit = sys.orbits[0];
+    }
+
+    w.planet.a = round(homeOrbit.a, 4);
+    const eMax = Math.max(0, Math.min(1 - st.hzIn / w.planet.a, st.hzOut / w.planet.a - 1)) * 0.8;
+    w.planet.e = round(U(0, Math.min(0.04, eMax)), 4);
+
+    // Bodies on the computed orbits.
+    const bodies = [];
+    const fb = sys.firstBeyondFrost;
+    sys.orbits.forEach((o, i) => {
+      if (o.a > 60 * Math.max(1, Math.sqrt(st.luminosity)) || o.crowded || o.insideLimit) return;
+      if (o.n === homeOrbit.n) return;
+      let kind = null;
+      if (i === fb) kind = 'gas';
+      else if (i === fb - 1) kind = r() < 0.7 ? 'belt' : null;
+      else if (i < fb) kind = r() < 0.65 ? 'terrestrial' : null;
+      else kind = r() < 0.8 ? (r() < 0.55 ? 'gas' : 'ice') : null;
+      if (!kind) return;
+      const b = WS.data.blankBody(kind, round(o.a, 4));
+      b.name = nameFor(kind);
+      if (kind === 'terrestrial') { b.radius = round(U(0.3, 1.3), 3); b.atmosphere = r() < 0.6; b.albedo = round(U(0.1, 0.6), 3); }
+      if (kind === 'gas') { b.radius = round(U(6, 12), 2); b.albedo = round(U(0.4, 0.55), 3); }
+      if (kind === 'ice') { b.radius = round(U(3, 5), 2); b.albedo = round(U(0.4, 0.5), 3); }
+      const dMin = Math.abs(b.a - w.planet.a), dMax = b.a + w.planet.a;
+      b.distance = round(U(dMin, dMax), 3);
+      bodies.push(b);
+    });
+    w.system.bodies = bodies;
+    const giants = bodies.filter((b) => b.kind === 'gas' || b.kind === 'ice');
+    w.system.outerGasGiant = giants.length ? giants[giants.length - 1].a : round(Math.max(st.frostLine * 1.5, w.system.outerGasGiant || 0), 3);
+    return w;
+  }
+
+  /*
+   * A new planetary system around the world's current star, with the home
+   * world on a habitable orbit. The star, the planet itself (mass, tilt, air…)
+   * and its moon are kept (the eccentricity is trimmed if it would leave the
+   * zone, the moon is only drawn in if the new orbit leaves
+   * it unbound); body names are reused where the kinds allow.
+   * Returns { system, planet: { a, e }, moon?: { a } } to merge into the world.
+   */
+  function regenerateSystem(world, seed = (Math.random() * 2 ** 31) | 0) {
+    const r = rng(seed);
+    const pick = (arr) => arr[Math.floor(r() * arr.length)];
+    const name = () => { const n = pick(SYL_A) + (r() < 0.6 ? pick(SYL_A) : '') + pick(SYL_B); return n[0].toUpperCase() + n.slice(1); };
+    const st = WS.calc.star(world.star);
+    const keepNames = {};
+    for (const b of (world.system && world.system.bodies) || []) (keepNames[b.kind] = keepNames[b.kind] || []).push(b.name);
+    const w = { system: { ...world.system, bodies: [] }, planet: { ...world.planet } };
+    layoutSystem(w, st, r, name, keepNames);
+    // keep the planet's own eccentricity unless it would carry it out of the zone
+    const a = w.planet.a, eMax = Math.max(0, Math.min(1 - st.hzIn / a, st.hzOut / a - 1)) * 0.8;
+    const e0 = Number.isFinite(world.planet.e) ? world.planet.e : 0;
+    w.planet.e = e0 <= eMax ? e0 : round(eMax, 4);
+    const out = { system: w.system, planet: { a, e: w.planet.e } };
+    // A closer orbit or a smaller star shrinks the Hill sphere: bring the moon
+    // inside half of it (the long-term stable part) if it now falls outside.
+    if (world.moon) {
+      const mz = WS.calc.moon(world.moon, w.planet, WS.calc.planet(w.planet, st), st);
+      const e = world.moon.e || 0;
+      const aMax = (0.45 * mz.zoneOut) / (1 + e), aMin = (mz.zoneIn * 1.5) / (1 - e);
+      if (world.moon.a * (1 + e) >= mz.zoneOut / 2 && aMax > aMin) out.moon = { a: Math.round(aMax) };
+    }
+    return out;
+  }
+
+  /** True when the home world orbits inside the star's habitable zone. */
+  function homeIsHabitable(world, st = WS.calc.star(world.star)) {
+    return world.planet.a >= st.hzIn && world.planet.a <= st.hzOut;
+  }
+
   function randomWorld(seed = (Math.random() * 2 ** 31) | 0) {
     const r = rng(seed);
     const U = (a, b) => a + (b - a) * r();
     const pick = (arr) => arr[Math.floor(r() * arr.length)];
     const name = () => { const n = pick(SYL_A) + (r() < 0.6 ? pick(SYL_A) : '') + pick(SYL_B); return n[0].toUpperCase() + n.slice(1); };
-    const round = (x, d) => Math.round(x * 10 ** d) / 10 ** d;
     const C = WS.calc;
 
     const w = WS.data.defaultWorld(`${name()} System`);
@@ -30,56 +136,17 @@
     const st = C.star(w.star);
     w.star.age = round(U(3.6, Math.min(st.maxAge * 0.85, 9)), 1);
 
-    // Orbits: pick spacing, then nudge the first orbit so one lands mid-HZ.
-    w.system.spacing = round(U(0.22, 0.4), 2);
-    const hzMid = (st.hzIn + st.hzOut) / 2;
-    const k = Math.max(0, Math.round(Math.log2(Math.max(1e-3, (hzMid - 0.3 * Math.sqrt(st.luminosity)) / w.system.spacing)) + 1));
-    let first = hzMid - (k === 0 ? 0 : w.system.spacing * 2 ** (k - 1));
-    if (first < 0.08) first = hzMid; // the home world becomes orbit 1
-    w.system.firstOrbit = round(first, 3);
-    let sys = C.system(w.system, st);
-    const fits = (o) => o.a > st.hzIn * 1.03 && o.a < st.hzOut * 0.97 && !o.crowded;
-    if (!sys.orbits.some(fits)) { w.system.firstOrbit = round(hzMid, 3); sys = C.system(w.system, st); }
-    const homeOrbit = sys.orbits.find(fits) || null;
-
     w.planet.name = name();
-    w.planet.a = homeOrbit ? round(homeOrbit.a, 3) : round(U(st.hzIn * 1.05, st.hzOut * 0.95), 3);
     w.planet.mass = round(U(0.6, 1.8), 2);
     w.planet.cmf = round(U(26, 38), 1);
     w.planet.tilt = round(U(8, 32), 1);
     w.planet.rotation = round(U(16, 36), 1);
-    const eMax = Math.max(0, Math.min(1 - st.hzIn / w.planet.a, st.hzOut / w.planet.a - 1)) * 0.8;
-    w.planet.e = round(U(0, Math.min(0.04, eMax)), 4);
     w.planet.lonPeriapsis = Math.round(U(0, 360));
     w.planet.albedo = round(U(0.27, 0.33), 2);
     w.planet.o2 = round(U(17, 26), 2);
     const pr = C.pressureRangeForO2(w.planet.o2);
     w.planet.pressure = round(U(Math.max(pr[0], 0.16 / (w.planet.o2 / 100)) * 1.05, Math.min(pr[1], 0.5 / (w.planet.o2 / 100)) * 0.9), 2);
-
-    // Bodies on the computed orbits.
-    const bodies = [];
-    const fb = sys.firstBeyondFrost;
-    sys.orbits.forEach((o, i) => {
-      if (o.a > 60 || o.crowded || o.insideLimit) return;
-      if (homeOrbit && o.n === homeOrbit.n) return;
-      let kind = null;
-      if (i === fb) kind = 'gas';
-      else if (i === fb - 1) kind = r() < 0.7 ? 'belt' : null;
-      else if (i < fb) kind = r() < 0.65 ? 'terrestrial' : null;
-      else kind = r() < 0.8 ? (r() < 0.55 ? 'gas' : 'ice') : null;
-      if (!kind) return;
-      const b = WS.data.blankBody(kind, round(o.a, 3));
-      b.name = kind === 'belt' ? `${name()} Belt` : name();
-      if (kind === 'terrestrial') { b.radius = round(U(0.3, 1.3), 3); b.atmosphere = r() < 0.6; b.albedo = round(U(0.1, 0.6), 3); }
-      if (kind === 'gas') { b.radius = round(U(6, 12), 2); b.albedo = round(U(0.4, 0.55), 3); }
-      if (kind === 'ice') { b.radius = round(U(3, 5), 2); b.albedo = round(U(0.4, 0.5), 3); }
-      const dMin = Math.abs(b.a - w.planet.a), dMax = b.a + w.planet.a;
-      b.distance = round(U(dMin, dMax), 3);
-      bodies.push(b);
-    });
-    w.system.bodies = bodies;
-    const giants = bodies.filter((b) => b.kind === 'gas' || b.kind === 'ice');
-    if (giants.length) w.system.outerGasGiant = giants[giants.length - 1].a;
+    layoutSystem(w, st, r, name);
 
     const pl = C.planet(w.planet, st);
     w.moon.name = name();
@@ -105,5 +172,5 @@
     return w;
   }
 
-  WS.generate = { randomWorld };
+  WS.generate = { randomWorld, regenerateSystem, homeIsHabitable };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -27,7 +27,7 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 00 | Briefing | names, presets, a random habitable-world roller, status of every module |
 | 01 | Galaxy | `GALAXY` — habitable zone, stellar census, multiplicity, seeded 3D star map (same Lehmer RNG, so seeds match the sheet) |
 | 02 | Star | `STAR` — class, luminosity, radius, temperature, lifetime, habitable zone |
-| 03 | Planetary System | `PLANETARY SYSTEM` — inner limit, Bode orbits, frost line, debris disk, plus an editable list of bodies |
+| 03 | Planetary System | `PLANETARY SYSTEM` — inner limit, Bode orbits, frost line, debris disk, plus an editable list of bodies; **Regenerate planetary system** lays out new orbits and bodies around the current star with the home world on a habitable orbit (offered on the Star step too when a change of star has left it outside the zone) |
 | 04 | Planet | `PLANET` — density, gravity, temperature, orbit, atmosphere and gas retention, circulation cells, a daylight-hours map |
 | 05 | Moon | `MOON` — moon zone, periods, tides, tidal locking |
 | 06 | Sky | `APPARENT SIZE & BRIGHTNESS` — the star from every world, planets from home, the moon and eclipses |

@@ -21,6 +21,39 @@
   }
   WS.kit = kit;
 
+  // Lay out a new planetary system around the current star, with the home world
+  // on a habitable orbit (after the star has been changed so that it no longer is).
+  async function regenerateSystem(ctx) {
+    const w = ctx.world;
+    const hab = WS.generate.homeIsHabitable(w);
+    const lead = hab ? '' : `${w.planet.name} is outside this star’s habitable zone. `;
+    if (!await WS.ui.ask(`${lead}Lay out a new planetary system around ${w.star.name}? Orbit 1, the spacing and the other bodies are replaced, and ${w.planet.name} moves onto a habitable orbit. The star, the planet’s own make-up and its moon are kept; body names are reused where they fit.`, { title: 'Regenerate planetary system', ok: 'Regenerate' })) return;
+    const p = WS.generate.regenerateSystem(w);
+    ctx.mutate((cur) => {
+      cur.system = p.system;
+      Object.assign(cur.planet, p.planet);
+      if (p.moon) Object.assign(cur.moon, p.moon);
+    }, { structural: true });
+    toast(`${ctx.world.planet.name} now orbits at ${fmt.num(ctx.world.planet.a, 3)} AU, with ${ctx.world.system.bodies.length} other bod${ctx.world.system.bodies.length === 1 ? 'y' : 'ies'}${p.moon ? '; the moon was drawn in to stay bound' : ''}`);
+  }
+
+  // Fault line + button, shown when the home world has left the habitable zone.
+  // always: keep the button visible (as a plain button) even when all is well.
+  function regenerateBox(ctx, { always = false } = {}) {
+    const note = h('ul', { class: 'diag', style: { marginBottom: '12px' } });
+    const btn = h('button', { class: 'btn', type: 'button', onclick: () => regenerateSystem(ctx) }, icon('dice'), 'Regenerate planetary system');
+    const el = h('div', null, note, h('div', { class: 'btn-row' }, btn));
+    el._update = (c) => {
+      const st = c.d.star, hab = WS.generate.homeIsHabitable(c.world, st);
+      el.style.display = hab && !always ? 'none' : '';
+      btn.classList.toggle('primary', !hab);
+      note.style.display = hab ? 'none' : '';
+      if (!hab) replace(note, h('li', { class: 'fail' }, h('span', { class: 'flag' }, 'FAULT'),
+        h('span', null, `${c.world.planet.name} at ${fmt.num(c.world.planet.a, 3)} AU is outside the habitable zone (${fmt.num(st.hzIn, 3)}–${fmt.num(st.hzOut, 3)} AU). Regenerate the system to move it onto a habitable orbit.`)));
+    };
+    return el;
+  }
+
   // ── 00 BRIEFING ──────────────────────────────────────────────────────
   WS.defineStep({
     id: 'briefing', num: '00', title: 'Briefing', code: '00_MISSION/BRIEFING', strip: 'World identity',
@@ -231,13 +264,16 @@
         h('thead', null, h('tr', null, h('th', null, 'Class'), h('th', null, 'Mass range (M☉)'), h('th', null, 'Temperature (K)'))),
         h('tbody', null, [['O', '16+', '33,000+'], ['B', '2.19 – 16', '10,000 – 33,000'], ['A', '1.44 – 2.19', '7,500 – 10,000'], ['F', '1.06 – 1.44', '6,000 – 7,500'], ['G', '0.84 – 1.06', '5,200 – 6,000'], ['K', '0.47 – 0.84', '3,700 – 5,200'], ['M', '0.075 – 0.47', '2,000 – 3,700']]
           .map(([c, m, t]) => h('tr', { 'data-cls': c }, h('td', { class: 't-amber' }, c), h('td', { class: 'num' }, m), h('td', { class: 'num' }, t)))));
+      const regen = k.add(regenerateBox(ctx));
+      const regenPanel = panel('No habitable world', { tag: 'SYSTEM' }, regen);
       const el = h('div', { class: 'grid two' },
-        h('div', { class: 'stack-gap' }, inputs, panel('Reference', { tag: 'MAIN SEQUENCE' }, h('div', { class: 'table-wrap' }, ref))),
+        h('div', { class: 'stack-gap' }, inputs, regenPanel, panel('Reference', { tag: 'MAIN SEQUENCE' }, h('div', { class: 'table-wrap' }, ref))),
         h('div', { class: 'stack-gap' }, panel('Stellar disc', { tag: 'TO SCALE vs SOL', flush: true }, discHost), ro));
       return {
         el,
         update(c) {
           k.update(c);
+          regenPanel.style.display = WS.generate.homeIsHabitable(c.world, c.d.star) ? 'none' : '';
           replace(discHost, V.starDisc(c.d.star));
           ref.querySelectorAll('tr[data-cls]').forEach((tr) => { tr.className = tr.dataset.cls === c.d.star.spectral.letter ? 'hz' : ''; });
         },
@@ -273,7 +309,8 @@
         h('div', { class: 'fields', style: { marginTop: '12px' } },
           k.f({ path: 'system.firstOrbit', label: 'Orbit 1', unit: 'AU', min: 0.001, slider: [0.02, 2], step: 0.005, help: 'Distance of your innermost planetary orbit. It must lie beyond the system’s inner limit.', sub: (c) => `${fmt.num(c.world.system.firstOrbit * 149.6, 2)} million km` }),
           k.f({ path: 'system.spacing', label: 'Spacing factor', min: 0.01, slider: [0.05, 1], step: 0.01, help: 'Orbits are spaced with a Bode’s-law progression: aₙ = a₁ + s·2ⁿ⁻². The Solar System’s value is 0.3.' }),
-          k.f({ path: 'system.outerGasGiant', label: 'Outermost gas giant', unit: 'AU', min: 0.01, slider: [1, 100], step: 0.01, help: 'Orbit of your outermost gas planet. Its 2:3 and 1:2 resonances bound the debris disk.' })));
+          k.f({ path: 'system.outerGasGiant', label: 'Outermost gas giant', unit: 'AU', min: 0.01, slider: [1, 100], step: 0.01, help: 'Orbit of your outermost gas planet. Its 2:3 and 1:2 resonances bound the debris disk.' })),
+        h('div', { style: { marginTop: '12px' } }, k.add(regenerateBox(ctx, { always: true }))));
       const ro = k.ro([
         { label: 'Inner limit', value: (c) => fmt.num(c.d.system.innerLimit, 4), unit: 'AU', sub: (c) => `${fmt.num(c.d.system.innerLimit * 149.6, 2)} million km`, help: 'The Roche limit of the star. Planets cannot orbit closer than this.' },
         { label: 'Habitable zone', value: (c) => `${fmt.num(st().hzIn, 3)}–${fmt.num(st().hzOut, 3)}`, unit: 'AU', state: () => 'ok' },
