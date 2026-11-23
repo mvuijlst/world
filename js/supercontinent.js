@@ -789,6 +789,8 @@
     for (const f of features) if (f.kind === 'crust') area.set(f.plateId, (area.get(f.plateId) || 0) + S.areaFraction(f.coords));
     let prev = null, n = features.filter((f) => f.kind === 'suture').length;
     const parted = new Set();
+    // trenches and arcs closed at the age they began never were: they go, with what came of them
+    const stillborn = new Set();
     const end = Math.max(0, opts.to ?? 0);
     // from: begin there (to carry on a history: what touches then has not just met)
     const top = opts.from != null ? Math.min(start, opts.from) : start - step;
@@ -810,9 +812,10 @@
         const hit = [...coasts.values()].find((e) => e.plateId !== a.plateId && angle(e.c, pts[0]) < e.rad + 3 && (pts.some((p) => e.pieces.some((q) => q.inside(p))) || pts.some((p) => e.pts.some((t) => dot(p, t) > Math.cos(D2R)))));
         if (!hit) continue;
         a.end = +age.toFixed(3);
+        if (a.end >= (a.begin ?? start)) stillborn.add(a.id);
         const B = Q.inverse(m.absolute(hit.plateId, age));
         features.push({ ...a, id: `${a.id}-t${hit.plateId}`, name: `${a.name} (accreted)`, plateId: hit.plateId, coords: pts.map((p) => fix4(S.latLon(Q.rotate(B, p)))), begin: +age.toFixed(3), end: undefined, accreted: true });
-        for (const z of features.filter((x) => x.kind === 'subduction' && x.plateId === a.plateId && live(x) && Math.min(...a.coords.map((q) => S.distanceToLine(q, x.coords))) < 8)) z.end = +age.toFixed(3);
+        for (const z of features.filter((x) => x.kind === 'subduction' && x.plateId === a.plateId && live(x) && Math.min(...a.coords.map((q) => S.distanceToLine(q, x.coords))) < 8)) { z.end = +age.toFixed(3); if (z.end >= (z.begin ?? start)) stillborn.add(z.id); }
         events.push({ age, kind: 'arc', a: a.plateId, b: hit.plateId, name: a.name });
       }
       // continents that meet
@@ -827,13 +830,14 @@
         features.push({ id: `u${big}-${other}-${Math.round(age)}`, kind: 'suture', plateId: big, partner: other, name: `Suture ${++n}`, coords: contact.map((v) => fix4(S.latLon(Q.rotate(back, v)))), begin: +age.toFixed(3), auto: true });
         for (const z of features.filter((x) => x.kind === 'subduction' && (x.plateId === big || x.plateId === other) && live(x))) {
           const Z = m.absolute(z.plateId, age), zs = z.coords.map((c) => Q.rotate(Z, S.vec(c)));
-          if (zs.some((p) => contact.some((q) => angle(p, q) < 8))) z.end = +age.toFixed(3);
+          if (zs.some((p) => contact.some((q) => angle(p, q) < 8))) { z.end = +age.toFixed(3); if (z.end >= (z.begin ?? start)) stillborn.add(z.id); }
         }
         events.push({ age, kind: 'continent', a: big, b: other });
       }
       prev = now;
     }
-    return { features, events };
+    const gone = (f) => f.auto && (stillborn.has(f.id) || (f.accreted && [...stillborn].some((id) => f.id.startsWith(`${id}-t`))) || (f.kind === 'orogen' && stillborn.has(f.id.slice(1))));
+    return { features: stillborn.size ? features.filter((f) => !gone(f)) : features, events };
   }
 
   /*

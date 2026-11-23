@@ -255,3 +255,14 @@ test('advance carries a history on to a new present, keeping the old marks', () 
   // the same inputs give the same world
   assert.deepEqual(G.advance(w, { duration: 100, mode: 'cycle', seed: 5 }), G.advance(w, { duration: 100, mode: 'cycle', seed: 5 }));
 });
+
+test('no trench or island arc ends at the age it begins', () => {
+  for (const seed of [7, 1234, 390646]) {
+    const w = G.makeWorld({ seed, plates: 4 });
+    const bad = w.features.filter((f) => (f.kind === 'subduction' || f.kind === 'arc') && f.end != null && f.begin != null && f.end >= f.begin);
+    assert.deepEqual(bad.map((f) => `${f.name} ${f.begin}/${f.end}`), [], `seed ${seed}`);
+    // and nothing is left that came of one that went
+    const ids = new Set(w.features.map((f) => f.id));
+    for (const o of w.features.filter((f) => f.kind === 'orogen' && f.type === 'cordillera' && f.auto)) assert.ok(ids.has(o.id.slice(1)), `${o.name} has its trench`);
+  }
+});
