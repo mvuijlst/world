@@ -328,7 +328,16 @@ It agrees with the world map:
   upscaled. Fractal noise (bends up to about a source cell across, each finer scale relatively stronger,
   warped so capes hook and bays open out) moves it in and out across itself, and the heights within a
   cell or so of it are read from that far across (a warp: the coastal plain, the cliffs and the shelf move
-  with the coast); further away nothing moves. The same in a Close-up, at its own scale. Ground pushed below sea level that no sea reaches is a dry hollow, not an inland sea.
+  with the coast); further away nothing moves. The same in a Close-up, at its own scale.
+- **What kind of coast** follows from the land behind it (the source's relief and glaciers, now or in the
+  ice ages): low and never glaciated (most of Africa, Australia, Brazil) gives long gentle curves and few
+  capes, the bends small and the finest scales weak; mountainous (Greece, Dalmatia, Galicia: drowned
+  ridges and valleys) rugged; glaciated (Finland, Maine) ice-scoured and ragged, with swarms of islets.
+  The shore's own height noise follows it too, or on a low coast it would fray it into islets.
+- **Fjords**: on a glaciated, mountainous coast the main valleys reaching the sea are drowned from their
+  mouths inland (up to a world map cell and more, each valley its own reach): U-shaped troughs a couple
+  of km wide, deep, shallower and narrower inland, bending and branching as the valleys do (Norway,
+  Chile, British Columbia). Ground pushed below sea level that no sea reaches is a dry hollow, not an inland sea.
 - **Hills between the streams** (as Génevaux et al. 2013, *Terrain Generation Using Procedural Models
   Based on Hydrology*, build their crests): the streams are found first (where water routed over the land,
   with some unevenness so that it gathers, drains more than a few km²), each traced as a main stem; the

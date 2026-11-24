@@ -13,7 +13,7 @@ self.onmessage = (e) => {
   try {
     const region = WS.region.build(map, water, opts);
     // (each buffer once: the climate and the water share theirs)
-    const bufs = new Set([region.z, region.flow, region.recv, region.lake, region.biome, region.cut, ...Object.values(region.climate), ...Object.values(region.water)].filter((a) => a && a.buffer).map((a) => a.buffer));
+    const bufs = new Set([region.z, region.flow, region.recv, region.lake, region.biome, region.cut, ...Object.values(region.climate), ...Object.values(region.water), region.ice].filter((a) => a && a.buffer).map((a) => a.buffer));
     self.postMessage({ id, region }, [...bufs]);
   } catch (err) {
     self.postMessage({ id, error: String((err && err.stack) || err) });

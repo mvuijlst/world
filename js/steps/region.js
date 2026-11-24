@@ -114,7 +114,7 @@
       const wt = { runoff: water.runoff, P: water.P, PET: water.PET, Tw: water.Tw, Tc: water.Tc, Ta: water.Ta, Pw: water.Pw, liquid: water.liquid, tBoil: water.tBoil };
       return {
         ref: `${c.mapRef.key}|${c.mapRef.strokes}`, water: wt, centre: defaultCentre(map), span: Math.PI * d.planet.radiusKm,
-        source: { W: map.W, H: map.H, z: map.z, planet: map.planet, rivers: map.rivers ? { recv: map.rivers.recv, discharge: map.rivers.discharge } : null },
+        source: { W: map.W, H: map.H, z: map.z, planet: map.planet, rivers: map.rivers ? { recv: map.rivers.recv, discharge: map.rivers.discharge } : null, glaciers: map.glaciers ? { ice: map.glaciers.ice } : null },
         picker: { W: map.W, H: map.H, z: map.z, factor: map.planet?.factor ?? 1, frame: worldFrame, wrap: true },
       };
     }),
@@ -126,7 +126,7 @@
       const r = c.region;
       return {
         ref: c, water: null, centre: riverCentre(r), span: r.frame.span,
-        source: { W: r.W, H: r.H, z: r.z, frame: r.frame, water: r.water, lake: r.lake, recv: r.recv, flow: r.flow, planet: r.planet, rivers: r.rivers },
+        source: { W: r.W, H: r.H, z: r.z, frame: r.frame, water: r.water, lake: r.lake, recv: r.recv, flow: r.flow, planet: r.planet, rivers: r.rivers, ice: r.ice },
         picker: { W: r.W, H: r.H, z: r.z, factor: r.planet?.factor ?? 1, frame: r.frame, wrap: false, rivers: r.rivers, lake: r.lake },
       };
     }),

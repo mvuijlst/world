@@ -114,7 +114,14 @@
     const srcLake = sub && map.lake ? map.lake : null;
 
     // ── the world map's relief round each of its cells (highest less lowest of the 3 × 3) ──
-    const rel = new Float32Array(gW * gH);
+    const rel = new Float32Array(gW * gH), srcIce = sub ? map.ice : map.glaciers && map.glaciers.ice, iceN = new Float32Array(gW * gH);
+    // (how glaciated, now or in the ice ages, round each source cell: the most of its 3 × 3, so a
+    // coast cell, itself sea, has the ice of the land beside it)
+    if (srcIce) for (let j = 0; j < gH; j++) for (let i = 0; i < gW; i++) {
+      let m = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) m = Math.max(m, srcIce[clampJ(j + dj) * gW + wrapI(i + di)] || 0);
+      iceN[j * gW + i] = m;
+    }
     for (let j = 0; j < gH; j++) for (let i = 0; i < gW; i++) {
       let lo = Infinity, hi = -Infinity;
       // (on land, of the land only: a coast beside a deep sea is not rugged for that)
@@ -130,7 +137,7 @@
     // facets as stripes; the world map's cells, coarse, through Catmull-Rom, which keeps their heights)
     const bs = (p0, p1, p2, p3, t) => { const t2 = t * t, t3 = t2 * t; return ((1 - t) ** 3 * p0 + (3 * t3 - 6 * t2 + 4) * p1 + (-3 * t3 + 3 * t2 + 3 * t + 1) * p2 + t3 * p3) / 6; };
     const interp = sub ? bs : cr;
-    const base = new Float32Array(N), relief = new Float32Array(N);
+    const base = new Float32Array(N), relief = new Float32Array(N), iceK = new Float32Array(N);
     const xyz = new Float32Array(N * 3);
     for (let y = 0; y < H; y++) {
       const la = latOf(y), fj = gfj(la), j0 = Math.floor(fj), tj = fj - j0, cl = Math.cos(la * D2R), sl = Math.sin(la * D2R);
@@ -140,9 +147,21 @@
         base[k] = interp(row(j0 - 1), row(j0), row(j0 + 1), row(j0 + 2), tj);
         const r0 = clampJ(j0) * gW, r1 = clampJ(j0 + 1) * gW;
         relief[k] = (rel[r0 + wrapI(i0)] * (1 - ti) + rel[r0 + wrapI(i0 + 1)] * ti) * (1 - tj) + (rel[r1 + wrapI(i0)] * (1 - ti) + rel[r1 + wrapI(i0 + 1)] * ti) * tj;
+        iceK[k] = (iceN[r0 + wrapI(i0)] * (1 - ti) + iceN[r0 + wrapI(i0 + 1)] * ti) * (1 - tj) + (iceN[r1 + wrapI(i0)] * (1 - ti) + iceN[r1 + wrapI(i0 + 1)] * ti) * tj;
         xyz[k * 3] = R * cl * Math.cos(lo * D2R); xyz[k * 3 + 1] = R * cl * Math.sin(lo * D2R); xyz[k * 3 + 2] = R * sl;
       }
     }
+    // what kind of coast each pixel would have (smoothly, from the source round it): how glaciated, how
+    // high and rugged. Low and never glaciated (most of Africa, Australia, Brazil): long gentle curves,
+    // few capes. Mountainous (Greece, Dalmatia, Galicia: drowned ridges and valleys): rugged. Glaciated
+    // (Finland, Maine, Scotland): ice-scoured, very ragged, swarms of skerries; where also high, fjords
+    const roughK = new Float32Array(N), iceS = new Float32Array(N);
+    for (let k = 0; k < N; k++) {
+      const rugged = smooth((relief[k] * f - 250) / 1500);
+      iceS[k] = smooth((iceK[k] - 0.15) / 0.5);
+      roughK[k] = clamp(Math.max(0.08 + 0.6 * rugged, iceS[k]), 0, 1);
+    }
+
     // ── the coast: moved sideways, as fractal as real coasts ──
     // The world map knows where its coast runs only to within a cell, and in between its heights are
     // smooth: on its own the coast here would be that cell-sized outline, upscaled. So the coast is moved
@@ -162,8 +181,14 @@
         const X = xyz[k * 3], Y = xyz[k * 3 + 1], Z = xyz[k * 3 + 2];
         // (warped by the coast's own largest bends: capes that hook, bays that open out)
         const wq = 0.5 * lam0, wx = wq * ncw(X / lam0, Y / lam0, Z / lam0), wy = wq * ncw(Y / lam0 + 13.1, Z / lam0, X / lam0);
-        let d = 0, a = amp0, lam = lam0;
-        for (let o = 0; o < octC; o++, a *= 0.82, lam *= 0.5) d += a * nc((X + wx) / lam, (Y + wy) / lam, Z / lam + o * 7.7);
+        const rough = roughK[k];
+        let d = 0, a = amp0 * (0.3 + 0.95 * rough), lam = lam0;
+        const per = 0.6 + 0.26 * rough;                        // (rougher: finer scales relatively stronger)
+        for (let o = 0; o < octC; o++, a *= per, lam *= 0.5) d += a * nc((X + wx) / lam, (Y + wy) / lam, Z / lam + o * 7.7);
+        // fjords: glacial troughs drowned by the sea, long narrow inlets (some 2-5 km wide, up to a source
+        // cell or more long) cut straight into the high ground, roughly across the coast, branching: lines
+        // laid out by where along the coast each pixel is (the nearest point of the coast: its own distance
+        // back along the way the distance grows), so they run across the coast, with a slow wander
         shift[k] = 1.6 * d * (1 - smooth((Math.abs(sd) - 0.5 * reach) / (0.5 * reach)));
       }
       // the heights near the coast read from a point moved across it by that much (a warp: the coast,
@@ -209,12 +234,14 @@
         const mtn = smooth((bm - 700) / 1600) * smooth((relief[k] * f - 300) / 1200 + 0.3);
         amp = (ampS * (14 + 0.11 * Math.max(0, bm) + 0.22 * relief[k] * f)) / f;
         // the shore: low land and shallow sea break up into bays, spits and islets
-        const shore = Math.exp(-Math.abs(bm) / (60 * Math.sqrt(ampS)));
+        // (the shore's own roughness: as rugged as the coast; on a smooth low coast, little, or the plain's
+        // gentle rise would let it fray the coast into islets)
+        const shore = Math.exp(-Math.abs(bm) / (60 * Math.sqrt(ampS))) * (0.15 + 0.85 * roughK[k]);
         v = (1 - mtn) * s + mtn * (0.35 * s + 1.1 * r);
         v = (amp * v + ((30 * ampS) / f) * shore * c) / amp;
       } else {
         amp = (ampS * (6 + 0.04 * -bm + 0.12 * relief[k] * f)) / f;
-        v = (amp * s + ((30 * ampS) / f) * Math.exp(bm / (60 * Math.sqrt(ampS))) * c) / amp;
+        v = (amp * s + ((30 * ampS) / f) * Math.exp(bm / (60 * Math.sqrt(ampS))) * (0.15 + 0.85 * roughK[k]) * c) / amp;
       }
       z[k] = b + amp * detailX * v;
       noiseD[k] = amp * detailX * v; ampK[k] = (b > 0 || bm > -30) ? amp * detailX : 0;
@@ -582,6 +609,45 @@
           const nz2 = z[k] - 0.25 * wv * noiseD[k] + 1.0 * wv * ampK[k] * (shape - mean);
           z[k] = base[k] > 0 ? Math.max(Math.min(z[k], 0.5), nz2) : nz2;
         }
+        // fjords: on a glaciated, mountainous coast the ice cut the main valleys into deep U-shaped troughs,
+        // and the sea came in up them. Each main valley that reaches the sea there is drowned from its mouth
+        // inland, as far as the coast's ice and height say (up to a source cell and more), a couple of km
+        // wide (more for a bigger valley), deep, shallower and narrower inland; it follows the valley, so it
+        // bends and branches as the valleys do
+        const fjK = new Float32Array(N);
+        let anyFj = false;
+        for (let k = 0; k < N; k++) { fjK[k] = iceS[k] * smooth((relief[k] * f - 400) / 1000); if (fjK[k] > 0.05) anyFj = true; }
+        if (anyFj) {
+          // how far up its valley each stream pixel is from the sea (km)
+          const md = new Float32Array(N).fill(Infinity);
+          for (let o = 0; o < fv.no; o++) {
+            const k = fv.order[o];
+            if (label[k] < 0) continue;
+            const r = fv.recv[k], y = (k / W) | 0, ry = (r / W) | 0;
+            const step = r >= 0 ? Math.hypot((k - y * W - (r - ry * W)) * dxKm[y], (y - ry) * dyKm) : 0;
+            md[k] = r < 0 || !(z[r] > 0) ? step : label[r] >= 0 ? md[r] + step : Infinity;
+          }
+          // the nearest stream pixel to each pixel (and how far)
+          const near = Int32Array.from(label, (l, k) => (l >= 0 ? k : -1)), dS = Float32Array.from(label, (l) => (l >= 0 ? 0 : 1e9));
+          chamfer(dS, near);
+          const minArea = (0.12 * gkm) ** 2;
+          for (let k = 0; k < N; k++) {
+            const c = near[k];
+            if (c < 0 || !(z[k] > -1e3)) continue;
+            const st = fjK[c];
+            if (st < 0.05 || !(md[c] < Infinity)) continue;
+            const area = acc[c] * pxKm * pxKm;
+            if (area < minArea) continue;
+            // (each valley its own reach inland)
+            const h = Math.imul(lab[k] + 7, 2654435761) >>> 0, len = gkm * st * (0.6 + 1.1 * ((h & 0xffff) / 0xffff)) * clamp(Math.sqrt(area / (4 * minArea)), 0.5, 1.6);
+            const t = md[c] / len;
+            if (t >= 1) continue;
+            const halfW = clamp(0.5 + 0.08 * Math.sqrt(area / 10), Math.max(0.8, 0.8 * pxKm), 3.5) * (1 - 0.5 * t);
+            if (dS[k] > halfW) continue;
+            const depth = ((40 + 500 * st) * (1 - 0.75 * t)) / f, prof = Math.sqrt(Math.max(0, 1 - (dS[k] / halfW) ** 2));
+            z[k] = Math.min(z[k], -1 - depth * prof);
+          }
+        }
       }
     }
 
@@ -841,7 +907,7 @@
     return {
       frame: fr, W, H, z, flow: Float32Array.from(flow), recv, lake, biome, rivers, oxbows, braids, cut, inflows: inflows.map((x) => ({ at: ll(x.k), q: x.q })), minFlow,
       climate: { Tw: cTw, Tc: cTc, P },
-      water: { runoff, P, PET: cPET, Tw: cTw, Tc: cTc, Ta: cTa, Pw, liquid, tBoil }, planet,
+      water: { runoff, P, PET: cPET, Tw: cTw, Tc: cTc, Ta: cTa, Pw, liquid, tBoil }, planet, ice: iceK,
       stats: {
         land: landPx / N, landKm2, highest: { m: hiZ, at: ll(hiK) }, deepest: { m: loZ, at: ll(loK) }, lakes, saltLakes, lakeKm2,
         eroded, deepestCut: deepest, biggest: bigK >= 0 ? { q: bigQ, at: ll(bigK) } : null, rivers: rivers.length, minArea,
