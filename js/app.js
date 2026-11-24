@@ -376,7 +376,8 @@
 
   function renderStep() {
     const id = (location.hash.match(/^#\/([\w-]+)/) || [])[1] || 'briefing';
-    const step = stepById(id) || WS.steps[0];
+    // (steps that were merged into others: their old links still work)
+    const step = stepById({ region: 'atlas', closeup: 'atlas' }[id] || id) || WS.steps[0];
     const changed = app.step !== step;
     app.step = step;
     const main = document.getElementById('stage');

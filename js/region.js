@@ -1114,14 +1114,14 @@
 
   /*
    * The reaches of a river (axis indices [i, j)) that braid and are drawn so: where it clearly braids and
-   * on until it clearly does not, its bed (some 15 channel widths) at least a couple of pixels wide and the
+   * on until it clearly does not, its bed (some 15 channel widths) at least 6 pixels wide and the
    * reach at least twice as long as the bed is wide. Shared by the meanders (none there) and the drawing.
    */
   function braidReaches(ax, o) {
     const out = [], n = ax.pts.length;
     if (!o.climAt || n < 8) return out;
     const qTop = ax.q.reduce((a, b) => Math.max(a, b), 0);
-    if ((15 * 2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm < 2) return out;
+    if ((15 * 2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm < 6) return out;
     const bs = braidiness(ax, o);
     let i = 0;
     while (i < n) {
@@ -1130,7 +1130,7 @@
       let len = 0; for (let k = i + 1; k < j; k++) len += Math.hypot(ax.pts[k][0] - ax.pts[k - 1][0], ax.pts[k][1] - ax.pts[k - 1][1]);
       let qm = 0; for (let k = i; k < j; k++) qm = Math.max(qm, ax.q[k]);
       const bed = (15 * 2.7 * Math.sqrt(qm)) / 1000 / o.pxKm;
-      if (bed >= 2 && len >= 2 * bed) out.push([i, j]);
+      if (bed >= 6 && len >= 2 * bed) out.push([i, j]);
       i = j;
     }
     return out;
@@ -1139,7 +1139,7 @@
   /*
    * Braided reaches: where a river braids (braidiness) it spreads over a wide bed of bare gravel (some
    * 15 channel widths: the Waimakariri's is a kilometre for some 120 m³/s) in several channels that part and rejoin around bars. Only where that bed is at
-   * least a couple of pixels wide: in a Close-up. rivers: the drawn rivers [{pts, q}]; axes: the same
+   * least 6 pixels wide: in a Close-up. rivers: the drawn rivers [{pts, q}]; axes: the same
    * before meandering [{pts, q, slope}]. Returns [{pts, band (px per point), strands: [[x, y]...], wStrand (px)}].
    */
   function braided(rivers, axes, o) {
@@ -1148,7 +1148,7 @@
       const ax = axes[ri];
       if (!ax || ax.pts.length < 8 || rv.pts.length < 4) return;
       const qTop = rv.q.reduce((a, b) => Math.max(a, b), 0);
-      if ((15 * 2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm < 2) return;                    // (the bed under 2 px)
+      if ((15 * 2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm < 6) return;                    // (the bed under 6 px: not drawn)
       // the drawn point nearest an axis point (the drawn line may meander elsewhere)
       const nearest = (p, from) => { let bi = from, bd = Infinity; for (let k = from; k < rv.pts.length; k++) { const d = Math.hypot(rv.pts[k][0] - p[0], rv.pts[k][1] - p[1]); if (d < bd) { bd = d; bi = k; } } return bi; };
       let from = 0;
@@ -1159,7 +1159,7 @@
         if (pts.length < 4) continue;
         const L = [0]; for (let k = 1; k < pts.length; k++) L.push(L[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
         const total = L[L.length - 1], wq = (2.7 * Math.sqrt(qs.reduce((x, c) => Math.max(x, c), 0))) / 1000 / o.pxKm, bed = 15 * wq;
-        if (!(total > 1.5 * bed && bed >= 2)) continue;
+        if (!(total > 1.5 * bed && bed >= 6)) continue;
         // the bed, widest in the middle of the reach, narrowing to the river at its ends
         const band = L.map((l) => bed * (0.3 + 0.7 * smooth(Math.min(l, total - l) / (0.6 * bed))) * (0.85 + 0.3 * (0.5 + 0.5 * nz(l / (4 * bed), ri * 1.3, 0.7))));
         const nrm = pts.map((p, k) => { const p0 = pts[Math.max(0, k - 2)], p1 = pts[Math.min(pts.length - 1, k + 2)], dx = p1[0] - p0[0], dy = p1[1] - p0[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; });

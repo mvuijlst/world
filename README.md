@@ -40,12 +40,11 @@ The only network use is Google Fonts; without it the UI falls back to system fon
 | 10 | World map | the surface today from the plates' history (Log 20–26): plates and their boundaries, continents and shelves at a chosen land share, mountains by type and age, islands and hotspot volcanoes, sea depth from ocean-floor age, trenches; scaled to gravity (with the gravity scaling factor) and radius, ridge depth, erosion, with valleys carved by rivers and deltas at their mouths; map or globe, a brush to raise and lower, colour and 16-bit height PNGs, and the drawing kit; the workbook's `TECTONICS` sheet as a reference (range cross-sections, erosion, max peak, ocean depth by crust age) |
 | 11 | Climate | from the map, star and spin (Log 28–34): pressure and winds, ocean currents, upwelling, fishing grounds and reefs, temperature and precipitation by season, Köppen climate zones; any planet, locked worlds included |
 | 12 | Rivers & biomes | from the map and its climate: rivers down to the sea, fresh and salt lakes, basins that drain inland, and biomes; map or globe, a PNG of the map and the rivers as SVG |
-| 13 | Region | a closer map of part of the world map, 200–3,200 km across at down to 0.1 km a pixel, that agrees with it: finer relief, its own drainage and valleys, lakes, rivers down to brooks (and those entering from outside), biomes by height; zoom and pan, PNG, 16-bit heightmap and rivers SVG |
-| 14 | Close-up | part of the Region, 10–200 km across at down to about 10 m a pixel, cut from it as the Region is cut from the world map: its land with finer detail still, following the Region's rivers, big rivers at their true width migrating over their floodplains, with oxbow lakes |
-| 15 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
-| 16 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
-| 17 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
-| 18 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
+| 13 | Atlas | one zoomable map from the whole world down to a few metres a pixel: the world map, enlarged as a smooth preview wherever you zoom past it; **Build detail** builds a region (200–3,200 km, down to 0.1 km a pixel: coasts by type, fjords, hills shaped by their streams, rivers and lakes, biomes by height) or, inside one, a close-up (10–200 km: every stream, meanders and oxbow lakes, braided reaches) for what is on screen, shown in place as it is built; PNG, 16-bit heightmap and rivers SVG of each |
+| 14 | Climate Zones | `CLIMATE ZONES` — Köppen reference plus latitude belts for your planet, and the share of each zone on your map (from the Climate step) |
+| 15 | Population | `POPULATION` — land use, carrying capacity, logistic growth, Zipf distribution; uninhabitable and productive land and the number of continents can be taken from the map's biomes |
+| 16 | Calendar | `CALENDAR` — solar, lunar and lunisolar calendars with leap cycles as exact fractions |
+| 17 | Dossier | one-page summary, JSON export/import, Markdown copy, print |
 
 In the spreadsheet each sheet asks for the star mass, planet mass and so on again;
 here each value has one owner step and the others show it as a linked
@@ -311,20 +310,28 @@ with the Climate step's seasons.
   the continents (landmasses of at least 1 % of the land). The land share is offered only when it is set
   on the World map step, since otherwise the map's sea level follows Population's.
 
+## Atlas: regions and close-ups
+
+The Atlas step (`js/steps/region.js`) is one map you can drag and zoom (wheel, double-click, buttons)
+from the whole world down to a few metres a pixel, with levels of detail:
+- **The world map**, always there; once zoomed in past what its cells can show, it is drawn as a
+  smooth preview (its heights through a cubic, shaded) for what is on screen, at once.
+- **Build detail** builds what the view calls for, for what is on screen: a **region** (200–3,200 km
+  across, below) when zoomed out, or, inside a built region and zoomed in to 200 km or less, a
+  **close-up** (10–200 km, below). A dashed box shows what it would build. Nothing is built until
+  asked. The build runs off the page's thread and is shown in place as it goes, stage by stage (the
+  coast moved, the finer relief, the hills shaped by their streams, the valleys carved, lakes and
+  water, biomes, rivers), with a progress bar.
+- **Built detail stays where it was built** (outlined), drawn over the world map, the close-up over its
+  region; zoomed past either, it too is enlarged as a preview. One region and one close-up are kept at
+  a time; building a region elsewhere replaces it (and its close-up). The old Region and Close-up links
+  open the Atlas.
+
 ## Region
 
-**Preview first, build on request.** Picking a place (on the map below, by its centre or size) shows
-it at once: the map it is cut from, enlarged, with nothing added. Nothing is built until **Build
-detail**; the build runs off the page's thread and the map shows each stage as it is reached (the
-coast moved, the finer relief, the hills shaped by their streams, the valleys carved, lakes and
-water, biomes, rivers), with a progress bar. The same on Close-up; if the region it is cut from is
-not built yet, it offers to build that first (and then shows the close-up's preview).
-
-The Region step (`js/region.js`, `js/steps/region.js`, built in `js/regionworker.js`) is a closer map of
-one part of the World map: a square window 200–3,200 km across at 512–2,048 pixels, so a few hundred
-metres to a few km a pixel where the world map's cells are some 55 km. Click the world map to place it
-(by default it sits on the mouth of the largest river away from the poles); zoom and pan the closer map.
-It agrees with the world map:
+A region (`js/region.js`, built in `js/regionworker.js`) is a closer map of one part of the World map: a square window 200–3,200 km across at 512–2,048 pixels, so a few hundred
+metres to a few km a pixel where the world map's cells are some 55 km, built on the Atlas for what is
+on screen. It agrees with the world map:
 - **Heights**: the world map's (bicubic between its cells), plus detail finer than one of its cells only,
   so its large shapes stay the world map's own. The detail is fractal noise in km on the sphere (a place
   always gets the same detail): ridged crests in mountains, hills on uplands, gentle swells on plains,
@@ -401,10 +408,10 @@ same from it.
 
 ## Close-up
 
-The Close-up step does to the Region what the Region does to the world map: a window 10–200 km across
+A close-up does to the region what the region does to the world map: a window 10–200 km across
 (at most half the Region), 512–2,048 pixels, so down to about 10 m a pixel, built by the same code
-(`build` in `js/region.js` takes either the world map or a region as its source). Click the Region to
-place it (by default on the Region's largest river). It agrees with the Region:
+(`build` in `js/region.js` takes either the world map or a region as its source), built on the Atlas
+inside the region. It agrees with the region:
 - its heights are the Region's (read through a cubic B-spline, which smooths: a Region's pixel is its
   finest detail, not a value to reproduce exactly) with detail below one of its pixels (fractal: much
   gentler than below a world map cell, its height falling as the cell size to the 0.7), shaped by its
