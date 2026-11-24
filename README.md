@@ -323,14 +323,21 @@ It agrees with the world map:
   always gets the same detail): ridged crests in mountains, hills on uplands, gentle swells on plains,
   more where the world map is high and rugged; at the shore a rougher noise breaks the coast into bays,
   spits and islets. Ground pushed below sea level that no sea reaches is a dry hollow, not an inland sea.
+- **Hills between the streams** (as Génevaux et al. 2013, *Terrain Generation Using Procedural Models
+  Based on Hydrology*, build their crests): the streams are found first (where water routed over the land,
+  with some unevenness so that it gathers, drains more than a few km²), each traced as a main stem; the
+  ground then rises from each stream to the ridges where the nearest stream changes (concave below,
+  convex above), the floor as deep as its stream is big, the crest the same on both sides, the land's
+  mean height kept. Every slope leads down to a stream and up to a ridge, spurs run down between
+  tributaries to their confluences, at every scale; the noise stays, gentler, for the slopes' roughness.
 - **Water**: the climate's runoff (as on Rivers & biomes) falls on every pixel and drains by a priority
   flood from the sea and from the window's edges, but only where the world map's drainage leaves the
   window there. Rivers coming in from outside bring the world map's discharge with them. Hollows
   shallower than a tenth of the local relief silt up; deeper ones are lakes, fresh if more water reaches
   them than they evaporate, salt if not; none under ice.
 - **Valleys**: each pixel is cut towards its river's graded profile (steep for a brook, gentle for a
-  big river; steeper under weak gravity), the more water the closer, at **Erosion ×**; valley sides then
-  slump to a stable slope.
+  big river; steeper under weak gravity), the more water the closer, at **Erosion ×**; what was cut is
+  smoothed a little (the streams keep their depth), then valley sides slump to a stable slope.
 - **Rivers as lines**: a river once it drains enough land for the region's scale (some (span/55)² km²) or
   carries a lot of water; short stubs left out; smoothed off the pixel grid; drawn thin, a big river about
   twice a brook's width, one stroke each. Rivers grade to the water they flow into (a lake's surface, not
@@ -356,6 +363,11 @@ It agrees with the world map:
     bends are finer than the map) the bends are generalised, as on an atlas at that scale: a Kinoshita
     curve (skewed bends, not a sine), each bend a little different, about 12 drawn widths long, easing off
     at the ends, staying inside sharp turns of the valley, with any loop that would cross itself cut off.
+- **Braided rivers** (Rosgen's D): where a channel is steep for its flow (Leopold & Wolman: S·Q^0.44 >
+  0.012), sooner where it carries much gravel and sand (meltwater from where summers are near freezing, a
+  dry land, a steep course), but not a torrent (over some 4 %), a river spreads over a wide bed of bare
+  gravel (some 15 channel widths: the Waimakariri's is about a kilometre for 120 m³/s) in three to six channels that part and rejoin around bars. Braided
+  reaches do not meander. Drawn where the bed is at least a couple of pixels wide: in a Close-up.
 - **Biomes**: the world map's climate between its cells (looked up a little off each pixel, so biome
   edges do not follow its cells' sides), colder with height by the planet's lapse rate: forest in the
   valleys, tundra and ice on the crests.
@@ -371,8 +383,10 @@ The Close-up step does to the Region what the Region does to the world map: a wi
 (at most half the Region), 512–2,048 pixels, so down to about 10 m a pixel, built by the same code
 (`build` in `js/region.js` takes either the world map or a region as its source). Click the Region to
 place it (by default on the Region's largest river). It agrees with the Region:
-- its heights are the Region's with detail below one of its pixels (fractal: much gentler than below a
-  world map cell, its height falling as the cell size to the 0.7);
+- its heights are the Region's (read through a cubic B-spline, which smooths: a Region's pixel is its
+  finest detail, not a value to reproduce exactly) with detail below one of its pixels (fractal: much
+  gentler than below a world map cell, its height falling as the cell size to the 0.7), shaped by its
+  own streams as the Region's are;
 - its climate is the Region's at each pixel's own height, its rivers enter where the Region's do, and
   water leaves where the Region's drainage leaves the window;
 - it follows the Region's rivers as the Region draws them: along each line the ground is lowered a few

@@ -19,7 +19,7 @@
   const FRESH = [74, 134, 196], SALT = [186, 210, 208], ICE = [238, 243, 247], RIVER = 'rgb(36, 92, 172)';
   const RES = [[512, 'Quick · 512'], [1024, 'Fine · 1024'], [2048, 'Finest · 2048 (slow)']];
   const LAYERS = [['relief', 'Relief'], ['biomes', 'Biomes']];
-  const OXBOW = 'rgb(88, 146, 196)';
+  const OXBOW = 'rgb(88, 146, 196)', GRAVEL = 'rgb(214, 204, 178)';
 
   // ── building off the page's thread (one worker for both steps) ──
   let nextId = 1, worker = null;
@@ -57,6 +57,8 @@
       const span = Math.min(r.span || cfg.defSpan, cfg.maxShare * par.span);
       // (a close-up stays inside the region it is cut from)
       if (!par.picker.wrap) {
+        // (a region may straddle the date line: its longitudes run on past 180°)
+        c = [c[0], par.picker.frame.lon + ((((c[1] - par.picker.frame.lon) % 360) + 540) % 360) - 180];
         const f = par.picker.frame, hLat = Math.min(f.dLat / 2, half(span) * 1.02), hLon = Math.min(f.dLon / 2, hLat / Math.max(0.1, Math.cos(c[0] * Math.PI / 180)));
         c = [clamp(c[0], f.south + hLat, f.north - hLat), clamp(c[1], f.west + hLon, f.east - hLon)];
       }
@@ -274,6 +276,16 @@
             i = j;
           }
         }
+        // braided reaches over them: a bed of bare gravel, and the channels weaving across it
+        for (const br of reg.braids || []) {
+          gg.strokeStyle = GRAVEL;
+          for (let k = 1; k < br.pts.length; k++) {
+            const a = proj(br.pts[k - 1][0], br.pts[k - 1][1]), b = proj(br.pts[k][0], br.pts[k][1]);
+            gg.lineWidth = Math.max(scale, sc * br.band[k]); gg.beginPath(); gg.moveTo(a[0], a[1]); gg.lineTo(b[0], b[1]); gg.stroke();
+          }
+          gg.strokeStyle = RIVER; gg.lineWidth = Math.max(0.5 * scale, sc * br.wStrand);
+          for (const st of br.strands) { gg.beginPath(); st.forEach((pt, k) => { const p = proj(pt[0], pt[1]); if (k) gg.lineTo(p[0], p[1]); else gg.moveTo(p[0], p[1]); }); gg.stroke(); }
+        }
       }
       /* Lines of latitude and longitude at a round step, labelled at the edges. */
       function drawGrid(gg, v, dpr) {
@@ -471,6 +483,7 @@
         }
         items.push([FRESH, 'fresh lake'], [SALT, 'salt lake']);
         if (reg && reg.oxbows && reg.oxbows.length) items.push([hex('#5892c4'), 'oxbow lake']);
+        if (reg && reg.braids && reg.braids.length) items.push([[214, 204, 178], 'gravel bed (braided river)']);
         replace(keyHost, panel('Key', { tag: LAYERS.find((l) => l[0] === u.layer)[1].toUpperCase() }, h('div', { class: 'map-key mono', style: { marginLeft: 0 } }, items.map(([c, t]) => h('span', null, sw(c), t)),
           h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '3px', background: RIVER, verticalAlign: 'middle', marginRight: '6px' } }), `river (from ${reg ? fmt.num(reg.minFlow, reg.minFlow < 1 ? 1 : 0) : 8} m³/s)`))));
       }
@@ -496,8 +509,10 @@
           const q = rv.q.reduce((a, b) => Math.max(a, b), 0);
           return `<polyline points="${rv.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(R.riverWidth(q, reg.minFlow))}" data-flow="${Math.round(q)}"/>`;
         });
+        const bed = (reg.braids || []).map((br) => `<polyline points="${br.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(br.band.reduce((a, b) => Math.max(a, b), 0))}"/>`);
+        const strands = (reg.braids || []).flatMap((br) => br.strands.map((st) => `<polyline points="${st.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(br.wStrand)}"/>`));
         const ox = (reg.oxbows || []).map((ob) => `<polyline points="${ob.pts.map(([x, y]) => `${f2(x)},${f2(y)}`).join(' ')}" stroke-width="${f2(Math.max(ob.w, ob.wTrue))}"/>`);
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${reg.W} ${reg.H}" width="${reg.W}" height="${reg.H}">\n<!-- ${fmt.num(fr.north, 4)}N to ${fmt.num(fr.south, 4)}, ${fmt.num(fr.west, 4)} to ${fmt.num(fr.east, 4)} (degrees, equirectangular); ${fmt.num(fr.pxKm, 4)} km a pixel at the centre -->\n<g id="oxbows" fill="none" stroke="#5892c4" stroke-linecap="round" stroke-linejoin="round">\n${ox.join('\n')}\n</g>\n<g id="rivers" fill="none" stroke="#245cac" stroke-linecap="round" stroke-linejoin="round">\n${lines.join('\n')}\n</g>\n</svg>\n`;
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${reg.W} ${reg.H}" width="${reg.W}" height="${reg.H}">\n<!-- ${fmt.num(fr.north, 4)}N to ${fmt.num(fr.south, 4)}, ${fmt.num(fr.west, 4)} to ${fmt.num(fr.east, 4)} (degrees, equirectangular); ${fmt.num(fr.pxKm, 4)} km a pixel at the centre -->\n<g id="oxbows" fill="none" stroke="#5892c4" stroke-linecap="round" stroke-linejoin="round">\n${ox.join('\n')}\n</g>\n<g id="rivers" fill="none" stroke="#245cac" stroke-linecap="round" stroke-linejoin="round">\n${lines.join('\n')}\n</g>\n<g id="gravel-beds" fill="none" stroke="#d6ccb2" stroke-linecap="round" stroke-linejoin="round">\n${bed.join('\n')}\n</g>\n<g id="braids" fill="none" stroke="#245cac" stroke-linecap="round" stroke-linejoin="round">\n${strands.join('\n')}\n</g>\n</svg>\n`;
         save(new Blob([svg], { type: 'image/svg+xml' }), fileName('rivers', 'svg'));
       }
       function renderExport() {

@@ -109,3 +109,17 @@ test('a river on a flat plain meanders as rivers do: bends some 30 widths long, 
   const steep = R.meanders([{ pts, q, slope: slope.map(() => 0.01), join: false }], { pxKm, minFlow: 0.44, seed: 3 });
   assert.equal(steep.oxbows.length, 0);
 });
+
+test('braided rivers: steep for their flow and laden (meltwater, dry land), not gentle lowland rivers or torrents', () => {
+  const line = (slope) => ({ pts: Array.from({ length: 200 }, (_, i) => [10 + i, 50]), q: Array.from({ length: 200 }, () => 300), slope: Array.from({ length: 200 }, () => slope) });
+  const cold = { climAt: () => ({ tw: 2, ai: 1.2 }), minFlow: 2 }, warm = { climAt: () => ({ tw: 22, ai: 1.2 }), minFlow: 2 };
+  const mid = (b) => b[100];
+  assert.ok(mid(R.braidiness(line(0.004), cold)) > 0.8, 'a meltwater river at 0.4 % braids');
+  assert.ok(mid(R.braidiness(line(0.0003), warm)) < 0.1, 'a gentle lowland river does not');
+  assert.ok(mid(R.braidiness(line(0.0012), cold)) > mid(R.braidiness(line(0.0012), warm)), 'meltwater braids sooner');
+  assert.ok(mid(R.braidiness(line(0.1), cold)) < 0.1, 'a torrent does not');
+  // drawn: a bed of gravel with several channels, where it is wide enough to see
+  const rv = line(0.004), br = R.braided([{ pts: rv.pts, q: rv.q }], [rv], { ...cold, pxKm: 0.02, seed: 1 });
+  assert.ok(br.length >= 1 && br[0].strands.length >= 3, `${br.length} braided reaches`);
+  assert.equal(R.braided([{ pts: rv.pts, q: rv.q }], [rv], { ...cold, pxKm: 2, seed: 1 }).length, 0, 'too narrow to draw on a coarse map');
+});

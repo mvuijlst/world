@@ -125,14 +125,19 @@
 
     // ── 1. the heights: the world map's, bicubic, plus detail finer than one of its cells ──
     const cr = (p0, p1, p2, p3, t) => p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+    // (a region's pixels are read through a cubic B-spline, which smooths: a pixel is a region's finest
+    // detail, not a value to pass through exactly, and a cubic that does would ring and draw its pixels'
+    // facets as stripes; the world map's cells, coarse, through Catmull-Rom, which keeps their heights)
+    const bs = (p0, p1, p2, p3, t) => { const t2 = t * t, t3 = t2 * t; return ((1 - t) ** 3 * p0 + (3 * t3 - 6 * t2 + 4) * p1 + (-3 * t3 + 3 * t2 + 3 * t + 1) * p2 + t3 * p3) / 6; };
+    const interp = sub ? bs : cr;
     const base = new Float32Array(N), relief = new Float32Array(N);
     const xyz = new Float32Array(N * 3);
     for (let y = 0; y < H; y++) {
       const la = latOf(y), fj = gfj(la), j0 = Math.floor(fj), tj = fj - j0, cl = Math.cos(la * D2R), sl = Math.sin(la * D2R);
       for (let x = 0; x < W; x++) {
         const lo = lonOf(x), fi = gfi(lo), i0 = Math.floor(fi), ti = fi - i0, k = y * W + x;
-        const row = (jj) => { const r = clampJ(jj) * gW; return cr(gz[r + wrapI(i0 - 1)], gz[r + wrapI(i0)], gz[r + wrapI(i0 + 1)], gz[r + wrapI(i0 + 2)], ti); };
-        base[k] = cr(row(j0 - 1), row(j0), row(j0 + 1), row(j0 + 2), tj);
+        const row = (jj) => { const r = clampJ(jj) * gW; return interp(gz[r + wrapI(i0 - 1)], gz[r + wrapI(i0)], gz[r + wrapI(i0 + 1)], gz[r + wrapI(i0 + 2)], ti); };
+        base[k] = interp(row(j0 - 1), row(j0), row(j0 + 1), row(j0 + 2), tj);
         const r0 = clampJ(j0) * gW, r1 = clampJ(j0 + 1) * gW;
         relief[k] = (rel[r0 + wrapI(i0)] * (1 - ti) + rel[r0 + wrapI(i0 + 1)] * ti) * (1 - tj) + (rel[r1 + wrapI(i0)] * (1 - ti) + rel[r1 + wrapI(i0 + 1)] * ti) * tj;
         xyz[k * 3] = R * cl * Math.cos(lo * D2R); xyz[k * 3 + 1] = R * cl * Math.sin(lo * D2R); xyz[k * 3 + 2] = R * sl;
@@ -141,7 +146,7 @@
     // octaves from a world map cell down to two pixels (each half the last, as land is: fractal)
     const n1 = gradNoise(seed ^ 0x5e61), n2 = gradNoise(seed ^ 0x2b07), nw = gradNoise(seed ^ 0x77a1);
     const top = Math.min(gkm, 0.5 * fr.span), oct = clamp(Math.floor(Math.log2(top / (2 * pxKm))) + 1, 1, 10);
-    const z = new Float32Array(N);
+    const z = new Float32Array(N), noiseD = new Float32Array(N), ampK = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       const b = base[k], bm = b * f, X = xyz[k * 3], Y = xyz[k * 3 + 1], Z = xyz[k * 3 + 2];
       // a little warp, so the detail does not line up
@@ -169,6 +174,7 @@
         v = (amp * s + ((30 * ampS) / f) * Math.exp(bm / (60 * Math.sqrt(ampS))) * c) / amp;
       }
       z[k] = b + amp * detailX * v;
+      noiseD[k] = amp * detailX * v; ampK[k] = (b > 0 || bm > -30) ? amp * detailX : 0;
       // what was land on the source stays above the sea unless right at the shore, and the reverse
       if (b > (40 * ampS) / f && z[k] <= 0) z[k] = Math.min(b, 2 * ampS + Math.abs(z[k]) * 0.1);
       else if (b < (-60 * ampS) / f && z[k] > 0) z[k] = Math.max(b, -2 * ampS - z[k] * 0.1);
@@ -236,7 +242,7 @@
       outlet[k] = r >= 0 && inBox(gLat((r / gW) | 0), gLon(r % gW)) ? 0 : 1;
     }
     // rivers coming in: world map cells just outside whose water goes to a cell inside
-    const inflows = [];
+    const inflows = [], lineQ = 2 * clamp((8 * fr.span) / 800, 0.2, 8);
     if (grecv && gq) {
       const pad = 2;
       const j0 = clampJ(Math.floor(gfj(fr.north)) - pad), j1 = clampJ(Math.ceil(gfj(fr.south)) + pad);
@@ -245,6 +251,8 @@
         if (sub && (ii < 0 || ii >= gW)) continue;
         const c = j * gW + wrapI(ii), r = grecv[c];
         if (r < 0 || gz[c] <= 0 || !(gq[c] > 0) || inBox(gLat(j), gLon(wrapI(ii)))) continue;
+        // (a region's rivers, as it draws them, come in where its lines cross into the window: below)
+        if (sub && map.rivers && gq[c] >= lineQ) continue;
         const rl = gLat((r / gW) | 0), ro = gLon(r % gW);
         if (!inBox(rl, ro)) continue;
         // where the line from it to its receiver enters the window
@@ -255,6 +263,34 @@
         let px = clamp(Math.floor(((((lo - fr.west) % 360) + 360) % 360) / fr.dLon * W), 0, W - 1), py = clamp(Math.floor(((fr.north - la) / fr.dLat) * H), 0, H - 1);
         px = clamp(px, 1, W - 2); py = clamp(py, 1, H - 2);
         inflows.push({ k: py * W + px, q: gq[c], from: c });
+      }
+      // a region's rivers as it draws them: where a line crosses into the window, it comes in with its
+      // water there; where one crosses out, the edge is a way out
+      if (sub && map.rivers) {
+        const toPx = (p) => { const lat = sf.north - (p[1] / gH) * sf.dLat, lon = sf.west + (p[0] / gW) * sf.dLon; return [((east(lon) - east(fr.west)) / fr.dLon) * W, ((fr.north - lat) / fr.dLat) * H]; };
+        const inside = (c) => c[0] >= 0 && c[0] < W && c[1] >= 0 && c[1] < H;
+        const exits = [];
+        for (const rv of map.rivers) {
+          let prev = null;
+          for (let i = 0; i < rv.pts.length; i++) {
+            const c = toPx(rv.pts[i]);
+            if (prev && rv.q[i] >= lineQ && inside(c) !== inside(prev)) {
+              // the crossing, to the nearest step along the segment
+              let a = prev, b = c;
+              for (let it = 0; it < 12; it++) { const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; if (inside(m) === inside(prev)) a = m; else b = m; }
+              const e = inside(c) ? b : a, px = clamp(Math.floor(e[0]), 1, W - 2), py = clamp(Math.floor(e[1]), 1, H - 2);
+              if (inside(c)) inflows.push({ k: py * W + px, q: rv.q[i], line: true }); else exits.push(py * W + px);
+            }
+            prev = c;
+          }
+        }
+        // (the exits, a few pixels either side of where the line leaves)
+        for (const k of exits) {
+          const y = (k / W) | 0, x = k - y * W, rr = 3;
+          for (let dy = -rr; dy <= rr; dy++) for (let dx = -rr; dx <= rr; dx++) { const yy = clamp(y + dy, 0, H - 1), xx = clamp(x + dx, 0, W - 1); if (edge[yy * W + xx]) outlet[yy * W + xx] = 1; }
+          // (out to the very edge: the crossing is a pixel inside)
+          for (let q = 0; q < 8; q++) { const yy = clamp(y + DJ[q] * 2, 0, H - 1), xx = clamp(x + DI[q] * 2, 0, W - 1); if (edge[yy * W + xx]) outlet[yy * W + xx] = 1; }
+        }
       }
       // the edge beside an inflow is no way out (or the river would turn straight back)
       for (const fl of inflows) {
@@ -281,15 +317,19 @@
           const c = toChild(rv.pts[i]), depth = ((1.5 + 1.5 * Math.log10(q / mf)) * Math.sqrt(ampS)) / f;
           lv = Math.min(lv, Math.max(0, zSrc(rv.pts[i])) - depth);
           if (prev && (near(c) || near(prev))) {
-            const half = Math.max(0.6, (1.35 * Math.sqrt(q)) / 1000 / pxKm), rr = Math.ceil(half);
+            // (its sides sloping gently out to some two and a half times its half-width: where the river
+            // later wanders off the line, no sharp-edged trench is left behind)
+            const half = Math.max(0.6, (1.35 * Math.sqrt(q)) / 1000 / pxKm), outer = 2.5 * half, rr = Math.ceil(outer);
             const n = Math.max(1, Math.ceil(Math.hypot(c[0] - prev[0], c[1] - prev[1]) * 2));
             for (let t = 0; t <= n; t++) {
               const x = prev[0] + ((c[0] - prev[0]) * t) / n, y = prev[1] + ((c[1] - prev[1]) * t) / n;
               for (let dy = -rr; dy <= rr; dy++) for (let dx = -rr; dx <= rr; dx++) {
-                const xx = Math.floor(x + dx), yy = Math.floor(y + dy);
-                if (xx < 0 || yy < 0 || xx >= W || yy >= H || dx * dx + dy * dy > half * half + 0.5) continue;
+                const d = Math.hypot(dx, dy), xx = Math.floor(x + dx), yy = Math.floor(y + dy);
+                if (xx < 0 || yy < 0 || xx >= W || yy >= H || d > outer) continue;
                 const k = yy * W + xx;
-                if (z[k] > 0 && lv < z[k]) z[k] = Math.max(0.3, lv);
+                if (!(z[k] > 0)) continue;
+                const target = d <= half ? lv : lv + (z[k] - lv) * smooth((d - half) / (outer - half));
+                if (target < z[k]) z[k] = Math.max(0.3, target);
               }
             }
           }
@@ -414,6 +454,93 @@
     for (let k = 0; k < N; k++) if (z[k] > 0 && liquid && warm(k) >= 0) src[k] = toM3s(runoff[k], areaOf(k));
     for (const fl of inflows) src[fl.k] += fl.q;
 
+    // ── the hills between the streams (as Génevaux et al. 2013 build their crests): every slope leads down
+    // to a stream and up to a ridge between two streams, at every scale, rather than noise that knows
+    // nothing of the water. The streams: where the water first routed over the land gathers from more than
+    // a few km² (some tens of pixels at the least); each traced as a main stem (the branch with most water
+    // at each fork), so the ground between a tributary and the river it joins rises to a spur that ends at
+    // their confluence. A ridge is where the nearest stream changes; the ground rises from a stream to its
+    // ridges (concave below, convex above), as much as the noise it replaces rose and fell. The noise is
+    // kept, gentler, for the roughness of the slopes.
+    if (opts.valleys !== false) {
+      // (found over the land with some unevenness, a few hundred metres to a few km across: on an even
+      // slope water routed from pixel to pixel runs down in parallel lines that never meet, each of which
+      // would become a groove; real slopes gather their water into hollows and the hollows into streams)
+      const lk = Math.max(6 * pxKm, 0.4), zv = Float32Array.from(z, (v, k) => {
+        if (!(v > 0)) return v;
+        const X = xyz[k * 3] / lk, Y = xyz[k * 3 + 1] / lk, Z = xyz[k * 3 + 2] / lk;
+        return Math.max(0.5, v + 0.25 * ampK[k] * (nf(X, Y, Z) + 0.5 * nf(2 * X + 3.1, 2 * Y, 2 * Z)));
+      });
+      const fv = flood(zv), acc = new Float32Array(N);
+      for (let k = 0; k < N; k++) acc[k] = z[k] > 0 ? 1 : 0;
+      for (const fl0 of inflows) acc[fl0.k] += 1e6;
+      for (let o = fv.no - 1; o >= 0; o--) { const k = fv.order[o], r = fv.recv[k]; if (r >= 0 && z[r] > 0) acc[r] += acc[k]; }
+      const Ac = Math.max(60, 1.0 / (pxKm * pxKm));
+      const ch = (k) => z[k] > 0 && acc[k] >= Ac;
+      const mainKid = new Int32Array(N).fill(-1);
+      for (let k = 0; k < N; k++) { if (!ch(k)) continue; const r = fv.recv[k]; if (r >= 0 && ch(r) && (mainKid[r] < 0 || acc[k] > acc[mainKid[r]])) mainKid[r] = k; }
+      const label = new Int32Array(N).fill(-1);
+      let nl = 0;
+      for (let o = 0; o < fv.no; o++) {                      // downstream first: a stem keeps its label upstream
+        const k = fv.order[o];
+        if (!ch(k)) continue;
+        const r = fv.recv[k];
+        label[k] = r >= 0 && ch(r) && mainKid[r] === k && label[r] >= 0 ? label[r] : nl++;
+      }
+      // the distance (km) to the nearest stream, and which stem that is; then to the nearest ridge
+      const chamfer = (d, lab) => {
+        const relax = (k, n, c) => { const v = d[n] + c; if (v < d[k]) { d[k] = v; if (lab) lab[k] = lab[n]; } };
+        for (let it = 0; it < 2; it++) {
+          for (let y = 0; y < H; y++) {
+            const dx = dxKm[y], dg = Math.hypot(dx, dyKm);
+            for (let x = 0; x < W; x++) {
+              const k = y * W + x;
+              if (x > 0) relax(k, k - 1, dx);
+              if (y > 0) { relax(k, k - W, dyKm); if (x > 0) relax(k, k - W - 1, dg); if (x < W - 1) relax(k, k - W + 1, dg); }
+            }
+          }
+          for (let y = H - 1; y >= 0; y--) {
+            const dx = dxKm[y], dg = Math.hypot(dx, dyKm);
+            for (let x = W - 1; x >= 0; x--) {
+              const k = y * W + x;
+              if (x < W - 1) relax(k, k + 1, dx);
+              if (y < H - 1) { relax(k, k + W, dyKm); if (x < W - 1) relax(k, k + W + 1, dg); if (x > 0) relax(k, k + W - 1, dg); }
+            }
+          }
+        }
+      };
+      if (nl > 1) {
+        const dC = new Float32Array(N).fill(1e9), lab = Int32Array.from(label);
+        for (let k = 0; k < N; k++) if (label[k] >= 0) dC[k] = 0;
+        chamfer(dC, lab);
+        const dR = new Float32Array(N).fill(1e9);
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const k = y * W + x;
+          if (!(z[k] > 0) || label[k] >= 0) continue;
+          if ((x < W - 1 && lab[k + 1] !== lab[k]) || (y < H - 1 && lab[k + W] !== lab[k])) dR[k] = 0;
+        }
+        chamfer(dR, null);
+        // (a bigger stream's valley is cut deeper: by the most water its stem carries)
+        const stemAcc = new Float32Array(nl);
+        for (let k = 0; k < N; k++) if (label[k] >= 0 && acc[k] > stemAcc[label[k]]) stemAcc[label[k]] = acc[k];
+        const deep = (k) => (lab[k] >= 0 ? clamp(0.55 + 0.3 * Math.log10(Math.max(1, stemAcc[lab[k]] / Ac)), 0.55, 1.5) : 1);
+        // (concave near the stream, convex near the crest; the crest the same on both sides, the floor as
+        // deep as its stream is big; less its mean, so the land keeps its height)
+        const shapeOf = (k) => -deep(k) * (1 - smooth(Math.pow(dR[k] >= 1e8 ? 1 : dC[k] / Math.max(1e-6, dC[k] + dR[k]), 0.8)));
+        let sm = 0, sn = 0;
+        for (let k = 0; k < N; k++) if (z[k] > 0 && ampK[k] > 0) { sm += shapeOf(k); sn++; }
+        const mean = sn ? sm / sn : 0.5;
+        for (let k = 0; k < N; k++) {
+          if (!(z[k] > 0) || !(ampK[k] > 0)) continue;
+          const shape = shapeOf(k);
+          // (not right at the shore: there the coast's own noise rules)
+          const wv = smooth((base[k] * f) / (60 * Math.sqrt(ampS)) - 0.2);
+          const nz2 = z[k] - 0.25 * wv * noiseD[k] + 1.0 * wv * ampK[k] * (shape - mean);
+          z[k] = base[k] > 0 ? Math.max(Math.min(z[k], 0.5), nz2) : nz2;
+        }
+      }
+    }
+
     let fl1 = flood(z);
     // shallow or small hollows are silted up: their floors are made level with their rims (a flat), so
     // the detail's dimples do not all become ponds; deep and large ones stay, to be lakes
@@ -451,21 +578,46 @@
         const F = K * Math.sqrt(qq);
         z[k] = target + (z[k] - target) * Math.exp(-F);
       }
-      // valley sides slump to a stable slope (steeper under weak gravity), lowering only
+      // what was cut, smoothed a little (twice over 3 × 3) so valleys have rounded sides rather than the
+      // grid's steps; the streams keep their full depth
+      const qChan = clamp((8 * fr.span) / 800, 0.2, 8);
+      let ct = Float32Array.from(z, (v, k) => (z0[k] > 0 ? Math.max(0, z0[k] - v) : 0));
+      const keep = Float32Array.from(ct, (c, k) => (Q[k] >= qChan ? c : 0));
+      for (let pass = 0; pass < 2; pass++) {
+        const nx = new Float32Array(N);
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const k = y * W + x;
+          if (!(z0[k] > 0)) continue;
+          let sw = 0, sv = 0;
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const yy = y + dy, xx = x + dx;
+            if (yy < 0 || yy >= H || xx < 0 || xx >= W) continue;
+            const n = yy * W + xx, w = (dx ? 1 : 2) * (dy ? 1 : 2);
+            if (!(z0[n] > 0)) continue;
+            sw += w; sv += w * ct[n];
+          }
+          nx[k] = sw ? sv / sw : ct[k];
+        }
+        ct = nx;
+      }
+      for (let k = 0; k < N; k++) if (z0[k] > 0) z[k] = Math.max(z0[k] - Math.max(ct[k], keep[k]), Math.min(z0[k], 1));
+      // then valley sides slump to a stable slope (steeper under weak gravity), lowering only; each pass
+      // reads the heights as they were before it (not as it goes: that leaves pixels alternating)
       const tanMax = 0.6 / Math.sqrt(f);
-      for (let pass = 0; pass < 6; pass++) {
+      for (let pass = 0; pass < 8; pass++) {
         let moved = 0;
+        const zp = Float32Array.from(z);
         for (let k = 0; k < N; k++) {
-          if (!(z[k] > 0)) continue;
+          if (!(zp[k] > 0)) continue;
           const y = (k / W) | 0, x = k - y * W;
-          let lim = z[k];
+          let lim = zp[k];
           for (let q = 0; q < 8; q++) {
             const yy = y + DJ[q], xx = x + DI[q];
             if (yy < 0 || yy >= H || xx < 0 || xx >= W) continue;
-            const n = yy * W + xx, m = Math.max(0, z[n]) + tanMax * distKm(y, q) * 1000;
+            const n = yy * W + xx, m = Math.max(0, zp[n]) + tanMax * distKm(y, q) * 1000;
             if (m < lim) lim = m;
           }
-          if (lim < z[k] - 0.01) { z[k] = Math.max(lim, Math.min(z[k], 1)); moved++; }
+          if (lim < zp[k] - 0.01) { z[k] = Math.max(lim, Math.min(zp[k], 1)); moved++; }
         }
         if (!moved) break;
       }
@@ -617,11 +769,22 @@
         sl[i] = d > 0 ? Math.max(0, Math.max(0, z[rv.k[a]]) - Math.max(0, z[rv.k[b]])) / (d * pxKm * 1000) : 1;
       }
       rv.slope = Array.from(sl);
+      // and over a longer stretch (some thirty pixels): what decides whether a river braids, steadily
+      const vs = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const a = Math.max(0, i - 15), b = Math.min(n - 1, i + 15);
+        let d = 0; for (let j = a; j < b; j++) d += Math.hypot(rv.pts[j + 1][0] - rv.pts[j][0], rv.pts[j + 1][1] - rv.pts[j][1]);
+        vs[i] = d > 0 ? Math.max(0, Math.max(0, z[rv.k[a]]) - Math.max(0, z[rv.k[b]])) / (d * pxKm * 1000) : 0;
+      }
+      rv.vslope = Array.from(vs);
     }
-    const smoothRivers = kept.map((rv) => { const pts = chaikin(chaikin(relax(relax(relax(relax(relax(rv.pts))))))); return { pts, q: resample(rv.q, pts.length), slope: resample(rv.slope, pts.length), level: resample(rv.k.map((k) => Math.max(0, z[k])), pts.length), join: rv.join }; });
+    const smoothRivers = kept.map((rv) => { const pts = chaikin(chaikin(relax(relax(relax(relax(relax(rv.pts))))))); return { pts, q: resample(rv.q, pts.length), slope: resample(rv.slope, pts.length), vslope: resample(rv.vslope, pts.length), level: resample(rv.k.map((k) => Math.max(0, z[k])), pts.length), join: rv.join }; });
     // (the ground under a point, for where a river may wander: its floodplain, not over the hills)
     const zAt = (x, y) => z[clamp(Math.floor(y), 0, H - 1) * W + clamp(Math.floor(x), 0, W - 1)];
-    const mm = meanders(smoothRivers, { pxKm, minFlow, seed, gravityFactor: f, zAt, bank: 20 / f, off: opts.meanders === false }), rivers = mm.rivers, oxbows = mm.oxbows;
+    // (the climate where a river runs: how warm its summers, how dry: for braided reaches)
+    const climAt = (x, y) => { const k = clamp(Math.floor(y), 0, H - 1) * W + clamp(Math.floor(x), 0, W - 1); return { tw: cTw[k], ai: P[k] / Math.max(1, cPET[k]) }; };
+    const mm = meanders(smoothRivers, { pxKm, minFlow, seed, gravityFactor: f, zAt, bank: 20 / f, climAt: opts.braids === false ? null : climAt, gravity: g, off: opts.meanders === false });
+    const rivers = mm.rivers, oxbows = mm.oxbows, braids = opts.braids === false ? [] : braided(rivers, smoothRivers, { pxKm, minFlow, seed, climAt, gravity: g });
 
     // ── figures ──
     let landPx = 0, hiZ = -Infinity, loZ = Infinity, hiK = 0, loK = 0, landKm2 = 0, bigQ = 0, bigK = -1;
@@ -632,7 +795,7 @@
     }
     const ll = (k) => { const y = (k / W) | 0; return [latOf(y), ((lonOf(k - y * W) + 540) % 360) - 180]; };
     return {
-      frame: fr, W, H, z, flow: Float32Array.from(flow), recv, lake, biome, rivers, oxbows, cut, inflows: inflows.map((x) => ({ at: ll(x.k), q: x.q })), minFlow,
+      frame: fr, W, H, z, flow: Float32Array.from(flow), recv, lake, biome, rivers, oxbows, braids, cut, inflows: inflows.map((x) => ({ at: ll(x.k), q: x.q })), minFlow,
       climate: { Tw: cTw, Tc: cTc, P },
       water: { runoff, P, PET: cPET, Tw: cTw, Tc: cTc, Ta: cTa, Pw, liquid, tBoil }, planet,
       stats: {
@@ -670,7 +833,12 @@
     const order = rivers.map((rv, i) => [i, rv.q.reduce((a, b) => Math.max(a, b), 0)]).sort((a, b) => b[1] - a[1]).map(([i]) => i);
     const done = new Array(rivers.length);
     for (const ri of order) {
-      const rv = rivers[ri];
+      let rv = rivers[ri];
+      // (where it braids it does not meander: there its slope is taken as steep)
+      if (o.climAt) {
+        const reaches = braidReaches(rv, o);
+        if (reaches.length) rv = { ...rv, slope: rv.slope.map((sl, i) => (reaches.some(([a, b]) => i >= a && i < b) ? 1 : sl)) };
+      }
       let hasFlat0 = false; for (const sl of rv.slope) if (sl < 0.002) { hasFlat0 = true; break; }
       // the bends swing about the valley's axis: the line smoothed over about a bend's length, so that
       // a sharp turn of the valley does not fold the bends inside it over each other
@@ -713,7 +881,7 @@
           if (turn > Math.PI) turn = 2 * Math.PI - turn;
           if (turn > 1e-3) radius = Math.min(radius, ww / turn);
         }
-        return { x: c0.x, y: c0.y, nx: -dy / l, ny: dx / l, radius, q: c0.q, s: c0.s };
+        return { x: c0.x, y: c0.y, nx: -dy / l, ny: dx / l, radius, q: c0.q, s: c0.s, level: c0.level };
       };
       // a real river on a flat floodplain: let it migrate (below); a brook: a Kinoshita train of bends
       const qTop = rv.q.reduce((a, b) => Math.max(a, b), 0);
@@ -757,6 +925,9 @@
         let belt = v + 0.25 * lam0 * flat * big * ends * nz(u / (3 * lam0), ri * 0.9 + 11.3, 2.2);
         // (never more than most of the way to the centre of a turn of the axis: a soft limit, no kinks)
         const lim = 0.55 * p.radius; belt = lim * Math.tanh(belt / lim);
+        // (and on the valley floor: not over ground well above the river, where a closer map of this one,
+        // following its valleys, would not find it)
+        for (let t = 0; t < 5 && o.zAt && o.zAt(p.x + belt * p.nx, p.y + belt * p.ny) > p.level + o.bank; t++) belt *= t < 4 ? 0.5 : 0;
         pts.push([p.x + belt * p.nx, p.y + belt * p.ny]); qs.push(p.q);
       }
       c = at(total);
@@ -795,6 +966,94 @@
       }
     }
     return { rivers: out.map(({ pts, q }) => ({ pts, q })), oxbows };
+  }
+
+  /*
+   * How much a river braids, at each point along it (0-1). Rosgen's D; when, after Leopold & Wolman
+   * (1957): a channel braids where its slope is steep for its flow, S·Q^0.44 > 0.012 (Q in m³/s), and
+   * sooner where it carries more gravel and sand than one channel can move: fed by meltwater (it rises
+   * where summers are near freezing: glaciers and their outwash), in a dry land (flash floods, little to
+   * hold the banks), or steep and loaded. Not a torrent (over some 4 %: steps and pools), not a brook.
+   * ax: {pts, q, slope}; o: climAt, minFlow.
+   */
+  function braidiness(ax, o) {
+    const n = ax.pts.length, out = new Float32Array(n);
+    if (!o.climAt || n < 2) return out;
+    const src = o.climAt(ax.pts[0][0], ax.pts[0][1]), cold = smooth((4 - src.tw) / 5);
+    for (let i = 0; i < n; i++) {
+      const sl = Math.max(1e-6, ax.vslope ? ax.vslope[i] : ax.slope[i]), q = Math.max(1e-3, ax.q[i]), c = o.climAt(ax.pts[i][0], ax.pts[i][1]);
+      const load = Math.max(cold, smooth((0.5 - c.ai) / 0.3), 0.7 * smooth((Math.log10(sl) - Math.log10(0.006)) / 0.5));
+      // (stream power goes as gravity times slope: under weaker gravity a river must be steeper to braid)
+      const index = (sl * (o.gravity ?? 1) * Math.pow(q, 0.44)) / (0.012 * (1 - 0.65 * load));
+      out[i] = smooth((index - 0.7) / 0.6) * (1 - smooth((Math.log10(sl) - Math.log10(0.04)) / 0.3)) * smooth(Math.log10(Math.max(1, q / o.minFlow)) / 1.2);
+    }
+    // (smoothed along the river: a reach braids, not a point)
+    return Float32Array.from(out, (_, i) => { let s = 0, m = 0; for (let k = Math.max(0, i - 15); k <= Math.min(n - 1, i + 15); k++) { s += out[k]; m++; } return s / m; });
+  }
+
+  /*
+   * The reaches of a river (axis indices [i, j)) that braid and are drawn so: where it clearly braids and
+   * on until it clearly does not, its bed (some 15 channel widths) at least a couple of pixels wide and the
+   * reach at least twice as long as the bed is wide. Shared by the meanders (none there) and the drawing.
+   */
+  function braidReaches(ax, o) {
+    const out = [], n = ax.pts.length;
+    if (!o.climAt || n < 8) return out;
+    const qTop = ax.q.reduce((a, b) => Math.max(a, b), 0);
+    if ((15 * 2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm < 2) return out;
+    const bs = braidiness(ax, o);
+    let i = 0;
+    while (i < n) {
+      if (bs[i] < 0.5) { i++; continue; }
+      let j = i; while (j < n && bs[j] >= 0.3) j++;
+      let len = 0; for (let k = i + 1; k < j; k++) len += Math.hypot(ax.pts[k][0] - ax.pts[k - 1][0], ax.pts[k][1] - ax.pts[k - 1][1]);
+      let qm = 0; for (let k = i; k < j; k++) qm = Math.max(qm, ax.q[k]);
+      const bed = (15 * 2.7 * Math.sqrt(qm)) / 1000 / o.pxKm;
+      if (bed >= 2 && len >= 2 * bed) out.push([i, j]);
+      i = j;
+    }
+    return out;
+  }
+
+  /*
+   * Braided reaches: where a river braids (braidiness) it spreads over a wide bed of bare gravel (some
+   * 15 channel widths: the Waimakariri's is a kilometre for some 120 m³/s) in several channels that part and rejoin around bars. Only where that bed is at
+   * least a couple of pixels wide: in a Close-up. rivers: the drawn rivers [{pts, q}]; axes: the same
+   * before meandering [{pts, q, slope}]. Returns [{pts, band (px per point), strands: [[x, y]...], wStrand (px)}].
+   */
+  function braided(rivers, axes, o) {
+    const nz = gradNoise((o.seed ^ 0xb4a1d) | 0), out = [];
+    rivers.forEach((rv, ri) => {
+      const ax = axes[ri];
+      if (!ax || ax.pts.length < 8 || rv.pts.length < 4) return;
+      const qTop = rv.q.reduce((a, b) => Math.max(a, b), 0);
+      if ((15 * 2.7 * Math.sqrt(qTop)) / 1000 / o.pxKm < 2) return;                    // (the bed under 2 px)
+      // the drawn point nearest an axis point (the drawn line may meander elsewhere)
+      const nearest = (p, from) => { let bi = from, bd = Infinity; for (let k = from; k < rv.pts.length; k++) { const d = Math.hypot(rv.pts[k][0] - p[0], rv.pts[k][1] - p[1]); if (d < bd) { bd = d; bi = k; } } return bi; };
+      let from = 0;
+      for (const [i, j] of braidReaches(ax, o)) {
+        const a = nearest(ax.pts[i], from), b = Math.max(a + 1, nearest(ax.pts[j - 1], a));
+        from = b;
+        const pts = rv.pts.slice(a, b + 1), qs = rv.q.slice(a, b + 1);
+        if (pts.length < 4) continue;
+        const L = [0]; for (let k = 1; k < pts.length; k++) L.push(L[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
+        const total = L[L.length - 1], wq = (2.7 * Math.sqrt(qs.reduce((x, c) => Math.max(x, c), 0))) / 1000 / o.pxKm, bed = 15 * wq;
+        if (!(total > 1.5 * bed && bed >= 2)) continue;
+        // the bed, widest in the middle of the reach, narrowing to the river at its ends
+        const band = L.map((l) => bed * (0.35 + 0.65 * smooth(Math.min(l, total - l) / (1.5 * bed))) * (0.8 + 0.4 * (0.5 + 0.5 * nz(l / (3 * bed), ri * 1.3, 0.7))));
+        const nrm = pts.map((p, k) => { const p0 = pts[Math.max(0, k - 2)], p1 = pts[Math.min(pts.length - 1, k + 2)], dx = p1[0] - p0[0], dy = p1[1] - p0[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; });
+        const ns = clamp(Math.round(2 + Math.log10(qTop / o.minFlow)), 3, 6), strands = [];
+        for (let sj = 0; sj < ns; sj++) {
+          // each channel weaves across the bed on its own, the bars between them some bed widths long
+          strands.push(pts.map((p, k) => {
+            const off = 0.42 * band[k] * nz(L[k] / (2.2 * bed), sj * 7.31 + ri * 0.17, 3.9 + sj) * smooth(Math.min(L[k], total - L[k]) / bed);
+            return [p[0] + off * nrm[k][0], p[1] + off * nrm[k][1]];
+          }));
+        }
+        out.push({ pts, band, strands, wStrand: Math.max(0.5, wq / Math.sqrt(ns)) });
+      }
+    });
+    return out;
   }
 
   /*
@@ -1015,7 +1274,7 @@
   /* [lat, lon] of a point in pixels. */
   const latLonOf = (reg, x, y) => { const fr = reg.frame; return [fr.north - (y / reg.H) * fr.dLat, ((fr.west + (x / reg.W) * fr.dLon + 540) % 360) - 180]; };
 
-  const api = { build, frame, pixelOf, latLonOf, gradNoise, riverWidth, meanders };
+  const api = { build, frame, pixelOf, latLonOf, gradNoise, riverWidth, meanders, braided, braidiness, braidReaches };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.region = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
