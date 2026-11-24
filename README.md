@@ -313,6 +313,13 @@ with the Climate step's seasons.
 
 ## Region
 
+**Preview first, build on request.** Picking a place (on the map below, by its centre or size) shows
+it at once: the map it is cut from, enlarged, with nothing added. Nothing is built until **Build
+detail**; the build runs off the page's thread and the map shows each stage as it is reached (the
+coast moved, the finer relief, the hills shaped by their streams, the valleys carved, lakes and
+water, biomes, rivers), with a progress bar. The same on Close-up; if the region it is cut from is
+not built yet, it offers to build that first (and then shows the close-up's preview).
+
 The Region step (`js/region.js`, `js/steps/region.js`, built in `js/regionworker.js`) is a closer map of
 one part of the World map: a square window 200–3,200 km across at 512–2,048 pixels, so a few hundred
 metres to a few km a pixel where the world map's cells are some 55 km. Click the world map to place it

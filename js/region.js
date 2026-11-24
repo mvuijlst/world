@@ -100,6 +100,8 @@
     if (sub) water = map.water;
     const gW = map.W, gH = map.H, gz = map.z, gkm = sub ? sf.pxKm : (2 * Math.PI * R) / gW;   // a source cell, km
     const seed = (opts.seed ?? 1) | 0, E = Math.max(0, opts.erosion ?? 1), detailX = Math.max(0, opts.detail ?? 1);
+    // (how far it has got: onStage(step, of, label, heights so far), to show the map as it is built)
+    const STAGES = 7, stage = (n, label, zz) => { if (opts.onStage) opts.onStage(n, STAGES, label, zz); };
     const latOf = (y) => fr.north - ((y + 0.5) / H) * fr.dLat, lonOf = (x) => fr.west + ((x + 0.5) / W) * fr.dLon;
     const wrapI = sub ? (i) => clamp(i, 0, gW - 1) : (i) => ((i % gW) + gW) % gW, clampJ = (j) => clamp(j, 0, gH - 1);
     // (longitude east of the source's west edge: round the globe for the world map, either side of it for a region)
@@ -211,6 +213,7 @@
       }
     }
 
+    stage(1, 'The coast, moved as fractal as real coasts', base);
     // octaves from a world map cell down to two pixels (each half the last, as land is: fractal)
     const n1 = gradNoise(seed ^ 0x5e61), n2 = gradNoise(seed ^ 0x2b07), nw = gradNoise(seed ^ 0x77a1);
     const top = Math.min(gkm, 0.5 * fr.span), oct = clamp(Math.floor(Math.log2(top / (2 * pxKm))) + 1, 1, 10);
@@ -219,19 +222,20 @@
       const b = base[k], bm = b * f, X = xyz[k * 3], Y = xyz[k * 3 + 1], Z = xyz[k * 3 + 2];
       // a little warp, so the detail does not line up
       const wq = 0.35 * top, wx = wq * nw(X / top, Y / top, Z / top), wy = wq * nw(Y / top + 31.7, Z / top, X / top);
+      // (the ridged noise only where it is used: in mountains)
+      const landish = b > 0 || bm > -30, mtn = landish ? smooth((bm - 700) / 1600) * smooth((relief[k] * f - 300) / 1200 + 0.3) : 0;
       let s = 0, r = 0, c = 0, a = 1, ac = 1, lam = top;
       for (let o = 0; o < oct; o++, a *= 0.5, ac *= 0.66, lam *= 0.5) {
         const px = (X + wx) / lam, py = (Y + wy) / lam, pz = Z / lam, n = n1(px, py, pz);
         s += a * n;
         c += ac * n;                                // (rougher at small scales: for the shore)
         // ridged: sharp crests where |noise| is small, each octave weighted by the one above it
-        const rr = 1 - Math.abs(n2(px + 5.3, py, pz)); r += a * (rr * rr - 0.42);
+        if (mtn > 0) { const rr = 1 - Math.abs(n2(px + 5.3, py, pz)); r += a * (rr * rr - 0.42); }
       }
       s *= 1.4; r *= 1.5;
       let amp, v;
-      if (b > 0 || bm > -30) {
+      if (landish) {
         // land (and the shore): more where it is high and rugged; ridged in mountains
-        const mtn = smooth((bm - 700) / 1600) * smooth((relief[k] * f - 300) / 1200 + 0.3);
         amp = (ampS * (14 + 0.11 * Math.max(0, bm) + 0.22 * relief[k] * f)) / f;
         // the shore: low land and shallow sea break up into bays, spits and islets
         // (the shore's own roughness: as rugged as the coast; on a smooth low coast, little, or the plain's
@@ -298,6 +302,7 @@
       for (let k = 0; k < N; k++) if (z[k] <= 0 && !wet[k]) z[k] = 1 + 0.15 * Math.min(60, -z[k]);
     }
     const distKm = (y, q) => (DI[q] && DJ[q] ? Math.hypot(dxKm[y], dyKm) : DI[q] ? dxKm[y] : dyKm);
+    stage(2, 'Finer relief', z);
 
     // ── the window's edges: water leaves where the world map's drainage leaves the window ──
     const inBox = (la, lo) => { let d = lo - fr.west; d = ((d % 360) + 360) % 360; return la <= fr.north && la >= fr.south && d <= fr.dLon; };
@@ -651,6 +656,7 @@
       }
     }
 
+    stage(3, 'Hills shaped by their streams; fjords', z);
     let fl1 = flood(z);
     // shallow or small hollows are silted up: their floors are made level with their rims (a flat), so
     // the detail's dimples do not all become ponds; deep and large ones stay, to be lakes
@@ -736,6 +742,7 @@
     let eroded = 0, deepest = 0;
     for (let k = 0; k < N; k++) { cut[k] = Math.max(0, z0[k] - z[k]); eroded += (cut[k] * areaOf(k)) / 1000; if (cut[k] > deepest) deepest = cut[k]; }
 
+    stage(4, 'Valleys carved by the rivers', z);
     // ── 4. the water again over the carved land: lakes, salt lakes and rivers ──
     const fl = flood(z), recv = fl.recv;
     // (a lake must be deeper than the unevenness the water was routed over: no ponds in every dimple)
@@ -772,6 +779,7 @@
       for (const c of sorted) { if (a >= want) break; lake[c] = 2; a += areaOf(c); lakeKm2 += areaOf(c); }
     }
 
+    stage(5, 'Lakes and the water through every valley', z);
     // ── 5. biomes: the climate at each pixel's own height ──
     const biome = new Uint8Array(N), tBoil = wt ? wt.tBoil ?? 100 : 100;
     const nb = gradNoise(seed ^ 0xb10e);
@@ -801,6 +809,7 @@
       }
     }
 
+    stage(6, 'Biomes', z);
     // ── 6. rivers as lines, in pixels: from each source down to the sea, a lake, an edge, or a bigger river ──
     // a river once it drains enough land for the region's scale (spaced some tens of pixels apart: not
     // a line down every gully), or once it carries a lot of water (one entering from outside)
@@ -893,6 +902,7 @@
     const zAt = (x, y) => z[clamp(Math.floor(y), 0, H - 1) * W + clamp(Math.floor(x), 0, W - 1)];
     // (the climate where a river runs: how warm its summers, how dry: for braided reaches)
     const climAt = (x, y) => { const k = clamp(Math.floor(y), 0, H - 1) * W + clamp(Math.floor(x), 0, W - 1); return { tw: cTw[k], ai: P[k] / Math.max(1, cPET[k]) }; };
+    stage(7, 'Rivers: meanders, oxbow lakes, braids', z);
     const mm = meanders(smoothRivers, { pxKm, minFlow, seed, gravityFactor: f, zAt, bank: 20 / f, climAt: opts.braids === false ? null : climAt, gravity: g, off: opts.meanders === false });
     const rivers = mm.rivers, oxbows = mm.oxbows, braids = opts.braids === false ? [] : braided(rivers, smoothRivers, { pxKm, minFlow, seed, climAt, gravity: g });
 
@@ -1407,6 +1417,30 @@
   }
   const resample = (q, n) => Array.from({ length: n }, (_, i) => q[Math.min(q.length - 1, Math.round((i / Math.max(1, n - 1)) * (q.length - 1)))]);
 
+  /*
+   * A quick look at a window before it is built: the source's heights there (as build reads them, before
+   * any detail), at a modest size. map: the world map ({W, H, z, planet}) or a region; opts as for build.
+   * Returns {frame, W, H, z, planet, preview: true}.
+   */
+  function preview(map, opts = {}) {
+    const planet = map.planet || {}, R = planet.radiusKm ?? 6371, fr = frame({ ...opts, res: Math.min(opts.res ?? 512, 512) }, R), { W, H } = fr;
+    const sub = !!map.frame, sf = sub ? map.frame : { north: 90, dLat: 180, west: -180, dLon: 360 }, gW = map.W, gH = map.H, gz = map.z;
+    const wrapI = sub ? (i) => clamp(i, 0, gW - 1) : (i) => ((i % gW) + gW) % gW, clampJ = (j) => clamp(j, 0, gH - 1);
+    const east = sub ? (lon) => { let d = lon - sf.west; d -= 360 * Math.round((d - sf.dLon / 2) / 360); return d; } : (lon) => ((((lon + 180) % 360) + 360) % 360);
+    const cr = (p0, p1, p2, p3, t) => p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+    const bs = (p0, p1, p2, p3, t) => { const t2 = t * t, t3 = t2 * t; return ((1 - t) ** 3 * p0 + (3 * t3 - 6 * t2 + 4) * p1 + (-3 * t3 + 3 * t2 + 3 * t + 1) * p2 + t3 * p3) / 6; };
+    const interp = sub ? bs : cr, z = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const la = fr.north - ((y + 0.5) / H) * fr.dLat, fj = ((sf.north - la) / sf.dLat) * gH - 0.5, j0 = Math.floor(fj), tj = fj - j0;
+      for (let x = 0; x < W; x++) {
+        const lo = fr.west + ((x + 0.5) / W) * fr.dLon, fi = (east(lo) / sf.dLon) * gW - 0.5, i0 = Math.floor(fi), ti = fi - i0;
+        const row = (jj) => { const r = clampJ(jj) * gW; return interp(gz[r + wrapI(i0 - 1)], gz[r + wrapI(i0)], gz[r + wrapI(i0 + 1)], gz[r + wrapI(i0 + 2)], ti); };
+        z[y * W + x] = interp(row(j0 - 1), row(j0), row(j0 + 1), row(j0 + 2), tj);
+      }
+    }
+    return { frame: fr, W, H, z, planet, preview: true };
+  }
+
   /* A pixel of the region at [lat, lon], or -1 outside it. */
   function pixelOf(reg, lat, lon) {
     const fr = reg.frame, d = ((((lon - fr.west) % 360) + 360) % 360);
@@ -1417,7 +1451,7 @@
   /* [lat, lon] of a point in pixels. */
   const latLonOf = (reg, x, y) => { const fr = reg.frame; return [fr.north - (y / reg.H) * fr.dLat, ((fr.west + (x / reg.W) * fr.dLon + 540) % 360) - 180]; };
 
-  const api = { build, frame, pixelOf, latLonOf, gradNoise, riverWidth, meanders, braided, braidiness, braidReaches };
+  const api = { build, preview, frame, pixelOf, latLonOf, gradNoise, riverWidth, meanders, braided, braidiness, braidReaches };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.region = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

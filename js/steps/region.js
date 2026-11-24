@@ -27,27 +27,38 @@
   try {
     if (location.protocol !== 'file:' && typeof Worker !== 'undefined') {
       worker = new Worker('js/regionworker.js');
-      worker.onmessage = (e) => { const p = pending.get(e.data.id); if (p) { pending.delete(e.data.id); e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.region); } };
+      worker.onmessage = (e) => {
+        const p = pending.get(e.data.id);
+        if (!p) return;
+        if (e.data.progress) { if (p.onProgress) p.onProgress(e.data.progress); return; }
+        pending.delete(e.data.id); e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.region);
+      };
       worker.onerror = () => { worker = null; for (const p of pending.values()) p.reject(new Error('worker failed')); pending.clear(); };
     }
   } catch { worker = null; }
-  const buildOff = (source, water, s) => {
-    const inPage = () => new Promise((resolve) => setTimeout(() => resolve(R.build(source, water, s)), 30));
+  /* Build off the page's thread, reporting each stage (onProgress({n, of, label, z})) as it is reached. */
+  const buildOff = (source, water, s, onProgress) => {
+    const inPage = () => new Promise((resolve) => setTimeout(() => resolve(R.build(source, water, { ...s, onStage: (n, of, label) => onProgress && onProgress({ n, of, label }) })), 30));
     if (!worker) return inPage();
     return new Promise((resolve, reject) => {
       const id = nextId++;
-      pending.set(id, { resolve, reject });
+      pending.set(id, { resolve, reject, onProgress });
       worker.postMessage({ id, map: source, water, opts: s });
     }).catch(() => R.build(source, water, s));
   };
   const worldFrame = { north: 90, south: -90, west: -180, east: 180, dLat: 180, dLon: 360 };
 
   /*
-   * A level of closer maps. cfg: key (the world's settings, and the step's id), parent(w, d) (a promise
-   * of {ref: what the map depends on, source and water for region.js build, picker: {W, H, z, factor,
-   * frame, wrap, rivers?}, centre: where to go by default, span: how far the parent reaches}).
-   * Returns ready(w, d): a promise of {ref, key, region, settings, parent}, built once per parent and
-   * window; and peek(): the last one built.
+   * A level of closer maps. cfg: key (the world's settings, and the step's id), parent(w, d, {build,
+   * onProgress}) (a promise of {ref: what the map depends on, source and water for region.js build,
+   * picker: {W, H, z, factor, frame, wrap, rivers?}, centre: where to go by default, span: how far the
+   * parent reaches}, or {needs: 'region'} when what it is cut from is not built and build is not asked).
+   * Nothing is built until asked:
+   *   look(w, d): a promise of {par, s (the window), key, built (if built for this window), building (if
+   *     under way)}, building nothing (but the world map, which the app builds anyway);
+   *   build(w, d, onProgress): a promise of {ref, key, region, settings, parent}, built once per parent
+   *     and window, reporting each stage ({n, of, label, z: the heights so far});
+   *   peek(): the last one built.
    */
   function level(cfg) {
     let cached = null, building = null;
@@ -64,21 +75,35 @@
       }
       return { lat: c[0], lon: c[1], span, res: r.res || 1024, seed: (w.plates.seed ?? 1) + cfg.seedShift, erosion: w.map.erosion ?? 1 };
     };
-    const ready = (w, d) => cfg.parent(w, d).then((par) => {
+    const stateOf = (par) => {
       if (!par) return null;
-      const s = settingsOf(w, par), key = JSON.stringify(s);
-      if (cached && cached.ref === par.ref && cached.key === key) return cached;
-      if (building && building.ref === par.ref && building.key === key) return building.promise;
-      const me = { ref: par.ref, key };
-      me.promise = buildOff(par.source, par.water, s).then((region) => {
-        if (building === me) building = null;
-        cached = { ref: par.ref, key, region, settings: s, parent: par };
-        return cached;
+      if (par.needs) return { needs: par.needs };
+      const s = settingsOf(cfg.world, par), key = JSON.stringify(s);
+      return {
+        par, s, key,
+        built: cached && cached.ref === par.ref && cached.key === key ? cached : null,
+        building: building && building.ref === par.ref && building.key === key ? building : null,
+      };
+    };
+    const look = (w, d) => { cfg.world = w; return cfg.parent(w, d, {}).then(stateOf); };
+    const build = (w, d, onProgress) => {
+      cfg.world = w;
+      return cfg.parent(w, d, { build: true, onProgress }).then((par) => {
+        const st = stateOf(par);
+        if (!st || st.needs) return null;
+        if (st.built) return st.built;
+        if (st.building) { if (onProgress && !st.building.listeners.includes(onProgress)) st.building.listeners.push(onProgress); return st.building.promise; }
+        const me = { ref: par.ref, key: st.key, listeners: onProgress ? [onProgress] : [], last: null };
+        me.promise = buildOff(par.source, par.water, st.s, (p) => { me.last = p; for (const f of me.listeners) f(p); }).then((region) => {
+          if (building === me) building = null;
+          cached = { ref: par.ref, key: st.key, region, settings: st.s, parent: par };
+          return cached;
+        }, (e) => { if (building === me) building = null; throw e; });
+        building = me;
+        return me.promise;
       });
-      building = me;
-      return me.promise;
-    });
-    return { ready, peek: () => cached, settingsOf };
+    };
+    return { look, build, ready: build, peek: () => cached, settingsOf };
   }
 
   /* Where a region goes when none is set: the mouth of the largest river away from the poles, else the highest point. */
@@ -121,8 +146,10 @@
   });
   const CLOSEUP = level({
     key: 'closeup', defSpan: 50, maxShare: 0.5, seedShift: 977,
-    parent: (w, d) => REGION.ready(w, d).then((c) => {
-      if (!c) return null;
+    parent: (w, d, o = {}) => (o.build
+      ? REGION.build(w, d, o.onProgress && ((p) => o.onProgress({ ...p, label: `The region first: ${p.label}`, region: true })))
+      : REGION.look(w, d).then((st) => (st && !st.needs ? st.built || { needs: 'region' } : st))).then((c) => {
+      if (!c || c.needs) return c;
       const r = c.region;
       return {
         ref: c, water: null, centre: riverCentre(r), span: r.frame.span,
@@ -131,8 +158,8 @@
       };
     }),
   });
-  WS.regionReady = REGION.ready;
-  WS.closeupReady = CLOSEUP.ready;
+  WS.regionReady = REGION.build;
+  WS.closeupReady = CLOSEUP.build;
 
   function defineLevel(cfg) {
   const L = cfg.level;
@@ -153,27 +180,78 @@
       const ov = h('canvas', { class: 'scene-canvas', role: 'img', 'aria-label': `${cfg.pickerName}: click to place the ${cfg.noun}` });
       ovHost.appendChild(ov);
       const g = cv.getContext('2d'), og = ov.getContext('2d');
-      let reg = null, regFor = null, off = null, busy = false, worldImg = null, worldFor = null, err = null;
+      let reg = null, regFor = null, off = null, worldImg = null, worldFor = null, err = null;
 
-      // ── building ──
+      // ── what is shown: the window as its parent has it (a preview, at once), or as it is being built
+      // (each stage as it is reached), or built; nothing is built until asked ──
+      let cur = null, looking = false, progress = null, previewKey = null, watching = null;
+      const radius = () => (cur && cur.par && cur.par.source.planet ? cur.par.source.planet.radiusKm ?? 6371 : 6371);
+      const showMap = (r) => { reg = r; paint(); renderStats(); renderKey(); renderExport(); draw(); };
       function ensure() {
         const w = ctx.world, d = ctx.d;
-        if (!w.plates.features.some((f) => f.kind === 'crust')) { reg = null; return; }
-        if (busy) return;
-        busy = true; err = null;
+        if (!w.plates.features.some((f) => f.kind === 'crust')) { reg = null; cur = null; return; }
+        if (looking) return;
+        looking = true; err = null;
+        const slow = setTimeout(() => { if (!reg) { hint.textContent = 'Working out the world map and its climate…'; draw(); } }, 60);
+        L.look(w, d).then((st) => {
+          clearTimeout(slow); looking = false;
+          if (!host.isConnected) return;
+          cur = st;
+          if (!st) { reg = null; draw(); return; }
+          if (st.needs) {
+            reg = null; regFor = null; previewKey = null;
+            if (!progress) hint.textContent = `The region this ${cfg.noun} is cut from is not built yet.`;
+          } else if (st.built) {
+            if (regFor !== st.built) {
+              regFor = st.built; previewKey = null; progress = null;
+              showMap(st.built.region); renderWhere(); paintWorld();
+              hint.textContent = `${reg.W} × ${reg.H} pixels, ${fmt.num(reg.frame.pxKm, 2)} km each`;
+              WS.app.refresh();                                 // (the checks can read it now)
+            }
+          } else {
+            regFor = null;
+            if (st.building) watch(st.building);
+            else if (previewKey !== st.key) {
+              // a preview: its parent's heights, as they are (no detail yet)
+              previewKey = st.key;
+              showMap(R.preview(st.par.source, st.s)); renderWhere(); paintWorld();
+              hint.textContent = `Preview: ${cfg.sourceName}, enlarged, nothing added yet. Build detail to add ${cfg.adds}.`;
+            }
+          }
+          renderBar(); draw(); drawWorld();
+        }, (e) => { clearTimeout(slow); looking = false; err = e; hint.textContent = `Could not show the ${cfg.noun}: ${e.message}`; draw(); });
+      }
+      /* Follow a build: each stage as it comes, the heights so far on the map, and a progress bar. */
+      function onProgress(p) {
+        if (!host.isConnected) return;
+        progress = p;
+        if (p.z && !p.region && cur && cur.s) {
+          const fr = R.frame(cur.s, radius());
+          if (p.z.length === fr.W * fr.H) showMap({ frame: fr, W: fr.W, H: fr.H, z: p.z, planet: cur.par.source.planet, preview: true, stage: p });
+        }
+        hint.textContent = `Building: ${p.label} (step ${p.n} of ${p.of})…`;
+        renderBar();
+      }
+      function watch(b) {
+        if (watching === b) return;
+        watching = b;
+        if (!b.listeners.includes(onProgress)) b.listeners.push(onProgress);
+        if (b.last) onProgress(b.last);
+        b.promise.then(() => { if (watching === b) watching = null; progress = null; ensure(); }, (e) => { if (watching === b) watching = null; progress = null; err = e; hint.textContent = `Could not build the ${cfg.noun}: ${e.message}`; renderBar(); });
+      }
+      function startBuild() {
+        if (progress) return;
+        progress = { n: 0, of: 7, label: 'Starting' };
+        hint.textContent = 'Building…'; renderBar();
         const t0 = performance.now();
-        const slow = setTimeout(() => { hint.textContent = cfg.working; draw(); }, 60);
-        L.ready(w, d).then((c) => {
-          clearTimeout(slow); busy = false;
-          if (!host.isConnected || !c) return;
-          const again = c !== regFor;
-          reg = c.region; regFor = c;
-          if (again) { paint(); renderStats(); renderKey(); renderWhere(); paintWorld(); hint.textContent = `${reg.W} × ${reg.H} pixels, ${fmt.num(reg.frame.pxKm, 2)} km each · ${fmt.int(performance.now() - t0)} ms`; }
-          draw(); drawWorld();
-          if (again) WS.app.refresh();                         // (the checks can read the region now)
-          // (the window may have moved while this was built: build again if so)
-          if (JSON.stringify(L.settingsOf(ctx.world, c.parent)) !== c.key) ensure();
-        }, (e) => { clearTimeout(slow); busy = false; err = e; hint.textContent = `Could not build the ${cfg.noun}: ${e.message}`; draw(); });
+        // (what it is cut from, if that is what is missing: only that, then the preview of this one)
+        const job = cur && cur.needs && cfg.buildFirst ? cfg.buildFirst(ctx.world, ctx.d, (p) => onProgress({ ...p, label: `The region first: ${p.label}`, region: true })) : L.build(ctx.world, ctx.d, onProgress);
+        job.then((c) => {
+          progress = null;
+          if (!host.isConnected) return;
+          regFor = null; ensure();
+          setTimeout(() => { if (reg && !reg.preview && !(c && c.region && c.region !== reg)) hint.textContent = `${reg.W} × ${reg.H} pixels, ${fmt.num(reg.frame.pxKm, 2)} km each · built in ${fmt.num((performance.now() - t0) / 1000, 1)} s`; }, 50);
+        }, (e) => { progress = null; err = e; hint.textContent = `Could not build the ${cfg.noun}: ${e.message}`; renderBar(); draw(); });
       }
 
       /* RGBA for every pixel: the layer's colour, lit from the north-west (with a little exaggeration). */
@@ -186,10 +264,11 @@
           const k = y * W + x, v = z[k];
           let c;
           if (v <= 0) c = ramp(SEA, -v);
-          else if (lake[k]) c = lake[k] === 1 ? FRESH : SALT;
+          else if (lake && lake[k]) c = lake[k] === 1 ? FRESH : SALT;
+          else if (!biome) c = ramp(LAND, v * f);                    // (a preview, or a stage: heights only)
           else if (u.layer === 'biomes') c = biome[k] ? hex(B.BIOMES[biome[k] - 1][2]) : ICE;
           else c = biome[k] === B.BI.ice ? ICE : ramp(LAND, v * f);
-          if (v > 0 && !lake[k]) {
+          if (v > 0 && !(lake && lake[k])) {
             const e = Math.max(0, z[y * W + Math.min(W - 1, x + 1)]), wv = Math.max(0, z[y * W + Math.max(0, x - 1)]), n = Math.max(0, z[Math.max(0, y - 1) * W + x]), s = Math.max(0, z[Math.min(H - 1, y + 1) * W + x]);
             const gx = ((e - wv) / (2 * m)) * ve, gy = ((n - s) / (2 * m)) * ve, len = Math.hypot(gx, gy, 1);
             const lit = (-gx * L[0] + gy * -L[1] + L[2]) / len;
@@ -226,7 +305,7 @@
         g.fillStyle = css('--bg'); g.fillRect(0, 0, cv.width, cv.height);
         if (!reg || !off) {
           g.fillStyle = css('--muted'); g.font = `${16 * (cv.width / Math.max(1, cv.clientWidth))}px ${css('--font-mono') || 'monospace'}`;
-          g.fillText(err ? `Could not build the ${cfg.noun}.` : busy ? `Building the ${cfg.noun}…` : 'Make a world on the Plates step first.', 20, 40);
+          g.fillText(err ? `Could not build the ${cfg.noun}.` : cur && cur.needs ? (progress ? 'Building the region first…' : 'Build the region first (button above).') : looking ? 'Working…' : 'Make a world on the Plates step first.', 20, 40);
           return;
         }
         clampView();
@@ -234,7 +313,14 @@
         g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
         g.drawImage(off, v.x0, v.y0, v.side, v.side);
         const dpr = cv.width / Math.max(1, cv.clientWidth);
-        if (u.rivers) drawRivers(g, (x, y) => [v.x0 + x * sc, v.y0 + y * sc], dpr * clamp(0.8 + 0.3 * Math.log2(Math.max(1, sc)), 0.8, 1.8), sc);
+        if (u.rivers && !reg.preview) drawRivers(g, (x, y) => [v.x0 + x * sc, v.y0 + y * sc], dpr * clamp(0.8 + 0.3 * Math.log2(Math.max(1, sc)), 0.8, 1.8), sc);
+        // (a preview, or a build under way: say so on the map)
+        if (reg.preview) {
+          const t = reg.stage ? `Building · ${reg.stage.label}` : 'Preview · not built yet';
+          g.save(); g.font = `${13 * dpr}px ${css('--font-mono') || 'monospace'}`;
+          const tw = g.measureText(t).width; g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(10 * dpr, 10 * dpr, tw + 16 * dpr, 24 * dpr);
+          g.fillStyle = '#ffb238'; g.fillText(t, 18 * dpr, 27 * dpr); g.restore();
+        }
         if (u.grid) drawGrid(g, v, dpr);
         drawScale(g, v, dpr);
       }
@@ -346,9 +432,11 @@
         if (z <= 0) parts.push(`sea, ${fmt.int(-z)} m deep`);
         else {
           parts.push(`${fmt.int(z)} m`);
-          parts.push(reg.lake[k] ? (reg.lake[k] === 1 ? 'fresh lake' : 'salt lake') : B.BIOMES[reg.biome[k] - 1]?.[1] || '');
-          if (reg.flow[k] >= reg.minFlow) parts.push(`${fmt.int(reg.flow[k])} m³/s`);
-          if (reg.cut[k] > 20) parts.push(`valley cut ${fmt.int(reg.cut[k])} m`);
+          if (!reg.preview) {
+            parts.push(reg.lake[k] ? (reg.lake[k] === 1 ? 'fresh lake' : 'salt lake') : B.BIOMES[reg.biome[k] - 1]?.[1] || '');
+            if (reg.flow[k] >= reg.minFlow) parts.push(`${fmt.int(reg.flow[k])} m³/s`);
+            if (reg.cut[k] > 20) parts.push(`valley cut ${fmt.int(reg.cut[k])} m`);
+          }
         }
         hint.textContent = parts.join(' · ');
       });
@@ -370,7 +458,7 @@
 
       // ── the map it is cut from, to pick the place ──
       // (its frame: degrees to the picker's pixels; the world map wraps round, a region does not)
-      const pk = () => regFor && regFor.parent.picker;
+      const pk = () => cur && cur.par && cur.par.picker;
       const toPick = (la, lo) => {
         const f = pk().frame; let d = lo - f.west;
         if (pk().wrap) d = ((d % 360) + 360) % 360;
@@ -428,15 +516,23 @@
       function renderBar() {
         const layerTabs = tabs(LAYERS, u.layer, (v) => { u.layer = v; paint(); draw(); renderBar(); renderKey(); });
         const chk = (key, label, after) => { const b = h('input', { type: 'checkbox', checked: u[key] }); b.addEventListener('change', () => { u[key] = b.checked; (after || draw)(); }); return h('label', { class: 'check' }, b, label); };
-        replace(bar, layerTabs, chk('rivers', 'Rivers'), chk('grid', 'Grid'),
+        // build: the window as it is, or (for a close-up) the region it is cut from first; and how far it has got
+        const canBuild = cur && (cur.needs || (cur.s && !cur.built));
+        const buildBtn = canBuild ? h('button', { class: 'btn small primary', type: 'button', disabled: !!progress, onclick: startBuild }, progress ? 'Building…' : cur.needs ? 'Build the region first' : 'Build detail') : null;
+        const prog = progress ? h('span', { class: 'mono', style: { display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '12px' } },
+          h('span', { style: { display: 'inline-block', width: '140px', height: '8px', border: '1px solid var(--line)', position: 'relative' } },
+            h('span', { style: { position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.round((100 * progress.n) / Math.max(1, progress.of))}%`, background: 'var(--amber)', transition: 'width 0.3s' } })),
+          `${progress.n}/${progress.of}`) : null;
+        replace(bar, buildBtn, prog, layerTabs, chk('rivers', 'Rivers'), chk('grid', 'Grid'),
           h('span', { class: 'btn-row', style: { marginLeft: 'auto' } },
             h('button', { class: 'btn small', type: 'button', 'aria-label': 'Zoom out', disabled: u.zoom <= 1, onclick: () => zoomAt(1 / 1.6, cv.width / 2, cv.height / 2) }, '−'),
             h('span', { class: 'mono muted', style: { minWidth: '3.5em', textAlign: 'center', alignSelf: 'center' } }, `×${fmt.num(u.zoom, 1)}`),
             h('button', { class: 'btn small', type: 'button', 'aria-label': 'Zoom in', disabled: u.zoom >= 8, onclick: () => zoomAt(1.6, cv.width / 2, cv.height / 2) }, '+')));
       }
       function renderWhere() {
-        const w = ctx.world, ws = w[cfg.key], r0 = reg ? regFor.settings : { lat: 0, lon: 0 }, pSpan = regFor ? regFor.parent.span : Infinity;
-        const s = { lat: ws.lat ?? r0.lat, lon: ws.lon ?? r0.lon, span: reg ? regFor.settings.span : ws.span, res: ws.res };
+        const w = ctx.world, ws = w[cfg.key], r0 = cur && cur.s ? cur.s : { lat: 0, lon: 0, span: ws.span }, pSpan = cur && cur.par ? cur.par.span : Infinity;
+        if (cur && cur.needs) { replace(whereHost, h('p', { class: 'muted', style: { fontSize: '13px', margin: 0 } }, `Build the region first: the ${cfg.noun} is cut from it.`)); return; }
+        const s = { lat: ws.lat ?? r0.lat, lon: ws.lon ?? r0.lon, span: r0.span, res: ws.res };
         const num = (key, label, min, max, value) => {
           const i = h('input', { class: 'txt num', type: 'number', min, max, step: cfg.step, value: +value.toFixed(4), 'aria-label': label });
           i.addEventListener('change', () => { const v = Number(i.value); if (!Number.isFinite(v)) return; u.zoom = 1; ctx.mutate((ww) => { ww[cfg.key].lat = key === 'lat' ? clamp(v, -85, 85) : s.lat; ww[cfg.key].lon = key === 'lon' ? ((((v + 180) % 360) + 360) % 360) - 180 : s.lon; }); });
@@ -447,7 +543,7 @@
           el2.addEventListener('change', () => { u.zoom = 1; ctx.set(path, Number(el2.value)); });
           return h('label', { class: 'field' }, h('span', { class: 'field-label' }, label, info(tip)), el2);
         };
-        const cellKm = reg ? reg.stats.worldCellKm : null;
+        const cellKm = reg && reg.stats ? reg.stats.worldCellKm : null;
         const spans = cfg.spans.filter(([v]) => v <= pSpan * (cfg.key === 'closeup' ? 0.5 : 1) || v === cfg.spans[0][0]);
         replace(whereHost,
           h('p', { class: 'muted', style: { fontSize: '13px', margin: '0 0 10px' } }, cfg.pickText),
@@ -458,7 +554,7 @@
           ws.lat != null ? h('div', { class: 'btn-row', style: { marginTop: '10px' } }, h('button', { class: 'btn small', type: 'button', onclick: () => { u.zoom = 1; ctx.mutate((ww) => { ww[cfg.key].lat = null; ww[cfg.key].lon = null; }); } }, cfg.backText)) : null);
       }
       function renderStats() {
-        if (!reg) { replace(statsHost); return; }
+        if (!reg || reg.preview) { replace(statsHost); return; }
         const s = reg.stats, k = (n) => fmt.int(n);
         const rows = [
           ['Across', `${k(reg.frame.span)} km`, `${s.pxKm < 1 ? `${k(s.pxKm * 1000)} m` : `${fmt.num(s.pxKm, 2)} km`} a pixel · ${cfg.sourceName}: ${s.worldCellKm < 1 ? `${k(s.worldCellKm * 1000)} m` : `${k(s.worldCellKm)} km`}`],
@@ -474,7 +570,7 @@
       function renderKey() {
         const sw = (c) => h('i', { style: { display: 'inline-block', width: '22px', height: '10px', background: `rgb(${c.map(Math.round).join(',')})`, verticalAlign: 'middle', marginRight: '6px' } });
         let items;
-        if (u.layer === 'biomes' && reg) {
+        if (u.layer === 'biomes' && reg && reg.stats) {
           const order = reg.stats.biomeShare.map((v, i) => [i, v]).filter(([, v]) => v > 0.001).sort((a, b) => b[1] - a[1]);
           items = order.map(([i, v]) => [hex(B.BIOMES[i][2]), `${B.BIOMES[i][1]} ${v < 0.01 ? '<1' : fmt.int(v * 100)} %`]);
         } else {
@@ -485,7 +581,7 @@
         if (reg && reg.oxbows && reg.oxbows.length) items.push([hex('#5892c4'), 'oxbow lake']);
         if (reg && reg.braids && reg.braids.length) items.push([[214, 204, 178], 'gravel bed (braided river)']);
         replace(keyHost, panel('Key', { tag: LAYERS.find((l) => l[0] === u.layer)[1].toUpperCase() }, h('div', { class: 'map-key mono', style: { marginLeft: 0 } }, items.map(([c, t]) => h('span', null, sw(c), t)),
-          h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '3px', background: RIVER, verticalAlign: 'middle', marginRight: '6px' } }), `river (from ${reg ? fmt.num(reg.minFlow, reg.minFlow < 1 ? 1 : 0) : 8} m³/s)`))));
+          h('span', null, h('i', { style: { display: 'inline-block', width: '22px', height: '3px', background: RIVER, verticalAlign: 'middle', marginRight: '6px' } }), `river (from ${reg && reg.minFlow ? fmt.num(reg.minFlow, reg.minFlow < 1 ? 1 : 0) : 8} m³/s)`))));
       }
       const fileName = (what, ext) => `${(ctx.world.name || 'world').replace(/[^\w-]+/g, '_')}-${cfg.key}-${what}.${ext}`;
       const save = (blob, name) => { const a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); };
@@ -519,9 +615,9 @@
         replace(expHost,
           h('p', { class: 'muted', style: { fontSize: '13px', marginBottom: '10px' } }, `At the ${cfg.noun}’s full detail, in the same frame, so they stack in an image editor.`),
           h('div', { class: 'btn-row' },
-            h('button', { class: 'btn small primary', type: 'button', disabled: !reg, onclick: exportPng }, 'This map (PNG)'),
-            h('button', { class: 'btn small', type: 'button', disabled: !reg, onclick: exportHeight }, 'Heightmap (16-bit PNG)'),
-            h('button', { class: 'btn small', type: 'button', disabled: !reg, onclick: exportSvg }, 'Rivers (SVG)')));
+            h('button', { class: 'btn small primary', type: 'button', disabled: !reg || reg.preview, onclick: exportPng }, 'This map (PNG)'),
+            h('button', { class: 'btn small', type: 'button', disabled: !reg || reg.preview, onclick: exportHeight }, 'Heightmap (16-bit PNG)'),
+            h('button', { class: 'btn small', type: 'button', disabled: !reg || reg.preview, onclick: exportSvg }, 'Rivers (SVG)')));
       }
 
       return {
@@ -538,7 +634,7 @@
     checks(w) {
       if (!w.plates.features.some((f) => f.kind === 'crust')) return [{ level: 'info', text: 'No continents yet: make a world on the Plates step.' }];
       const c = L.peek();
-      if (!c) return [{ level: 'info', text: `Open this step to build the ${cfg.noun}.` }];
+      if (!c) return [{ level: 'info', text: `Open this step and build the ${cfg.noun} (Build detail).` }];
       const s = c.region.stats, px = s.pxKm < 1 ? `${fmt.int(s.pxKm * 1000)} m` : `${fmt.num(s.pxKm, 2)} km`;
       return [{ level: 'ok', text: `${fmt.int(c.region.frame.span)} km across at ${px} a pixel: ${fmt.int(s.rivers)} rivers, ${fmt.int(s.lakes)} lakes${c.region.oxbows && c.region.oxbows.length ? `, ${fmt.int(c.region.oxbows.length)} oxbow lakes` : ''}.` }];
     },
@@ -551,7 +647,8 @@
     lede: ['A closer look at one part of the world, some hundreds of km across: the world map’s land with the detail it is too coarse to hold, rivers down to brooks, lakes, valleys, meanders on the plains, and the biomes changing with height. Pick the place on the world map below; zoom and pan the map above. For closer still, the Close-up step.'],
     pickerTag: 'WORLD MAP', pickerName: 'World map', sourceName: 'the world map', step: 0.1,
     spans: [[200, '200 km'], [400, '400 km'], [800, '800 km'], [1600, '1 600 km'], [3200, '3 200 km']],
-    pickText: 'Click the world map to centre the region there.', backText: 'Back to the largest river’s mouth',
+    pickText: 'Click the world map to centre the region there; it shows at once, enlarged. Build detail when it is where you want it.', backText: 'Back to the largest river’s mouth',
+    adds: 'its coast, hills and valleys, rivers, lakes and biomes (some seconds)',
     working: 'Working out the world map, its climate, then the region…',
   });
   defineLevel({
@@ -560,7 +657,9 @@
     lede: ['Part of the Region, a few tens of km across at tens of metres a pixel, cut from it as the Region is cut from the world map, and agreeing with it: its land with finer detail still, every stream, and big rivers as wide as they really are, meandering over their floodplains and leaving oxbow lakes. Pick the place on the Region below.'],
     pickerTag: 'REGION', pickerName: 'Region', sourceName: 'the region', step: 0.01,
     spans: [[10, '10 km'], [25, '25 km'], [50, '50 km'], [100, '100 km'], [200, '200 km']],
-    pickText: 'Click the region to centre the close-up there.', backText: 'Back to the region’s largest river',
+    buildFirst: (w, d, onProgress) => REGION.build(w, d, onProgress),
+    pickText: 'Click the region to centre the close-up there; it shows at once, enlarged. Build detail when it is where you want it.', backText: 'Back to the region’s largest river',
+    adds: 'its finer coast and relief, streams, meanders, oxbow lakes and braided reaches (some seconds)',
     working: 'Working out the world map, the region, then the close-up…',
   });
 })();
