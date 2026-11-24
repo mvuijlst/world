@@ -111,7 +111,7 @@
     const gLat = (j) => sf.north - ((j + 0.5) * sf.dLat) / gH, gLon = (i) => sf.west + ((i + 0.5) * sf.dLon) / gW;
     // detail is fractal: below a source cell of a few hundred metres it is much finer than below a world
     // map cell of 55 km (its height falls as the cell size to the 0.7)
-    const ampS = sub ? clamp((gkm / 55.6) ** 0.7, 0.02, 1) : 1;
+    const ampS = sub ? clamp((gkm / 55.6) ** 0.45, 0.05, 1) : 1;
     // a source's lakes stay lakes (as hollows they may be shallower than a new one must be)
     const srcLake = sub && map.lake ? map.lake : null;
 
@@ -175,7 +175,7 @@
     if (opts.coast !== false) {
       const coastSd = signedDistanceKm(base, W, H, (y) => fr.dLon * kmDeg * Math.cos(latOf(y) * D2R) / W, (fr.dLat * kmDeg) / H);
       const reach = 1.3 * gkm, nc = gradNoise(seed ^ 0xc0a57), ncw = gradNoise(seed ^ 0x3a9e);
-      const lam0 = 1.4 * gkm, amp0 = 0.42 * gkm, octC = clamp(Math.floor(Math.log2(lam0 / (2 * pxKm))) + 1, 1, 12);
+      const lam0 = 1.4 * gkm, amp0 = (sub ? 0.3 : 0.42) * gkm, octC = clamp(Math.floor(Math.log2(lam0 / (3 * pxKm))) + 1, 1, 12);
       const shift = new Float32Array(N);
       for (let k = 0; k < N; k++) {
         const sd = coastSd[k];
@@ -185,13 +185,14 @@
         const wq = 0.5 * lam0, wx = wq * ncw(X / lam0, Y / lam0, Z / lam0), wy = wq * ncw(Y / lam0 + 13.1, Z / lam0, X / lam0);
         const rough = roughK[k];
         let d = 0, a = amp0 * (0.3 + 0.95 * rough), lam = lam0;
-        const per = 0.6 + 0.26 * rough;                        // (rougher: finer scales relatively stronger)
+        const per = sub ? 0.5 + 0.12 * rough : 0.6 + 0.26 * rough;   // (a close-up's source already has its coast's larger bends)                        // (rougher: finer scales relatively stronger)
         for (let o = 0; o < octC; o++, a *= per, lam *= 0.5) d += a * nc((X + wx) / lam, (Y + wy) / lam, Z / lam + o * 7.7);
         // fjords: glacial troughs drowned by the sea, long narrow inlets (some 2-5 km wide, up to a source
         // cell or more long) cut straight into the high ground, roughly across the coast, branching: lines
         // laid out by where along the coast each pixel is (the nearest point of the coast: its own distance
         // back along the way the distance grows), so they run across the coast, with a slow wander
-        shift[k] = 1.6 * d * (1 - smooth((Math.abs(sd) - 0.5 * reach) / (0.5 * reach)));
+        // (out at sea it fades within a few km: the shelf and the slope are not dragged into streaks)
+        shift[k] = 1.6 * d * (1 - smooth((Math.abs(sd) - 0.5 * reach) / (0.5 * reach))) * (sd < 0 ? 1 - smooth(-sd / (0.3 * reach)) : 1);
       }
       // the heights near the coast read from a point moved across it by that much (a warp: the coast,
       // its plain, its cliffs and its shelf all move together; far from it, nothing moves)
@@ -244,7 +245,7 @@
         v = (1 - mtn) * s + mtn * (0.35 * s + 1.1 * r);
         v = (amp * v + ((30 * ampS) / f) * shore * c) / amp;
       } else {
-        amp = (ampS * (6 + 0.04 * -bm + 0.12 * relief[k] * f)) / f;
+        amp = (ampS * (3 + 0.02 * -bm + 0.02 * relief[k] * f)) / f;   // (the sea floor: gentle; its shelf is smooth sand and mud)
         v = (amp * s + ((30 * ampS) / f) * Math.exp(bm / (60 * Math.sqrt(ampS))) * (0.15 + 0.85 * roughK[k]) * c) / amp;
       }
       z[k] = b + amp * detailX * v;
@@ -390,12 +391,12 @@
         for (let i = 0; i < rv.pts.length; i++) {
           const q = rv.q[i];
           if (!(q >= 2 * mf)) { prev = null; continue; }
-          const c = toChild(rv.pts[i]), depth = ((1.5 + 1.5 * Math.log10(q / mf)) * Math.sqrt(ampS)) / f;
+          const c = toChild(rv.pts[i]), depth = ((0.8 + 0.8 * Math.log10(q / mf)) * Math.sqrt(ampS)) / f;
           lv = Math.min(lv, Math.max(0, zSrc(rv.pts[i])) - depth);
           if (prev && (near(c) || near(prev))) {
             // (its sides sloping gently out to some two and a half times its half-width: where the river
             // later wanders off the line, no sharp-edged trench is left behind)
-            const half = Math.max(0.6, (1.35 * Math.sqrt(q)) / 1000 / pxKm), outer = 2.5 * half, rr = Math.ceil(outer);
+            const half = Math.max(0.6, (1.35 * Math.sqrt(q)) / 1000 / pxKm), outer = 4 * half, rr = Math.ceil(outer);
             const n = Math.max(1, Math.ceil(Math.hypot(c[0] - prev[0], c[1] - prev[1]) * 2));
             for (let t = 0; t <= n; t++) {
               const x = prev[0] + ((c[0] - prev[0]) * t) / n, y = prev[1] + ((c[1] - prev[1]) * t) / n;
@@ -1024,11 +1025,11 @@
         const wTrue = (2.7 * Math.sqrt(Math.max(0, c.q))) / 1000 / o.pxKm;             // channel width, pixels
         const lam0 = Math.max(11 * wTrue, 12 * riverWidth(c.q, o.minFlow));
         // no two bends alike: each a little longer or shorter (±40 %), swinging more or less
-        const lam = lam0 * (0.6 + 0.8 * (0.5 + 0.5 * nz(phi / 6.283, ri * 1.7, 0.3)));
+        const lam = lam0 * (0.45 + 1.3 * smooth(0.5 + 0.8 * nz(phi / 3.1416, ri * 1.7, 0.3)));   // (each half-bend its own length)
         const flat = smooth((Math.log10(0.002) - Math.log10(Math.max(1e-6, c.s))) / 1);  // 0 at 0.2 %, 1 at 0.02 %
         const big = smooth(Math.log10(Math.max(1, c.q / o.minFlow)) / 2);                // a brook barely, a river fully
         const ends = smooth(Math.min(u, total - u) / (0.8 * lam0));
-        const swing = 0.35 + 0.65 * smooth(0.5 + 0.9 * nz(phi / 6.283 + 0.37, ri * 3.1, 5.5));
+        const swing = 0.1 + 0.9 * smooth(0.5 + 1.1 * nz(phi / 4.2 + 0.37, ri * 3.1, 5.5));   // (some stretches nearly straight)
         // (kept below about 80°, skew included: past 90° a bend overhangs and, with the belt wandering,
         // can cross itself; a real loop that would is cut off and left as an oxbow)
         const theta0 = Math.min(1.35, 1.35 * flat * big * ends * swing);
@@ -1160,13 +1161,14 @@
         const total = L[L.length - 1], wq = (2.7 * Math.sqrt(qs.reduce((x, c) => Math.max(x, c), 0))) / 1000 / o.pxKm, bed = 15 * wq;
         if (!(total > 1.5 * bed && bed >= 2)) continue;
         // the bed, widest in the middle of the reach, narrowing to the river at its ends
-        const band = L.map((l) => bed * (0.35 + 0.65 * smooth(Math.min(l, total - l) / (1.5 * bed))) * (0.8 + 0.4 * (0.5 + 0.5 * nz(l / (3 * bed), ri * 1.3, 0.7))));
+        const band = L.map((l) => bed * (0.3 + 0.7 * smooth(Math.min(l, total - l) / (0.6 * bed))) * (0.85 + 0.3 * (0.5 + 0.5 * nz(l / (4 * bed), ri * 1.3, 0.7))));
         const nrm = pts.map((p, k) => { const p0 = pts[Math.max(0, k - 2)], p1 = pts[Math.min(pts.length - 1, k + 2)], dx = p1[0] - p0[0], dy = p1[1] - p0[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; });
         const ns = clamp(Math.round(2 + Math.log10(qTop / o.minFlow)), 3, 6), strands = [];
         for (let sj = 0; sj < ns; sj++) {
           // each channel weaves across the bed on its own, the bars between them some bed widths long
           strands.push(pts.map((p, k) => {
-            const off = 0.42 * band[k] * nz(L[k] / (2.2 * bed), sj * 7.31 + ri * 0.17, 3.9 + sj) * smooth(Math.min(L[k], total - L[k]) / bed);
+            // (each weaving at about a bed width, so they cross and recross around bars; together only at the ends)
+            const off = 0.45 * band[k] * clamp(1.5 * nz(L[k] / (0.8 * bed) + sj * 3.3, sj * 7.31 + ri * 0.17, 3.9 + sj), -1, 1) * smooth(Math.min(L[k], total - L[k]) / (0.4 * bed));
             return [p[0] + off * nrm[k][0], p[1] + off * nrm[k][1]];
           }));
         }
