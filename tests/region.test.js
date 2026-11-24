@@ -80,8 +80,11 @@ test('a close-up of the region agrees with it, and its big river runs through it
   assert.ok(cu.frame.pxKm < reg.frame.pxKm / 10, `finer: ${cu.frame.pxKm} km a pixel`);
   let same = 0, n = 0;
   for (let y = 0; y < cu.H; y += 3) for (let x = 0; x < cu.W; x += 3) {
-    const [a, b] = R.latLonOf(cu, x + 0.5, y + 0.5), zr = reg.z[R.pixelOf(reg, a, b)], zc = cu.z[y * cu.W + x];
-    if (Math.abs(zr) < 10) continue;
+    const [a, b] = R.latLonOf(cu, x + 0.5, y + 0.5), kr = R.pixelOf(reg, a, b), zr = reg.z[kr], zc = cu.z[y * cu.W + x];
+    // (not within two of the region's pixels of its coast: the close-up's coast is its own, more fractal)
+    let shore = false;
+    for (let dy = -2; dy <= 2 && !shore; dy++) for (let dx = -2; dx <= 2; dx++) { const q = kr + dy * reg.W + dx; if (q >= 0 && q < reg.z.length && (reg.z[q] > 0) !== (zr > 0)) { shore = true; break; } }
+    if (shore) continue;
     n++; if ((zr > 0) === (zc > 0)) same++;
   }
   assert.ok(same / Math.max(1, n) > 0.97, `land and sea agree at ${same} of ${n}`);

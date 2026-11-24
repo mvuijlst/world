@@ -322,7 +322,13 @@ It agrees with the world map:
   so its large shapes stay the world map's own. The detail is fractal noise in km on the sphere (a place
   always gets the same detail): ridged crests in mountains, hills on uplands, gentle swells on plains,
   more where the world map is high and rugged; at the shore a rougher noise breaks the coast into bays,
-  spits and islets. Ground pushed below sea level that no sea reaches is a dry hollow, not an inland sea.
+  spits and islets.
+- **The coast** is moved sideways, not just raised and lowered: the world map knows its coast only to
+  within a cell, and its heights are smooth between cells, so on its own the coast would be that outline
+  upscaled. Fractal noise (bends up to about a source cell across, each finer scale relatively stronger,
+  warped so capes hook and bays open out) moves it in and out across itself, and the heights within a
+  cell or so of it are read from that far across (a warp: the coastal plain, the cliffs and the shelf move
+  with the coast); further away nothing moves. The same in a Close-up, at its own scale. Ground pushed below sea level that no sea reaches is a dry hollow, not an inland sea.
 - **Hills between the streams** (as Génevaux et al. 2013, *Terrain Generation Using Procedural Models
   Based on Hydrology*, build their crests): the streams are found first (where water routed over the land,
   with some unevenness so that it gathers, drains more than a few km²), each traced as a main stem; the

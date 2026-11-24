@@ -143,6 +143,49 @@
         xyz[k * 3] = R * cl * Math.cos(lo * D2R); xyz[k * 3 + 1] = R * cl * Math.sin(lo * D2R); xyz[k * 3 + 2] = R * sl;
       }
     }
+    // ── the coast: moved sideways, as fractal as real coasts ──
+    // The world map knows where its coast runs only to within a cell, and in between its heights are
+    // smooth: on its own the coast here would be that cell-sized outline, upscaled. So the coast is moved
+    // in and out across itself by fractal noise: bends up to about a source cell across at the largest,
+    // each scale down to two pixels a little gentler than the one above (amplitude ∝ wavelength^0.75: a
+    // coast of fractal dimension about 1.25, as Britain's west coast), warped so headlands and bays are
+    // not round. The ground on either side moves with it (the coastal plain and the shelf), along the
+    // slope, fading out a source cell or so from the coast; the large shapes stay the source's.
+    if (opts.coast !== false) {
+      const coastSd = signedDistanceKm(base, W, H, (y) => fr.dLon * kmDeg * Math.cos(latOf(y) * D2R) / W, (fr.dLat * kmDeg) / H);
+      const reach = 1.3 * gkm, nc = gradNoise(seed ^ 0xc0a57), ncw = gradNoise(seed ^ 0x3a9e);
+      const lam0 = 1.4 * gkm, amp0 = 0.42 * gkm, octC = clamp(Math.floor(Math.log2(lam0 / (2 * pxKm))) + 1, 1, 12);
+      const shift = new Float32Array(N);
+      for (let k = 0; k < N; k++) {
+        const sd = coastSd[k];
+        if (Math.abs(sd) > reach) continue;
+        const X = xyz[k * 3], Y = xyz[k * 3 + 1], Z = xyz[k * 3 + 2];
+        // (warped by the coast's own largest bends: capes that hook, bays that open out)
+        const wq = 0.5 * lam0, wx = wq * ncw(X / lam0, Y / lam0, Z / lam0), wy = wq * ncw(Y / lam0 + 13.1, Z / lam0, X / lam0);
+        let d = 0, a = amp0, lam = lam0;
+        for (let o = 0; o < octC; o++, a *= 0.82, lam *= 0.5) d += a * nc((X + wx) / lam, (Y + wy) / lam, Z / lam + o * 7.7);
+        shift[k] = 1.6 * d * (1 - smooth((Math.abs(sd) - 0.5 * reach) / (0.5 * reach)));
+      }
+      // the heights near the coast read from a point moved across it by that much (a warp: the coast,
+      // its plain, its cliffs and its shelf all move together; far from it, nothing moves)
+      const b0 = Float32Array.from(base), at = (x, y) => {
+        x = clamp(x, 0, W - 1.001); y = clamp(y, 0, H - 1.001);
+        const xi = Math.floor(x), yi = Math.floor(y), tx = x - xi, ty = y - yi, k = yi * W + xi;
+        return (b0[k] * (1 - tx) + b0[k + 1] * tx) * (1 - ty) + (b0[k + W] * (1 - tx) + b0[k + W + 1] * tx) * ty;
+      };
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const k = y * W + x;
+        if (!shift[k]) continue;
+        // (across the coast: the way the distance to it grows, over a few pixels)
+        const r = 3, x0 = Math.max(0, x - r), x1 = Math.min(W - 1, x + r), y0 = Math.max(0, y - r), y1 = Math.min(H - 1, y + r);
+        const gx = (coastSd[y * W + x1] - coastSd[y * W + x0]) / (x1 - x0 || 1), gy = (coastSd[y1 * W + x] - coastSd[y0 * W + x]) / (y1 - y0 || 1), l = Math.hypot(gx, gy);
+        if (l < 1e-6) continue;
+        // (a positive shift moves the coast out to sea: read from further inland)
+        const px = shift[k] / pxKm;
+        base[k] = at(x + (px * gx) / l, y + (px * gy) / l);
+      }
+    }
+
     // octaves from a world map cell down to two pixels (each half the last, as land is: fractal)
     const n1 = gradNoise(seed ^ 0x5e61), n2 = gradNoise(seed ^ 0x2b07), nw = gradNoise(seed ^ 0x77a1);
     const top = Math.min(gkm, 0.5 * fr.span), oct = clamp(Math.floor(Math.log2(top / (2 * pxKm))) + 1, 1, 10);
@@ -187,7 +230,8 @@
     const DI = [-1, 0, 1, -1, 1, -1, 0, 1], DJ = [-1, -1, -1, 0, 0, 1, 1, 1];
 
     // sea narrower than a few pixels (a world map estuary, drawn finer than it can be) is the river's
-    // floor, just above the sea: an opening of the sea (shrink it, then grow it back) by two pixels
+    // floor, just above the sea: an opening of the sea (shrink it, then grow it back) by one pixel
+    // (no more: a wider one would fill every small bay of the coast)
     {
       const sea = Uint8Array.from(z, (v) => (v <= 0 ? 1 : 0));
       const morph = (src, keep) => {                       // keep 1: erode (all 8 neighbours sea); 0: dilate
@@ -206,7 +250,7 @@
         }
         return out;
       };
-      const open = morph(morph(morph(morph(sea, 1), 1), 0), 0);
+      const open = morph(morph(sea, 1), 0);
       for (let k = 0; k < N; k++) if (sea[k] && !open[k] && z[k] > -40 / f) z[k] = 1 + 0.02 * Math.min(50, -z[k]);
     }
 
@@ -1242,6 +1286,39 @@
       for (const r of kept) for (const p of r) mark(p);
     }
     return { pts, q, oxbows: lakes, work };
+  }
+
+  /*
+   * Signed distance (km) to where a field crosses zero: positive where it is above (land), negative
+   * below; a chamfer pass over a box of W × H pixels (dx(y): a pixel's width in km at row y, dy its height).
+   */
+  function signedDistanceKm(field, W, H, dx, dy) {
+    const N = W * H, dl = new Float32Array(N), ds = new Float32Array(N);
+    for (let k = 0; k < N; k++) { dl[k] = field[k] > 0 ? 1e9 : 0; ds[k] = field[k] > 0 ? 0 : 1e9; }
+    for (const d of [dl, ds]) {
+      for (let it = 0; it < 2; it++) {
+        for (let y = 0; y < H; y++) {
+          const ex = dx(y), dg = Math.hypot(ex, dy);
+          for (let x = 0; x < W; x++) {
+            const k = y * W + x; let v = d[k];
+            if (x > 0 && d[k - 1] + ex < v) v = d[k - 1] + ex;
+            if (y > 0) { if (d[k - W] + dy < v) v = d[k - W] + dy; if (x > 0 && d[k - W - 1] + dg < v) v = d[k - W - 1] + dg; if (x < W - 1 && d[k - W + 1] + dg < v) v = d[k - W + 1] + dg; }
+            d[k] = v;
+          }
+        }
+        for (let y = H - 1; y >= 0; y--) {
+          const ex = dx(y), dg = Math.hypot(ex, dy);
+          for (let x = W - 1; x >= 0; x--) {
+            const k = y * W + x; let v = d[k];
+            if (x < W - 1 && d[k + 1] + ex < v) v = d[k + 1] + ex;
+            if (y < H - 1) { if (d[k + W] + dy < v) v = d[k + W] + dy; if (x < W - 1 && d[k + W + 1] + dg < v) v = d[k + W + 1] + dg; if (x > 0 && d[k + W - 1] + dg < v) v = d[k + W - 1] + dg; }
+            d[k] = v;
+          }
+        }
+      }
+    }
+    // (half a pixel either side of the crossing)
+    return Float32Array.from(dl, (v, k) => (field[k] > 0 ? v : -ds[k]));
   }
 
   /* A moving average over five points (the ends kept): eases a line off the pixel grid's steps. */
