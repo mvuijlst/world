@@ -659,6 +659,10 @@
         if (v > into[k]) into[k] = v;
       }
     }
+    // what raised each cell (for the fidelity rules, js/fidelity.js): 1 belt, 2 plateau, 4 igneous
+    // province, 8 hotspot, 16 island arc, 32 drawn with the brush
+    const cause = new Uint8Array(N);
+    for (let k = 0; k < N; k++) { if (inBelt[k] >= 0) cause[k] |= 1; if (plat[k] > 0) cause[k] |= 2; }
     const oroS = blur(gr, oro, Math.max(1, Math.round(km(65) / gr.dx)), 2), platS = blur(gr, plat, Math.max(1, Math.round(km(120) / gr.dx)), 2);
 
     // 4. where the coast runs (Log 23): not the crust's outline but a field of "how far inland", the
@@ -723,6 +727,7 @@
       const oce = f.type === 'oceanic plateau';
       fillPolygon(gr, pl, (k) => { const v = h * clamp(oce ? 0.35 + 1.4 * warped(k, 6, 4, 0.5) : 0.55 + 0.9 * warped(k, 8, 4, 0.3), 0, 1); if (v > lip[k]) lip[k] = v; });
     }
+    for (let k = 0; k < N; k++) if (lip[k] > 0) cause[k] |= 4;
     const lipS = blur(gr, lip, Math.max(1, Math.round(geo(60) / gr.dx)), 2);
     for (let k = 0; k < N; k++) {
       if (!dry(k)) continue;
@@ -767,7 +772,7 @@
         if (swell[k] < 0.01 || z[k] >= 0) continue;
         // higher and lower stretches along it, ragged flanks (the swell normalised: an arc is often under a cell wide)
         const s = smooth(Math.min(1, swell[k] / 0.12) * 1.1 + 0.3 * fbm(k, 16, 3) - 0.05) * (0.55 + 0.45 * smooth((fbm(k, 10, 3) + 0.25) / 0.5));
-        if (s > 0) z[k] = Math.max(z[k], z[k] + (H(-1900) - z[k]) * s + H(300) * fbm(k, 14, 2) * s);
+        if (s > 0) { z[k] = Math.max(z[k], z[k] + (H(-1900) - z[k]) * s + H(300) * fbm(k, 14, 2) * s); cause[k] |= 16; }
       }
       for (const f of arcs) {
         const ring = placed(f).map(S.vec), n = ring.length >> 1, r = hashRng(`${f.id}`);
@@ -780,7 +785,7 @@
             const t = along / seg, v = norm(mid[i - 1].map((x, q) => x + (mid[i][q] - x) * t));
             const big = r() < 0.18, rad = big ? geo(25) + r() * geo(40) : geo(10) + r() * geo(16);
             const top = big ? 300 + r() * 1800 : -1000 + r() * 1600;         // many stay seamounts
-            stamp(gr, S.latLon(v), Math.max(rad, gr.dx * 0.7), (k, dd) => { const hgt = H(-1500 + (top + 1500) * Math.max(0, 1 - dd / Math.max(rad, gr.dx * 0.7)) ** 1.3); if (hgt > z[k]) z[k] = hgt; });
+            stamp(gr, S.latLon(v), Math.max(rad, gr.dx * 0.7), (k, dd) => { const hgt = H(-1500 + (top + 1500) * Math.max(0, 1 - dd / Math.max(rad, gr.dx * 0.7)) ** 1.3); if (hgt > z[k]) { z[k] = hgt; cause[k] |= 16; } });
           }
           along -= seg;
         }
@@ -793,6 +798,7 @@
         stamp(gr, t.at, r, (k, dd) => {
           const floor = z[k], top = cont[k] ? floor + H(1600) * Math.exp(-ea / 10) : summit;
           if (top <= floor) return;
+          cause[k] |= 8;
           z[k] = Math.max(z[k], floor + (top - floor) * Math.max(0, 1 - dd / r) ** 1.6);
         });
       }
@@ -803,7 +809,7 @@
     const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, rough: 300 / f, seed, k: opts.carveK, gravity: g, tides, factor: f });
 
     // 9. what was drawn on it
-    for (const s of opts.strokes || []) stamp(gr, [s.lat, s.lon], s.r, (k, dd) => { z[k] += s.dz * smooth(1 - dd / s.r); });
+    for (const s of opts.strokes || []) stamp(gr, [s.lat, s.lon], s.r, (k, dd) => { z[k] += s.dz * smooth(1 - dd / s.r); cause[k] |= 32; });
 
     // 10. plate boundaries (Log 20): convergent near a trench, divergent on a young ridge, else transform
     const boundary = new Uint8Array(N);
@@ -816,7 +822,7 @@
     }
 
     const map = {
-      W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr,
+      W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr, cause,
       crust: crustShare, target, sea, at, rivers: riversOf(carved, 'latitude'), tides, tideX,
       // what carveMap needs to carve it later, with the climate's water
       carving: { erosion: E, seed, rough: 300 / f, k: opts.carveK, wet: (lat) => wetRaw(lat) / wetMean },
@@ -843,7 +849,7 @@
     // glaciers first (their troughs, basins and fjords), then the rivers in what they left
     map.glaciers = wt ? Object.assign(glaciate(map.grid, map.z, { water: wt, iceAge: opts.iceAge ?? s.iceAge, erosion: s.erosion, gravity: map.planet.gravity, radiusKm: map.planet.radiusKm, seed: s.seed, k: opts.glacierK }), { iceAge: opts.iceAge ?? s.iceAge ?? 6 }) : null;
     const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides, factor: map.planet.factor });
-    for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); });
+    for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); if (map.cause) map.cause[k] |= 32; });
     map.rivers = riversOf(carved, wt ? 'climate' : 'latitude');
     return measure(map);
   }

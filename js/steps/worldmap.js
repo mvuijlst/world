@@ -22,7 +22,7 @@
   const BOUND = { 1: [230, 60, 60], 2: [255, 200, 60], 3: [220, 220, 220] };   // convergent, divergent, transform
 
   // the map of a world, kept while nothing it depends on changes
-  let cached = null;
+  let cached = null, rules = null;
   const keyOf = (w, d) => JSON.stringify([w.plates, w.map.land ?? w.population.land, w.map.shelf, w.map.relief, w.map.res, w.map.erosion, w.map.carve, w.planet.pressure >= WET, d.planet.gravity, d.planet.radiusKm, d.planet.cells.count, w.tectonics.scaling, w.tectonics.ridgeDepth,
     // (the rivers carve with the climate's water: what the climate depends on)
     w.map.carve !== false ? [WS.climate.planetOf(w, d), WS.biomes.planetOf(w, d), +tidesOf(w, d).toFixed(3), w.map.iceAge ?? 6] : null]);
@@ -485,6 +485,12 @@
       if (Math.abs(w.tectonics.ridgeDepth - 2600) > 500) out.push({ level: 'warn', text: `Mid-ocean ridges at ${fmt.int(w.tectonics.ridgeDepth)} m are more than 500 m from Earth’s ~2,600 m.` });
       const peak = 8850 / d.planet.gravity ** w.tectonics.scaling;
       if (map.highest.m > peak * 1.5) out.push({ level: 'warn', text: `The highest point, ${fmt.int(map.highest.m)} m, is well above what this gravity allows (about ${fmt.int(peak)} m).` });
+      // the hard rules of a caused map (js/fidelity.js), once per map and rivers; the rivers only if
+      // already worked out (a check never starts a build)
+      const c = WS.currentBiomes(w, d, { peek: true }), bio = c && c.climRef.mapRef.map === map ? c.bio : null;
+      if (!rules || rules.map !== map || rules.bio !== bio || rules.strokes !== cached.strokes) rules = { map, bio, strokes: cached.strokes, list: WS.fidelity.rules(map, bio) };
+      for (const r of rules.list) out.push({ level: r.ok ? 'ok' : 'info', text: r.text });
+      if (!bio) out.push({ level: 'info', text: 'R1–R3 · Open Rivers & biomes to check the rivers.' });
       return out;
     },
   });

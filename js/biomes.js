@@ -221,6 +221,7 @@
     // what each lake can evaporate a year (open water evaporates a fifth more than the land could)
     comps.forEach((cp, id) => { if (cp.gone) return; let e = 0; for (const c of cp.cells) e += toM3s(Math.max(0, 1.2 * PET[c] - P[c]), area[c]); lakeLoss[id] = liquid ? e : 0; });
     const terminal = new Uint8Array(N), lakeOf = new Int8Array(N);         // 1 fresh, 2 salt
+    let evaporated = 0;                                                      // m³/s, from lakes
     for (let o = no - 1; o >= 0; o--) {
       const k = order[o], r = recv[k];
       const id = comp[k];
@@ -229,8 +230,8 @@
         // (a hollow that nothing reaches stays dry)
         if (flow[k] <= 0) { comps[id].gone = true; terminal[k] = 1; continue; }
         const out = flow[k] - lakeLoss[id];
-        if (out <= 0) { terminal[k] = 1; flow[k] = Math.max(0, flow[k]); comps[id].salt = true; comps[id].share = lakeLoss[id] > 0 ? flow[k] / lakeLoss[id] : 0; continue; }
-        flow[k] = out;
+        if (out <= 0) { terminal[k] = 1; flow[k] = Math.max(0, flow[k]); evaporated += flow[k]; comps[id].salt = true; comps[id].share = lakeLoss[id] > 0 ? flow[k] / lakeLoss[id] : 0; continue; }
+        flow[k] = out; evaporated += lakeLoss[id];
       }
       if (r >= 0 && land[r]) { flow[r] += flow[k]; cellsUp[r] += cellsUp[k]; }
     }
@@ -336,6 +337,7 @@
     return {
       W, H, grid: gr, biome, biomes: BIOMES, lake: lakeOf, seaIce, flow: Float32Array.from(flow), runoff, rivers, minFlow,
       inland: Uint8Array.from(toSea, (v) => (v < 0 ? 1 : 0)),
+      recv, terminal, rough, evaporated,                                     // (for the fidelity rules, js/fidelity.js)
       liquid: liquid && tBoil > -50,
       stats: {
         landKm2: landA, lakes, saltLakes: salt, lakeShare: lakeA / Math.max(1, landA), saltShare: saltA / Math.max(1, landA),
