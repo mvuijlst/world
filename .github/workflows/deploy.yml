@@ -39,7 +39,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Calculation engine (workbook) and sky colours (Panoptes)
-        run: node --test tests/calc.test.js tests/sky.test.js tests/sphere.test.js tests/rotation.test.js tests/supercontinent.test.js tests/crust.test.js tests/worldmap.test.js tests/climate.test.js tests/biomes.test.js tests/region.test.js tests/drawkit.test.js tests/generator.test.js tests/examples.test.js tests/fidelity.test.js
+        run: node --test tests/calc.test.js tests/sky.test.js tests/sphere.test.js tests/rotation.test.js tests/supercontinent.test.js tests/crust.test.js tests/worldmap.test.js tests/climate.test.js tests/biomes.test.js tests/region.test.js tests/drawkit.test.js tests/generator.test.js tests/examples.test.js tests/fidelity.test.js tests/camera.test.js tests/globe.test.js
       - name: Scripts parse
         run: for f in js/*.js js/steps/*.js; do node --check "$f"; done
       - name: System library for pyGPlates

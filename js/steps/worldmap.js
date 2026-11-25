@@ -7,18 +7,9 @@
   'use strict';
   const { h, panel, fmt, replace, info, toast, tabs } = WS.ui;
   const S = WS.sphere, M = WS.worldmap;
-  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-
-  // atlas colours: depth below sea level, height above it (heights stretched by the planet's relief)
-  const SEA = [[0, [178, 226, 232]], [200, [140, 202, 222]], [1000, [98, 162, 206]], [3000, [60, 114, 172]], [5000, [36, 76, 132]], [7000, [22, 46, 92]], [11000, [10, 20, 50]]];
-  const LAND = [[0, [92, 146, 86]], [200, [118, 166, 94]], [500, [168, 188, 118]], [1000, [204, 182, 122]], [2000, [172, 132, 92]], [3500, [138, 110, 96]], [5000, [214, 208, 202]], [8000, [255, 255, 255]]];
-  const ramp = (stops, x) => {
-    if (x <= stops[0][0]) return stops[0][1];
-    for (let i = 1; i < stops.length; i++) if (x <= stops[i][0]) { const [a, ca] = stops[i - 1], [b, cb] = stops[i], t = (x - a) / (b - a); return ca.map((v, k) => v + (cb[k] - v) * t); }
-    return stops[stops.length - 1][1];
-  };
+  // the atlas colours, drawn by the map viewer (js/globe.js): depth below sea level, height above it
+  const { SEA, LAND } = WS.globe;
   const BOUND = { 1: [230, 60, 60], 2: [255, 200, 60], 3: [220, 220, 220] };   // convergent, divergent, transform
 
   // the map of a world, kept while nothing it depends on changes
@@ -222,19 +213,34 @@
           h('div', { class: 'stack-gap' }, panel('Sea level & relief', { tag: 'SETTINGS' }, setHost), panel('Take it away', { tag: 'EXPORT' }, expHost))),
         panel('Range profiles', { tag: 'REFERENCE' },
           h('details', { class: 'fold' }, h('summary', null, 'Mountain range cross-sections, erosion and ocean depth'), h('div', { style: { marginTop: '12px' } }, profiles.el))));
-      const cv = h('canvas', { class: 'scene-canvas', tabindex: 0, role: 'img', 'aria-label': 'Map of the world today' });
-      host.appendChild(cv);
-      const g = cv.getContext('2d');
-      let map = null, colours = null, img = null, building = false;
+      let map = null, shown = null, building = false, drawn = '';
+      const projOf = () => (u.view === 'globe' ? 'globe' : 'flat');
+      const saved = u.cam && u.cam.projection === projOf() ? u.cam : null;
+      const view = WS.globe.create(host, {
+        projection: projOf(), lat: saved ? saved.lat : 20, lon: saved ? saved.lon : 0, alt: saved && !saved.auto ? saved.alt : null,
+        radiusKm: ctx.d.planet.radiusKm, label: 'Map of the world today',
+        onView: (v) => { u.cam = v; },
+        onHover: (at) => { if (map && at) { const z = M.sample(map, at[0], at[1]); hint.textContent = `${fmt.num(at[0], 1)}°, ${fmt.num(at[1], 1)}° · ${z >= 0 ? `${fmt.int(z)} m above` : `${fmt.int(-z)} m below`} the sea`; } },
+        onStroke: (phase, at) => {
+          if (phase === 'start') { lastPaint = null; stroking = true; }
+          if (phase !== 'end') {
+            if (at && (!lastPaint || S.distance(at, lastPaint) > ((u.radius * 180) / (Math.PI * ctx.d.planet.radiusKm)) / 3)) { paint(at); lastPaint = at; }
+            return;
+          }
+          if (stroking) { ctx.set('map.strokes', ctx.world.map.strokes); renderStats(); }
+          stroking = false; lastPaint = null;
+        },
+      });
+      let lastPaint = null, stroking = false;
 
-      // ── building and colouring ──
+      // ── building, and handing it to the viewer ──
       function ensure() {
         const w = ctx.world, d = ctx.d;
-        if (!w.plates.features.some((f) => f.kind === 'crust')) { map = null; return false; }
+        if (!w.plates.features.some((f) => f.kind === 'crust')) { map = null; show(); return false; }
         const key = keyOf(w, d);
-        if (cached && cached.key === key && cached.strokes === w.map.strokes.length) { map = cached.map; return true; }
+        if (cached && cached.key === key && cached.strokes === w.map.strokes.length) { map = cached.map; show(); return true; }
         if (building) return false;
-        building = true;
+        building = true; show();
         hint.textContent = settingsOf(w, d).carve ? 'Building the map, its climate and its rivers…' : 'Building the map…';
         const t0 = performance.now();
         // (in a worker: the page stays responsive meanwhile)
@@ -242,140 +248,55 @@
           building = false;
           if (!host.isConnected || !c) return;
           map = c.map;
-          colour();
-          renderStats(); renderSet(); renderExport(); draw();
+          show(); renderStats(); renderSet(); renderExport();
           hint.textContent = `${map.W} × ${map.H} cells · built in ${fmt.int(performance.now() - t0)} ms`;
-          WS.app.refresh();                                   // the checks can read the map now (and a newer world is built)
+          WS.app.refresh();                                   // (the checks can read the map now, and a newer world is built)
         }, (err) => { building = false; hint.textContent = `Could not build the map: ${err.message}`; });
         return false;
       }
-      /* RGBA for every cell: the atlas colour, shaded by the slope (light from the north-west). */
-      function colour() {
-        if (!map) return;
-        const { W, H, z, boundary } = map, f = map.planet.factor;
-        colours = new Uint8ClampedArray(W * H * 4);
-        const cellM = (2 * Math.PI * map.planet.radiusKm * 1000) / W;
-        for (let j = 0; j < H; j++) {
-          const cosl = Math.max(0.05, Math.cos((90 - ((j + 0.5) * 180) / H) * D2R));
-          for (let i = 0; i < W; i++) {
-            const k = j * W + i, v = z[k];
-            let c = v > 0 ? ramp(LAND, v * f) : ramp(SEA, -v);
-            if (u.shade) {
-              const e = z[j * W + ((i + 1) % W)], wv = z[j * W + ((i + W - 1) % W)], n = z[Math.max(0, j - 1) * W + i], s = z[Math.min(H - 1, j + 1) * W + i];
-              const ex = (Math.max(e, 0) - Math.max(wv, 0)) / (2 * cellM * cosl), ny = (Math.max(n, 0) - Math.max(s, 0)) / (2 * cellM);
-              const shade = clamp(1 + 14 * f * (-ex * 0.7 + ny * 0.7), 0.55, 1.35);
-              if (v > 0) c = c.map((x) => x * shade);
-            }
-            if (u.bounds && boundary[k]) c = BOUND[boundary[k]];
-            const o = k * 4;
-            colours[o] = c[0]; colours[o + 1] = c[1]; colours[o + 2] = c[2]; colours[o + 3] = 255;
-          }
-        }
-        img = new ImageData(colours, W, H);
+      /* The map's heights to the viewer (once per map), the plate boundaries as a mask over them. */
+      function show() {
+        view.setRadius(ctx.d.planet.radiusKm);
+        if (!map) { view.setHeight(null); view.setMessage(building ? 'Building the map…' : 'Make a world on the Plates step first.'); shown = null; return; }
+        view.setMessage('');
+        if (shown !== map) { view.setHeight({ W: map.W, H: map.H, z: map.z, factor: map.planet.factor }); shown = map; drawn = ''; }
+        const sig = `${u.shade}|${u.bounds}`;
+        if (sig === drawn) return;
+        drawn = sig;
+        view.setStyle({ shade: u.shade });
+        if (!u.bounds) { view.setMask(null); return; }
+        const m = new Uint8Array(map.W * map.H * 4);
+        map.boundary.forEach((b, k) => { if (b) m.set([...BOUND[b], 255], k * 4); });
+        view.setMask({ W: map.W, H: map.H, data: m });
       }
-
-      // ── drawing ──
-      const fit = () => {
-        const w = host.clientWidth || 700, hh = u.view === 'map' ? Math.round(w / 2) : Math.round(clamp(w * 0.8, 320, window.innerHeight * 0.75));
-        const dpr = Math.min(2, window.devicePixelRatio || 1);
-        cv.style.height = `${hh}px`; cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr);
-        draw();
+      /* The map's height on the page: 2:1 flat, taller as a globe. */
+      const size = () => {
+        const w = host.clientWidth || 700;
+        host.style.height = `${u.view === 'map' ? Math.round(w / 2) : Math.round(clamp(w * 0.8, 320, window.innerHeight * 0.75))}px`;
       };
-      const ro = new ResizeObserver(fit);
-      const globeR = () => Math.min(cv.width, cv.height) * 0.46 * u.zoom;
-      function draw() {
-        if (!cv.width) return;
-        g.fillStyle = css('--bg'); g.fillRect(0, 0, cv.width, cv.height);
-        if (!map || !img) {
-          g.fillStyle = css('--muted'); g.font = `${16 * (cv.width / cv.clientWidth)}px ${css('--font-mono') || 'monospace'}`;
-          g.fillText(building ? 'Building the map…' : 'Make a world on the Plates step first.', 20, 40);
-          return;
-        }
-        if (u.view === 'map') {
-          const off = drawOff(); g.imageSmoothingEnabled = map.W < cv.width;
-          g.drawImage(off, 0, 0, cv.width, cv.height);
-        } else drawGlobe();
-      }
-      let offCanvas = null, offFor = null;
-      function drawOff() {
-        if (offFor !== img) { offCanvas = h('canvas'); offCanvas.width = map.W; offCanvas.height = map.H; offCanvas.getContext('2d').putImageData(img, 0, 0); offFor = img; }
-        return offCanvas;
-      }
-      function drawGlobe() {
-        const W = cv.width, H = cv.height, R = globeR(), cx = W / 2, cy = H / 2;
-        const out = g.createImageData(W, H), d = out.data;
-        const la0 = u.lat * D2R, lo0 = u.lon * D2R, sla = Math.sin(la0), cla = Math.cos(la0);
-        const bg = css('--bg').match(/\w\w/g)?.map((x) => parseInt(x, 16)) || [10, 10, 10];
-        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-          const o = (y * W + x) * 4, px = (x - cx) / R, py = (cy - y) / R, r2 = px * px + py * py;
-          if (r2 > 1) { d[o] = bg[0]; d[o + 1] = bg[1]; d[o + 2] = bg[2]; d[o + 3] = 255; continue; }
-          const pz = Math.sqrt(1 - r2);
-          const la = Math.asin(clamp(pz * sla + py * cla, -1, 1)), lo = lo0 + Math.atan2(px, pz * cla - py * sla);
-          const j = clamp(Math.floor(((90 - la * R2D) / 180) * map.H), 0, map.H - 1);
-          const i = ((Math.floor((((lo * R2D + 180) % 360 + 360) % 360) / 360 * map.W)) % map.W + map.W) % map.W;
-          const k = (j * map.W + i) * 4, lit = 0.55 + 0.45 * pz;
-          d[o] = colours[k] * lit; d[o + 1] = colours[k + 1] * lit; d[o + 2] = colours[k + 2] * lit; d[o + 3] = 255;
-        }
-        g.putImageData(out, 0, 0);
-        g.strokeStyle = css('--line'); g.lineWidth = 1.5; g.beginPath(); g.arc(cx, cy, R, 0, 2 * Math.PI); g.stroke();
-      }
+      const ro = new ResizeObserver(size);
 
-      // ── where the pointer is, and the brush ──
-      function lookAt(e) {
-        const r = cv.getBoundingClientRect(), dpr = cv.width / r.width, x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
-        if (u.view === 'map') return [90 - (y / cv.height) * 180, (x / cv.width) * 360 - 180];
-        const pr = S.orthographic(u.lat, u.lon, globeR(), cv.width / 2, cv.height / 2);
-        return pr.invert(x, y);
-      }
+      // ── the brush ──
       function paint(at) {
         if (!map || !at) return;
         const s = { lat: +at[0].toFixed(3), lon: +at[1].toFixed(3), r: +((u.radius * 180) / (Math.PI * map.planet.radiusKm)).toFixed(3), dz: (u.tool === 'raise' ? 1 : -1) * u.strength };
         ctx.world.map.strokes.push(s);
-        M.stamp(map.grid, [s.lat, s.lon], s.r, (k, dd) => { const t = clamp(1 - dd / s.r, 0, 1); map.z[k] += s.dz * t * t * (3 - 2 * t); });
+        let j0 = map.H, j1 = -1;
+        M.stamp(map.grid, [s.lat, s.lon], s.r, (k, dd) => { const t = clamp(1 - dd / s.r, 0, 1), j = Math.floor(k / map.W); map.z[k] += s.dz * t * t * (3 - 2 * t); if (j < j0) j0 = j; if (j > j1) j1 = j; });
         cached.strokes = ctx.world.map.strokes.length;
-        colour(); offFor = null; draw();
+        if (j1 >= 0) view.updateHeight({ j0, j1 });
       }
-      let drag = null, lastPaint = null;
-      cv.addEventListener('pointerdown', (e) => {
-        cv.setPointerCapture(e.pointerId);
-        drag = { x: e.clientX, y: e.clientY, lat: u.lat, lon: u.lon };
-        if (u.tool !== 'look') { const at = lookAt(e); paint(at); lastPaint = at; }
-      });
-      cv.addEventListener('pointermove', (e) => {
-        const at = lookAt(e);
-        if (map && at) { const z = M.sample(map, at[0], at[1]); hint.textContent = `${fmt.num(at[0], 1)}°, ${fmt.num(at[1], 1)}° · ${z >= 0 ? `${fmt.int(z)} m above` : `${fmt.int(-z)} m below`} the sea`; }
-        if (!drag) return;
-        if (u.tool !== 'look') {
-          if (at && (!lastPaint || S.distance(at, lastPaint) > ((u.radius * 180) / (Math.PI * ctx.d.planet.radiusKm)) / 3)) { paint(at); lastPaint = at; }
-          return;
-        }
-        if (u.view === 'globe') {
-          const k = (180 / Math.PI) / globeR() * (cv.width / cv.clientWidth);
-          u.lon = ((drag.lon - (e.clientX - drag.x) * k / Math.max(0.2, Math.cos(u.lat * D2R))) + 540) % 360 - 180;
-          u.lat = clamp(drag.lat + (e.clientY - drag.y) * k, -89, 89);
-          draw();
-        }
-      });
-      const end = () => {
-        if (drag && u.tool !== 'look') { ctx.set('map.strokes', ctx.world.map.strokes); renderStats(); }
-        drag = null; lastPaint = null;
-      };
-      cv.addEventListener('pointerup', end);
-      cv.addEventListener('pointercancel', end);
-      cv.addEventListener('wheel', (e) => { if (u.view !== 'globe') return; e.preventDefault(); u.zoom = clamp(u.zoom * Math.exp(-e.deltaY * 0.0012), 0.7, 6); draw(); }, { passive: false });
-      cv.style.touchAction = 'none';
-
       // ── panels ──
       function renderView() {
-        replace(viewTabs, tabs([['map', 'Map'], ['globe', 'Globe']], u.view, (v) => { u.view = v; renderView(); fit(); }),
+        replace(viewTabs, tabs([['map', 'Map'], ['globe', 'Globe']], u.view, (v) => { u.view = v; renderView(); renderTools(); size(); view.setProjection(projOf()); }),
           ...[['shade', 'Relief shading'], ['bounds', 'Plate boundaries']].map(([key, label]) => {
             const b = h('input', { type: 'checkbox', checked: u[key] });
-            b.addEventListener('change', () => { u[key] = b.checked; colour(); offFor = null; draw(); renderKey(); });
+            b.addEventListener('change', () => { u[key] = b.checked; show(); renderKey(); });
             return h('label', { class: 'check' }, b, label);
           }));
       }
       function renderTools() {
-        const btn = (tool, label) => h('button', { type: 'button', class: ['btn small tool-btn', u.tool === tool && 'active'], 'aria-pressed': String(u.tool === tool), onclick: () => { u.tool = tool; renderTools(); cv.style.cursor = tool === 'look' ? 'grab' : 'crosshair'; } }, label);
+        const btn = (tool, label) => h('button', { type: 'button', class: ['btn small tool-btn', u.tool === tool && 'active'], 'aria-pressed': String(u.tool === tool), onclick: () => { u.tool = tool; view.setMode(tool === 'look' ? 'grab' : 'stroke'); renderTools(); } }, label);
         const num = (key, label, min, max, step, unit) => {
           const i = h('input', { class: 'txt num', type: 'number', min, max, step, value: u[key], 'aria-label': label });
           i.addEventListener('change', () => { u[key] = clamp(Number(i.value) || u[key], min, max); i.value = u[key]; });
@@ -453,7 +374,7 @@
       }
       const fileName = (what) => `${(ctx.world.name || 'world').replace(/[^\w-]+/g, '_')}-${what}`;
       function save(blob, name) { const a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
-      function exportColour() { const c = drawOff(); c.toBlob((b) => save(b, `${fileName('map')}.png`)); }
+      function exportColour() { view.renderEquirect(map.W, map.H).toBlob((b) => save(b, `${fileName('map')}.png`)); }
       async function exportHeight() {
         const lo = Math.floor(map.deepest.m), hi = Math.ceil(map.highest.m), span = Math.max(1, hi - lo);
         const v = new Uint16Array(map.z.length);
@@ -468,10 +389,11 @@
         update() {
           if (!ro._on) { ro.observe(host); ro._on = true; }
           renderView(); renderTools(); renderSet(); renderKey(); profiles.update(ctx);
-          if (ensure()) { if (!colours || offFor === null) colour(); renderStats(); fit(); } else { renderStats(); fit(); }
+          view.setMode(u.tool === 'look' ? 'grab' : 'stroke');
+          ensure(); renderStats(); size();
           renderExport();                                      // (after the map is built: its buttons need it)
         },
-        destroy() { ro.disconnect(); },
+        destroy() { ro.disconnect(); view.destroy(); },
       };
     },
     checks(w, d) {

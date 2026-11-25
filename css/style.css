@@ -533,6 +533,17 @@ textarea.notes:focus { outline: none; border-color: var(--teal); }
 .scene-host { position: relative; width: 100%; background: #000; }
 .scene-canvas { display: block; width: 100%; touch-action: none; user-select: none; -webkit-user-select: none; }
 .scene-status { min-height: 1.2em; }
+/* the map viewer (js/globe.js): the GPU canvas, lines and labels over it, a few controls */
+.scene-host.has-viewer { background: transparent; }
+.viewer { position: absolute; inset: 0; overflow: hidden; }
+.viewer > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.viewer-gl { pointer-events: none; }
+.viewer-ov { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; outline: none; }
+.viewer-ov:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.viewer.grabbing .viewer-ov { cursor: grabbing; }
+.viewer.stroking .viewer-ov { cursor: crosshair; }
+.viewer-ctl { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 4px; }
+.viewer-ctl .btn { min-width: 32px; min-height: 32px; justify-content: center; background: var(--panel-solid); }
 .scene-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .scene-tools .sel { width: auto; min-height: 32px; font-size: 17px; }
 .swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 6px 0; }
