@@ -3,14 +3,13 @@
  * the World map, at a few hundred metres to a few km a pixel. Close-up: part of the Region, at tens of
  * metres a pixel. Each has its heights with finer detail, its own drainage, valleys, lakes, rivers (with
  * meanders and oxbow lakes on flat ground) and biomes from the same climate. Pick the place on the map it
- * is cut from. Both shown on one zoomable map, the Atlas, with the world map and previews around them.
+ * is cut from. Both shown on one zoomable map, the Atlas (the map viewer, js/globe.js), over the world map.
  */
 (function () {
   'use strict';
   const { h, panel, fmt, replace, info, toast, tabs } = WS.ui;
   const R = WS.region, B = WS.biomes;
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-  const smooth = (t) => { const x = clamp(t, 0, 1); return x * x * (3 - 2 * x); };
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const hex = (h2) => [1, 3, 5].map((i) => parseInt(h2.slice(i, i + 2), 16));
   const ramp = (stops, x) => { if (x <= stops[0][0]) return stops[0][1]; for (let i = 1; i < stops.length; i++) if (x <= stops[i][0]) { const [a, ca] = stops[i - 1], [b, cb] = stops[i], t = (x - a) / (b - a); return ca.map((v, k) => v + (cb[k] - v) * t); } return stops[stops.length - 1][1]; };
@@ -164,11 +163,11 @@
 
   /*
    * The Atlas: one map from the whole world down to metres, at several levels of detail. The world map
-   * is always there; zoomed in past what it can show, it is drawn as a smooth preview (its heights,
-   * bicubic, shaded) at once. Build detail builds the level the view calls for: a region (200-3,200 km,
+   * is always there, drawn by the map viewer smoothly between its cells however close the view, flat or
+   * as a globe. Build detail builds the level the view calls for: a region (200-3,200 km,
    * from the world map) or, inside a built region and zoomed in, a close-up (10-200 km, from the
    * region), for what is on screen; the build is shown in place as it goes. Built detail stays where it
-   * was built; around it, the preview.
+   * was built; around it, the world map.
    */
   const D2R = Math.PI / 180, wrapLon = (lo) => ((((lo + 180) % 360) + 360) % 360) - 180;
   const LEVELS = { region: { L: REGION, name: 'region', min: 200, max: 3200 }, closeup: { L: CLOSEUP, name: 'close-up', min: 10, max: 200 } };
@@ -180,20 +179,35 @@
     blurb: 'One map from the whole world down to metres: zoom in anywhere, and build the detail there when you want it.',
     lede: ['Zoom in anywhere on your world, from the globe down to a few metres a pixel. Past what the world map can show, you see it enlarged at once; Build detail adds what it is too coarse to hold, for what is on screen: a region (coasts by type, fjords, hills and valleys, rivers and lakes, biomes by height), and inside a built region, closer still, a close-up (every stream, meanders and oxbow lakes, braided reaches). The build is shown as it goes.'],
     build(ctx) {
-      const u = (ctx.ui.atlas = ctx.ui.atlas || { layer: 'relief', rivers: true, grid: true, lat: null, lon: 0, kmPx: null });
+      const u = (ctx.ui.atlas = ctx.ui.atlas || { layer: 'relief', rivers: true, grid: true, view: 'map', cam: null });
       const host = h('div', { class: 'scene-host' }), hint = h('div', { class: 'scene-status mono' });
       const bar = h('div', { class: 'map-bar' }), statsHost = h('div'), keyHost = h('div'), expHost = h('div');
       const el = h('div', { class: 'stack-gap' },
         panel('Atlas', { ticks: true, tag: 'ZOOM', flush: true }, bar, host, h('div', { class: 'viz-caption' }, hint)),
         h('div', { class: 'grid two' }, h('div', { class: 'stack-gap' }, statsHost), h('div', { class: 'stack-gap' }, keyHost, panel('Take it away', { tag: 'EXPORT' }, expHost))));
-      const cv = h('canvas', { class: 'scene-canvas', tabindex: 0, role: 'img', 'aria-label': 'Atlas: zoomable map of the world' });
-      host.appendChild(cv);
-      const g = cv.getContext('2d');
-      const radius = () => ctx.d.planet.radiusKm || 6371, kmDeg = () => (Math.PI * radius()) / 180;
+      const radius = () => ctx.d.planet.radiusKm || 6371;
+      const proj = () => (u.view === 'globe' ? 'globe' : 'flat');
+      const saved = u.cam && u.cam.projection === proj() ? u.cam : null;
+      let barSig = '', focusSig = '', placed = !!saved;
+      const view = WS.globe.create(host, {
+        projection: proj(), lat: saved ? saved.lat : 0, lon: saved ? saved.lon : 0, alt: saved && !saved.auto ? saved.alt : null,
+        minAlt: 0.0004, radiusKm: radius(), label: 'Atlas: zoomable map of the world',
+        onView: (v, moving) => {
+          u.cam = v;
+          if (moving) return;
+          // (the bar and the figures follow the view once it comes to rest)
+          const t = target(), sig = `${t.level}|${t.span}|${!!progress}`;
+          if (sig !== barSig) { barSig = sig; renderBar(); }
+          const f = focus(), fs = f ? `${f.frame.lat}|${f === closeLayer()}` : '';
+          if (fs !== focusSig) { focusSig = fs; renderStats(); renderKey(); }
+        },
+        onHover: (p) => hover(p),
+      });
+      view.setStyle({ sea: SEA, land: LAND });
 
-      // ── what there is to draw: the world map, the built region and close-up, previews, a build ──
-      let world = null, worldImg = null, regSt = null, cuSt = null, err = null, progress = null, stageLayer = null;
-      const imgs = new WeakMap();                                   // layer → its painted canvas (per colour layer)
+      // ── what there is to draw: the world map, the built region and close-up, a build under way ──
+      let world = null, regSt = null, cuSt = null, err = null, progress = null, stageLayer = null;
+      const colours = new WeakMap();                                // layer → its land colours (per colour layer)
       const regionLayer = () => (regSt && regSt.built ? regSt.built.region : null);
       const closeLayer = () => (cuSt && cuSt.built ? cuSt.built.region : null);
       /* The deepest built layer at [lat, lon]. */
@@ -201,15 +215,16 @@
 
       function ensure() {
         const w = ctx.world, d = ctx.d;
-        if (!w.plates.features.some((f) => f.kind === 'crust')) { world = null; draw(); return; }
+        if (!w.plates.features.some((f) => f.kind === 'crust')) { world = null; show(); return; }
+        if (!world) view.setMessage('Working out the world map…');
         WS.mapReady(w, d).then((c) => {
           if (!c || !host.isConnected) return;
           if (!world || world.map !== c.map) {
             const m = c.map;
-            world = { map: m, layer: { W: m.W, H: m.H, z: m.z, planet: m.planet, frame: { north: 90, south: -90, west: -180, dLon: 360, dLat: 180, pxKm: (2 * Math.PI * radius()) / m.W } } };
-            worldImg = paint(world.layer);
-            if (u.lat == null) initView();
-            draw();
+            world = { map: m };
+            view.setRadius(radius());
+            view.setHeight({ W: m.W, H: m.H, z: m.z, factor: m.planet?.factor ?? 1 });
+            if (!placed) { placed = true; initView(); }
           }
           // what is built (nothing is built here: only looked up)
           return REGION.look(w, d).then((rs) => { regSt = rs; return CLOSEUP.look(w, d); }).then((cs) => {
@@ -217,144 +232,98 @@
             cuSt = cs;
             const b = (REGION.pending() || CLOSEUP.pending());
             if (b && !progress) follow(b);
-            renderAll(); schedulePreview(); draw();
+            show(); renderAll();
           });
-        }).catch((e) => { err = e; hint.textContent = `Could not show the map: ${e.message}`; draw(); });
+        }).catch((e) => { err = e; hint.textContent = `Could not show the map: ${e.message}`; show(); });
       }
       /* The first view: on what is built, or was last set, else the whole world. */
       function initView() {
         const r = REGION.peek(), wr = ctx.world.region;
-        const W = cv.width || 1000;
-        if (r) { u.lat = r.region.frame.lat; u.lon = r.region.frame.lon; u.kmPx = (r.region.frame.span * 1.1) / W; }
-        else if (wr && wr.lat != null) { u.lat = wr.lat; u.lon = wr.lon; u.kmPx = ((wr.span || 800) * 1.4) / W; }
-        else { u.lat = 0; u.lon = 0; u.kmPx = (360 * kmDeg()) / W; }
+        if (r) view.setView({ lat: r.region.frame.lat, lon: r.region.frame.lon, spanKm: r.region.frame.span * 1.1 });
+        else if (wr && wr.lat != null) view.setView({ lat: wr.lat, lon: wr.lon, spanKm: (wr.span || 800) * 1.4 });
       }
-
-      /* RGBA for every pixel of a layer: the colour layer, lit from the north-west. */
-      function paint(layer) {
-        const { W, H, z, lake, biome } = layer, f = layer.planet?.factor ?? 1, px = new Uint8ClampedArray(W * H * 4);
-        const m = layer.frame.pxKm * 1000, ve = clamp(1.2 + layer.frame.pxKm * 0.6, 1.5, 4), Lx = -0.55, Ly = 0.55, Lz = 0.63;
-        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-          const k = y * W + x, v = z[k];
-          let c;
-          if (v <= 0) c = ramp(SEA, -v);
-          else if (lake && lake[k]) c = lake[k] === 1 ? FRESH : SALT;
-          else if (!biome) c = ramp(LAND, v * f);
-          else if (u.layer === 'biomes') c = biome[k] ? hex(B.BIOMES[biome[k] - 1][2]) : ICE;
-          else c = biome[k] === B.BI.ice ? ICE : ramp(LAND, v * f);
-          if (v > 0 && !(lake && lake[k])) {
-            const xe = x + 1 < W ? x + 1 : layer.wrap ? 0 : x, xw = x > 0 ? x - 1 : layer.wrap ? W - 1 : x;
-            const e = Math.max(0, z[y * W + xe]), wv = Math.max(0, z[y * W + xw]), n = Math.max(0, z[Math.max(0, y - 1) * W + x]), s = Math.max(0, z[Math.min(H - 1, y + 1) * W + x]);
-            const gx = ((e - wv) / (2 * m)) * ve, gy = ((n - s) / (2 * m)) * ve, len = Math.hypot(gx, gy, 1);
-            const sh = clamp((0.3 + 0.95 * ((-gx * Lx - gy * Ly + Lz) / len)) / (0.3 + 0.95 * Lz), 0.45, 1.3);
-            c = [c[0] * sh, c[1] * sh, c[2] * sh];
-          }
-          const o = k * 4; px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
+      /* The built layers and a build's heights so far, deepest last, to the viewer. */
+      function show() {
+        if (!world) { view.setMessage(err ? 'Could not show the map.' : ctx.world.plates.features.some((f) => f.kind === 'crust') ? 'Working out the world map…' : 'Make a world on the Plates step first.'); return; }
+        view.setMessage('');
+        const patch = (lay) => lay && { frame: lay.frame, W: lay.W, H: lay.H, z: lay.z, factor: lay.planet?.factor ?? 1, layer: landColours(lay) };
+        view.setPatches([patch(regionLayer()), patch(closeLayer()), stageLayer && patch(stageLayer)]);
+        view.setOverlay(overlay);
+      }
+      /* The colours a layer lays over the relief: lakes, ice, and the biomes when they are shown (alpha 0: the relief). */
+      function landColours(layer) {
+        const { W, H, z, lake, biome } = layer;
+        if (!lake && !biome) return null;
+        let e = colours.get(layer);
+        if (e && e.mode === u.layer) return e.data;
+        const px = new Uint8Array(W * H * 4);
+        for (let k = 0; k < W * H; k++) {
+          if (!(z[k] > 0)) continue;
+          let c = null;
+          if (lake && lake[k]) c = lake[k] === 1 ? FRESH : SALT;
+          else if (biome && u.layer === 'biomes') c = biome[k] ? hex(B.BIOMES[biome[k] - 1][2]) : ICE;
+          else if (biome && biome[k] === B.BI.ice) c = ICE;
+          if (c) px.set([c[0], c[1], c[2], 255], k * 4);
         }
-        const cvs = h('canvas'); cvs.width = W; cvs.height = H; cvs.getContext('2d').putImageData(new ImageData(px, W, H), 0, 0);
+        e = { mode: u.layer, data: px }; colours.set(layer, e);
+        return px;
+      }
+      /* A layer's map at full detail, lit like the viewer draws it (for the exports). */
+      function imageOf(lay) {
+        const ramps = { land: WS.globe.rampTable(LAND), sea: WS.globe.rampTable(SEA) };
+        const px = WS.globe.colourImage({ W: lay.W, H: lay.H, z: lay.z, factor: lay.planet?.factor ?? 1, wrap: false, cellM: [lay.frame.pxKm * 1000, lay.frame.pxKm * 1000] }, { shade: true }, ramps, landColours(lay));
+        const cvs = h('canvas'); cvs.width = lay.W; cvs.height = lay.H; cvs.getContext('2d').putImageData(new ImageData(px, lay.W, lay.H), 0, 0);
         return cvs;
       }
-      const imgOf = (layer) => { let e = imgs.get(layer); if (!e || e.mode !== u.layer) { e = { mode: u.layer, cvs: paint(layer) }; imgs.set(layer, e); } return e.cvs; };
+      const size = () => { const w = host.clientWidth || 700; host.style.height = `${Math.round(Math.min(w * 0.85, Math.max(360, window.innerHeight * 0.78)))}px`; };
+      const ro = new ResizeObserver(size);
 
-      // ── the view: centre and km a (device) pixel; east-west scaled by the latitude once zoomed in ──
-      function proj() {
-        const W = cv.width, H = cv.height, kd = kmDeg(), span = Math.max(W, H) * u.kmPx;
-        const c = 1 + (Math.max(0.1, Math.cos(u.lat * D2R)) - 1) * (1 - smooth((span - 3000) / 7000));
-        const ppx = (kd * c) / u.kmPx, ppy = kd / u.kmPx;
-        return {
-          W, H, ppx, ppy, span,
-          x: (lo) => { let d = lo - u.lon; d -= 360 * Math.round(d / 360); return W / 2 + d * ppx; },
-          y: (la) => H / 2 - (la - u.lat) * ppy,
-          ll: (x, y) => [u.lat - (y - H / 2) / ppy, wrapLon(u.lon + (x - W / 2) / ppx)],
-        };
-      }
-      function clampView() {
-        const W = Math.max(1, cv.width), kd = kmDeg();
-        u.kmPx = clamp(u.kmPx, 0.004, (360 * kd) / W);
-        const halfLat = (cv.height * u.kmPx) / kd / 2;
-        u.lat = halfLat >= 90 ? 0 : clamp(u.lat, -90 + halfLat, 90 - halfLat);
-        u.lon = wrapLon(u.lon);
-      }
-      /* Where a layer's frame lies on screen: its top-left and its size. */
-      const placeOf = (P, fr) => ({ x: P.x(fr.west), y: P.y(fr.north), w: fr.dLon * P.ppx, h: fr.dLat * P.ppy });
-
-      // ── previews: wherever the view is finer than the deepest layer under it, that layer enlarged ──
-      let previews = [], pvTimer = null, pvKey = '';
-      function schedulePreview() { clearTimeout(pvTimer); pvTimer = setTimeout(makePreviews, 120); }
-      function makePreviews() {
-        if (!world || !cv.width) return;
-        const P = proj(), key = [u.lat, u.lon, u.kmPx, cv.width, cv.height, regionLayer() && regionLayer().frame.lat, closeLayer() && closeLayer().frame.lat].join('|');
-        if (key === pvKey) return;
-        pvKey = key; previews = [];
-        const span = Math.min(P.span * 1.15, 0.45 * Math.PI * radius()), res = 640;
-        const srcs = [[world.layer, world.map, null], [regionLayer(), regionLayer(), regionLayer() && regionLayer().frame], [closeLayer(), closeLayer(), closeLayer() && closeLayer().frame]];
-        for (const [layer, src, clip] of srcs) {
-          if (!layer || u.kmPx * 1.6 > layer.frame.pxKm) continue;        // (it shows well enough as it is)
-          if (clip && !(inFrame(clip, u.lat, u.lon) || P.span < 4 * clip.span)) continue;
-          const pv = R.preview(src.frame ? src : { W: src.W, H: src.H, z: src.z, planet: src.planet }, { lat: u.lat, lon: u.lon, span, res });
-          previews.push({ layer: pv, over: layer, clip, cvs: paint(pv) });
+      // ── lines and labels over the map: rivers, what is built, what would be, a grid, a scale ──
+      /* A line through [lat, lon] points, broken where it leaves the globe's face or wraps round the flat map. */
+      function polyline(g, v, pts) {
+        let prev = null;
+        g.beginPath();
+        for (const [la, lo] of pts) {
+          const p = v.project(la, lo);
+          if (p[2] && prev && prev[2] && Math.abs(p[0] - prev[0]) < v.w / 2) g.lineTo(p[0], p[1]); else if (p[2]) g.moveTo(p[0], p[1]);
+          prev = p;
         }
-        draw();
+        g.stroke();
       }
-
-      // ── drawing ──
-      const fit = () => {
-        const w = host.clientWidth || 700, hh = Math.round(Math.min(w * 0.85, Math.max(360, window.innerHeight * 0.78)));
-        const dpr = Math.min(2, window.devicePixelRatio || 1), oldW = cv.width;
-        cv.style.height = `${hh}px`; cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr);
-        if (u.kmPx && oldW) u.kmPx *= oldW / cv.width;
-        if (world && u.lat == null) initView();
-        draw(); schedulePreview();
+      const edges = (fr) => {
+        const pts = [], n = 24, S = fr.north - fr.dLat;
+        for (let i = 0; i <= n; i++) pts.push([fr.north, fr.west + (i / n) * fr.dLon]);
+        for (let i = 1; i <= n; i++) pts.push([fr.north - (i / n) * fr.dLat, fr.west + fr.dLon]);
+        for (let i = 1; i <= n; i++) pts.push([S, fr.west + fr.dLon - (i / n) * fr.dLon]);
+        for (let i = 1; i <= n; i++) pts.push([fr.north - fr.dLat + (i / n) * fr.dLat, fr.west]);
+        return pts;
       };
-      const ro = new ResizeObserver(fit);
-      function drawLayer(P, layer, cvs, clip) {
-        const pl = placeOf(P, layer.frame);
-        g.save();
-        if (clip) { const c = placeOf(P, clip); g.beginPath(); g.rect(c.x, c.y, c.w, c.h); g.clip(); }
-        g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
-        const shifts = layer.frame.dLon >= 359 ? [-360 * P.ppx, 0, 360 * P.ppx] : [0];
-        for (const s of shifts) g.drawImage(cvs, pl.x + s, pl.y, pl.w, pl.h);
-        g.restore();
-      }
-      function draw() {
-        if (!cv.width) return;
-        g.fillStyle = css('--bg'); g.fillRect(0, 0, cv.width, cv.height);
-        const dpr = cv.width / Math.max(1, cv.clientWidth);
-        if (!world) {
-          g.fillStyle = css('--muted'); g.font = `${16 * dpr}px ${css('--font-mono') || 'monospace'}`;
-          g.fillText(err ? 'Could not show the map.' : ctx.world.plates.features.some((f) => f.kind === 'crust') ? 'Working out the world map…' : 'Make a world on the Plates step first.', 20, 40);
-          return;
-        }
-        clampView();
-        const P = proj();
-        // the world, then each built layer, each with its preview where the view is finer than it
-        drawLayer(P, world.layer, worldImg);
-        for (const pv of previews.filter((q) => q.over === world.layer)) drawLayer(P, pv.layer, pv.cvs);
+      function overlay(g, v) {
+        // each built layer's rivers, at its own scale
         for (const lay of [regionLayer(), closeLayer()]) {
-          if (!lay) continue;
-          drawLayer(P, lay, imgOf(lay));
-          for (const pv of previews.filter((q) => q.over === lay)) drawLayer(P, pv.layer, pv.cvs, lay.frame);
-          if (u.rivers) { const pl = placeOf(P, lay.frame), sc = pl.w / lay.W; drawRivers(lay, (x, y) => [pl.x + x * sc, pl.y + y * sc], dpr * clamp(0.8 + 0.3 * Math.log2(Math.max(1, sc)), 0.8, 1.8), sc); }
+          if (!lay || !u.rivers || !v.project(lay.frame.lat, lay.frame.lon)[2]) continue;
+          const fr = lay.frame, sc = (fr.dLat / lay.H) * v.scale;
+          if (sc < 0.08) continue;                                         // (too small to tell apart)
+          const P2 = (x, y) => v.project(fr.north - (y / lay.H) * fr.dLat, fr.west + (x / lay.W) * fr.dLon);
+          drawRivers(lay, P2, clamp(0.8 + 0.3 * Math.log2(Math.max(1, sc)), 0.8, 1.8), sc, g);
         }
-        if (stageLayer) drawLayer(P, stageLayer, stageLayer.cvs);
         // outlines: what is built, and what Build detail would build
-        const box = (fr, colour, dash) => { const pl = placeOf(P, fr); g.save(); g.setLineDash(dash || []); g.strokeStyle = 'rgba(0,0,0,0.55)'; g.lineWidth = 3 * dpr; g.strokeRect(pl.x, pl.y, pl.w, pl.h); g.strokeStyle = colour; g.lineWidth = 1.2 * dpr; g.strokeRect(pl.x, pl.y, pl.w, pl.h); g.restore(); };
+        const box = (fr, colour, dash) => { g.save(); g.setLineDash(dash || []); g.lineJoin = 'round'; g.strokeStyle = 'rgba(0,0,0,0.55)'; g.lineWidth = 3; polyline(g, v, edges(fr)); g.strokeStyle = colour; g.lineWidth = 1.2; polyline(g, v, edges(fr)); g.restore(); };
         if (regionLayer()) box(regionLayer().frame, '#ffb238');
         if (closeLayer()) box(closeLayer().frame, '#ffe08a');
         const t = target();
-        if (t.level && !progress) box(R.frame({ lat: t.lat, lon: t.lon, span: t.span, res: 64 }, radius()), 'rgba(255,255,255,0.9)', [6 * dpr, 5 * dpr]);
-        if (u.grid) drawGrid(P, dpr);
-        drawScale(P, dpr);
+        if (t.level && !progress) box(R.frame({ lat: t.lat, lon: t.lon, span: t.span, res: 64 }, radius()), 'rgba(255,255,255,0.9)', [6, 5]);
+        if (u.grid) drawGrid(g, v);
+        drawScale(g, v);
         if (progress) {
           const tx = `Building ${progress.what} · ${progress.label} (${progress.n}/${progress.of})`;
-          g.save(); g.font = `${13 * dpr}px ${css('--font-mono') || 'monospace'}`;
-          const tw = g.measureText(tx).width; g.fillStyle = 'rgba(0,0,0,0.65)'; g.fillRect(10 * dpr, 10 * dpr, tw + 16 * dpr, 24 * dpr);
-          g.fillStyle = '#ffb238'; g.fillText(tx, 18 * dpr, 27 * dpr); g.restore();
+          g.save(); g.font = `13px ${css('--font-mono') || 'monospace'}`;
+          const tw = g.measureText(tx).width; g.fillStyle = 'rgba(0,0,0,0.65)'; g.fillRect(10, 10, tw + 16, 24);
+          g.fillStyle = '#ffb238'; g.fillText(tx, 18, 27); g.restore();
         }
       }
       // (the drawn line, or the channel's true width where that is wider; sc: screen pixels a layer pixel)
-      function drawRivers(lay, P2, scale, sc, gc = g) {
-        const g = gc;                                   // (the map, or an export's canvas)
+      function drawRivers(lay, P2, scale, sc, g) {
         const rw = (q) => Math.max(scale * R.riverWidth(q, lay.minFlow), (sc * 2.7 * Math.sqrt(Math.max(0, q))) / 1000 / lay.frame.pxKm);
         g.lineCap = 'round'; g.lineJoin = 'round';
         g.strokeStyle = OXBOW;
@@ -381,34 +350,54 @@
           for (const st of br.strands) { g.beginPath(); st.forEach((pt, k) => { const p = P2(pt[0], pt[1]); if (k) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); }); g.stroke(); }
         }
       }
-      function drawGrid(P, dpr) {
-        const want = (140 * dpr) / P.ppy, step = [0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 45].find((s) => s >= want) || 45;
-        const [n] = P.ll(0, 0), [sth] = P.ll(0, P.H), lonW = u.lon - P.W / 2 / P.ppx, lonE = u.lon + P.W / 2 / P.ppx;
-        g.save(); g.strokeStyle = 'rgba(20, 20, 20, 0.28)'; g.lineWidth = dpr; g.fillStyle = 'rgba(20, 20, 20, 0.75)'; g.font = `${11 * dpr}px ${css('--font-mono') || 'monospace'}`;
-        const lab = (t, x, y) => { g.save(); g.fillStyle = 'rgba(255,255,255,0.75)'; const w = g.measureText(t).width; g.fillRect(x - 2 * dpr, y - 11 * dpr, w + 4 * dpr, 14 * dpr); g.restore(); g.fillText(t, x, y); };
+      /* Parallels and meridians every so many degrees (about 140 px apart), labelled. */
+      function drawGrid(g, v) {
+        const want = 140 / v.scale, step = [0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 45].find((s) => s >= want) || 45;
+        // what is in view: the places under a 9 x 9 lattice of the screen (everything, if any misses the planet)
+        let la0 = 90, la1 = -90, d0 = 180, d1 = -180, all = false;
+        for (let a = 0; a <= 8 && !all; a++) for (let b = 0; b <= 8; b++) {
+          const p = v.pick((a / 8) * v.w, (b / 8) * v.h);
+          if (!p) { all = true; break; }
+          la0 = Math.min(la0, p[0]); la1 = Math.max(la1, p[0]); const dl = wrapLon(p[1] - v.lon); d0 = Math.min(d0, dl); d1 = Math.max(d1, dl);
+        }
+        const near = (lat) => v.pick(v.w / 2, v.h / 2) && Math.abs(lat) > 89.9;
+        if (all || near(la0) || near(la1) || la1 > 89 || la0 < -89) { la0 = -90; la1 = 90; d0 = -180; d1 = 180; }
+        const pad = step, lonA = v.lon + d0 - pad, lonB = v.lon + d1 + pad, latA = Math.max(-90, la0 - pad), latB = Math.min(90, la1 + pad);
+        g.save(); g.strokeStyle = 'rgba(20, 20, 20, 0.28)'; g.lineWidth = 1; g.fillStyle = 'rgba(20, 20, 20, 0.75)'; g.font = `11px ${css('--font-mono') || 'monospace'}`;
+        const lab = (t, x, y) => { g.save(); g.fillStyle = 'rgba(255,255,255,0.75)'; const w = g.measureText(t).width; g.fillRect(x - 2, y - 11, w + 4, 14); g.restore(); g.fillText(t, x, y); };
         const dig = step < 0.1 ? 2 : step < 1 ? (step < 0.25 ? 1 : 2) : 0, deg = (a, pos, neg) => `${fmt.num(Math.abs(a), dig)}°${a >= 0 ? pos : neg}`;
-        for (let la = Math.ceil(Math.max(-90, sth) / step) * step; la <= Math.min(90, n); la += step) { const y = P.y(la); g.beginPath(); g.moveTo(0, y); g.lineTo(P.W, y); g.stroke(); lab(deg(la, 'N', 'S'), 4 * dpr, y - 3 * dpr); }
-        for (let lo = Math.ceil(lonW / step) * step; lo <= lonE && (lo - lonW) / step < 400; lo += step) { const x = W2(P, lo); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, P.H); g.stroke(); lab(deg(wrapLon(lo), 'E', 'W'), x + 4 * dpr, P.H - 6 * dpr); }
+        const flat = v.projection === 'flat', N = 64;
+        for (let la = Math.ceil(latA / step) * step, n = 0; la <= latB && n < 200; la += step, n++) {
+          const pts = []; for (let i = 0; i <= N; i++) pts.push([la, lonA + ((lonB - lonA) * i) / N]);
+          polyline(g, v, pts);
+          const p = flat ? [4, v.project(la, v.lon)[1] - 3, true] : v.project(la, v.lon);
+          if (p[2] && p[1] > 12 && p[1] < v.h - 4) lab(deg(la, 'N', 'S'), p[0] + (flat ? 0 : 4), p[1] - (flat ? 0 : 3));
+        }
+        for (let lo = Math.ceil(lonA / step) * step, n = 0; lo <= lonB && n < 400; lo += step, n++) {
+          const pts = []; for (let i = 0; i <= N; i++) pts.push([latA + ((latB - latA) * i) / N, lo]);
+          polyline(g, v, pts);
+          const p = flat ? [v.project(0, lo)[0] + 4, v.h - 6, true] : v.project(v.lat, lo);
+          if (p[2] && p[0] > 0 && p[0] < v.w - 30) lab(deg(wrapLon(lo), 'E', 'W'), p[0] + (flat ? 0 : 4), p[1] + (flat ? 0 : 14));
+        }
         g.restore();
       }
-      const W2 = (P, lo) => P.W / 2 + (lo - u.lon) * P.ppx;
-      function drawScale(P, dpr) {
-        const nice = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000].reduce((a, b) => (b <= u.kmPx * 160 * dpr ? b : a), 0.1);
-        const len = nice / u.kmPx, x = P.W - len - 16 * dpr, y = 18 * dpr;
-        g.save(); g.fillStyle = 'rgba(255,255,255,0.8)'; g.fillRect(x - 8 * dpr, y - 12 * dpr, len + 16 * dpr, 28 * dpr);
-        g.strokeStyle = '#222'; g.lineWidth = 2 * dpr; g.beginPath(); g.moveTo(x, y + 6 * dpr); g.lineTo(x, y + 10 * dpr); g.lineTo(x + len, y + 10 * dpr); g.lineTo(x + len, y + 6 * dpr); g.stroke();
-        g.fillStyle = '#222'; g.font = `${11 * dpr}px ${css('--font-mono') || 'monospace'}`; g.textAlign = 'center';
-        g.fillText(nice < 1 ? `${fmt.int(nice * 1000)} m` : `${fmt.int(nice)} km`, x + len / 2, y + 3 * dpr); g.restore();
+      function drawScale(g, v) {
+        const nice = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000].reduce((a, b) => (b <= v.kmPx * 160 ? b : a), 0.1);
+        const len = nice / v.kmPx, x = v.w - len - 16, y = 18;
+        g.save(); g.fillStyle = 'rgba(255,255,255,0.8)'; g.fillRect(x - 8, y - 12, len + 16, 28);
+        g.strokeStyle = '#222'; g.lineWidth = 2; g.beginPath(); g.moveTo(x, y + 6); g.lineTo(x, y + 10); g.lineTo(x + len, y + 10); g.lineTo(x + len, y + 6); g.stroke();
+        g.fillStyle = '#222'; g.font = `11px ${css('--font-mono') || 'monospace'}`; g.textAlign = 'center';
+        g.fillText(nice < 1 ? `${fmt.int(nice * 1000)} m` : `${fmt.int(nice)} km`, x + len / 2, y + 3); g.restore();
       }
 
       // ── what Build detail would build here ──
       function target() {
-        if (!world || !cv.width) return { level: null };
-        const span = Math.max(cv.width, cv.height) * u.kmPx, rl = regionLayer();
+        if (!world) return { level: null };
+        const v = view.view(), span = v.spanKm, rl = regionLayer();
         if (span > LEVELS.region.max * 1.3) return { level: null, why: `Zoom in to build detail: a region is ${fmt.int(LEVELS.region.min)}–${fmt.int(LEVELS.region.max)} km across.` };
         const cuMax = rl ? Math.min(LEVELS.closeup.max, 0.5 * rl.frame.span) : 0;
-        if (rl && inFrame(rl.frame, u.lat, u.lon) && span <= cuMax * 1.3) return { level: 'closeup', lat: u.lat, lon: u.lon, span: Math.round(clamp(span, LEVELS.closeup.min, cuMax)) };
-        return { level: 'region', lat: u.lat, lon: u.lon, span: Math.round(clamp(span, LEVELS.region.min, LEVELS.region.max)) };
+        if (rl && inFrame(rl.frame, v.lat, v.lon) && span <= cuMax * 1.3) return { level: 'closeup', lat: v.lat, lon: v.lon, span: Math.round(clamp(span, LEVELS.closeup.min, cuMax)) };
+        return { level: 'region', lat: v.lat, lon: v.lon, span: Math.round(clamp(span, LEVELS.region.min, LEVELS.region.max)) };
       }
       function startBuild() {
         const t = target();
@@ -417,12 +406,12 @@
         ctx.mutate((w) => { w[t.level].lat = +t.lat.toFixed(4); w[t.level].lon = +t.lon.toFixed(4); w[t.level].span = t.span; });
         const t0 = performance.now();
         progress = { what: lv.name, n: 0, of: 7, label: 'starting' };
-        renderBar(); draw();
+        renderBar(); view.redraw();
         lv.L.build(ctx.world, ctx.d, onProgressOf(lv)).then(() => {
           progress = null; stageLayer = null;
           hint.textContent = `Built the ${lv.name} in ${fmt.num((performance.now() - t0) / 1000, 1)} s.`;
           ensure(); WS.app.refresh();
-        }, (e) => { progress = null; stageLayer = null; err = e; hint.textContent = `Could not build the ${lv.name}: ${e.message}`; renderBar(); draw(); });
+        }, (e) => { progress = null; stageLayer = null; err = e; hint.textContent = `Could not build the ${lv.name}: ${e.message}`; renderBar(); show(); });
       }
       /* Each stage of a build, as it comes: the heights so far, in place, and how far it has got. */
       const onProgressOf = (lv) => (p) => {
@@ -431,10 +420,10 @@
         const b = lv.L.pending();
         if (p.z && b && b.settings) {
           const fr = R.frame(b.settings, radius());
-          if (p.z.length === fr.W * fr.H) { stageLayer = { frame: fr, W: fr.W, H: fr.H, z: p.z, planet: b.planet }; stageLayer.cvs = paint(stageLayer); }
+          if (p.z.length === fr.W * fr.H) stageLayer = { frame: fr, W: fr.W, H: fr.H, z: p.z, planet: b.planet };
         }
         hint.textContent = `Building the ${lv.name}: ${p.label} (step ${p.n} of ${p.of})…`;
-        renderBar(); draw();
+        renderBar(); show();
       };
       /* A build already under way (when the step is opened again): follow it. */
       function follow(b) {
@@ -445,18 +434,10 @@
         b.promise.then(() => { progress = null; stageLayer = null; ensure(); }, () => { progress = null; stageLayer = null; ensure(); });
       }
 
-      // ── pointer: drag to pan, wheel to zoom, hover to read a place ──
-      let drag = null;
-      const devXY = (e) => { const r = cv.getBoundingClientRect(), dpr = cv.width / r.width; return [(e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr]; };
-      cv.addEventListener('pointerdown', (e) => { cv.setPointerCapture(e.pointerId); drag = { xy: devXY(e), lat: u.lat, lon: u.lon }; cv.style.cursor = 'grabbing'; });
-      cv.addEventListener('pointermove', (e) => {
-        if (!world) return;
-        const [x, y] = devXY(e), P = proj();
-        if (drag) {
-          u.lon = wrapLon(drag.lon - (x - drag.xy[0]) / P.ppx); u.lat = drag.lat + (y - drag.xy[1]) / P.ppy;
-          draw(); schedulePreview(); return;
-        }
-        const [la, lo] = P.ll(x, y), lay = layerAt(la, lo), parts = [`${fmt.num(la, P.span < 300 ? 3 : 2)}°, ${fmt.num(lo, P.span < 300 ? 3 : 2)}°`];
+      // ── reading a place ──
+      function hover(p) {
+        if (!world || !p || progress) return;
+        const [la, lo] = p, span = view.view().spanKm, lay = layerAt(la, lo), parts = [`${fmt.num(la, span < 300 ? 3 : 2)}°, ${fmt.num(lo, span < 300 ? 3 : 2)}°`];
         let z, k = -1;
         if (lay) { k = R.pixelOf(lay, la, lo); z = lay.z[k]; } else z = M.sample(world.map, la, lo);
         if (z <= 0) parts.push(`sea, ${fmt.int(-z)} m deep`);
@@ -468,21 +449,8 @@
           }
         }
         parts.push(lay ? (lay === closeLayer() ? 'close-up' : 'region') : 'world map');
-        if (!progress) hint.textContent = parts.join(' · ');
-      });
-      const end = () => { if (drag) renderBar(); drag = null; cv.style.cursor = 'grab'; };
-      cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
-      function zoomAt(factor, px, py) {
-        const P = proj(), [la, lo] = P.ll(px, py);
-        u.kmPx /= factor; clampView();
-        const Q = proj();
-        // (keep the point under the cursor where it was)
-        u.lat += la - Q.ll(px, py)[0]; let d = lo - Q.ll(px, py)[1]; d -= 360 * Math.round(d / 360); u.lon = wrapLon(u.lon + d);
-        draw(); schedulePreview(); renderBar();
+        hint.textContent = parts.join(' · ');
       }
-      cv.addEventListener('wheel', (e) => { e.preventDefault(); const [x, y] = devXY(e); zoomAt(Math.exp(-e.deltaY * 0.0015), x, y); }, { passive: false });
-      cv.addEventListener('dblclick', (e) => { const [x, y] = devXY(e); zoomAt(2, x, y); });
-      cv.style.touchAction = 'none'; cv.style.cursor = 'grab';
       const M = WS.worldmap;
 
       // ── panels ──
@@ -494,21 +462,20 @@
           h('span', { style: { display: 'inline-block', width: '140px', height: '8px', border: '1px solid var(--line)', position: 'relative' } },
             h('span', { style: { position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.round((100 * progress.n) / Math.max(1, progress.of))}%`, background: 'var(--amber)', transition: 'width 0.3s' } })),
           `${progress.n}/${progress.of}`) : null;
-        const layerTabs = tabs(LAYERS, u.layer, (v) => { u.layer = v; draw(); renderBar(); renderKey(); });
-        const chk = (key, label) => { const b = h('input', { type: 'checkbox', checked: u[key] }); b.addEventListener('change', () => { u[key] = b.checked; draw(); }); return h('label', { class: 'check' }, b, label); };
+        const viewTabs = tabs([['map', 'Map'], ['globe', 'Globe']], u.view, (v) => { u.view = v; view.setProjection(proj()); renderBar(); });
+        const layerTabs = tabs(LAYERS, u.layer, (v) => { u.layer = v; show(); renderBar(); renderKey(); });
+        const chk = (key, label) => { const b = h('input', { type: 'checkbox', checked: u[key] }); b.addEventListener('change', () => { u[key] = b.checked; view.redraw(); }); return h('label', { class: 'check' }, b, label); };
         const res = h('select', { class: 'sel', 'aria-label': 'Detail', style: { width: 'auto' } }, RES.map(([v, tx]) => h('option', { value: v, selected: (ctx.world.region.res || 1024) === v }, tx)));
         res.addEventListener('change', () => ctx.mutate((w) => { w.region.res = Number(res.value); w.closeup.res = Number(res.value); }));
-        const goTo = (fr) => { u.lat = fr.lat; u.lon = fr.lon; u.kmPx = (fr.span * 1.1) / Math.max(1, Math.min(cv.width, cv.height)); draw(); schedulePreview(); renderBar(); };
-        replace(bar, buildBtn, prog, layerTabs, chk('rivers', 'Rivers'), chk('grid', 'Grid'), res,
+        const goTo = (fr) => view.flyTo(fr.lat, fr.lon, fr.span * 1.1);
+        replace(bar, buildBtn, prog, viewTabs, layerTabs, chk('rivers', 'Rivers'), chk('grid', 'Grid'), res,
           h('span', { class: 'btn-row', style: { marginLeft: 'auto' } },
             regionLayer() ? h('button', { class: 'btn small', type: 'button', onclick: () => goTo(regionLayer().frame) }, 'Region') : null,
             closeLayer() ? h('button', { class: 'btn small', type: 'button', onclick: () => goTo(closeLayer().frame) }, 'Close-up') : null,
-            h('button', { class: 'btn small', type: 'button', onclick: () => { u.kmPx = Infinity; clampView(); draw(); schedulePreview(); renderBar(); } }, 'World'),
-            h('button', { class: 'btn small', type: 'button', 'aria-label': 'Zoom out', onclick: () => zoomAt(1 / 1.6, cv.width / 2, cv.height / 2) }, '−'),
-            h('button', { class: 'btn small', type: 'button', 'aria-label': 'Zoom in', onclick: () => zoomAt(1.6, cv.width / 2, cv.height / 2) }, '+')));
+            h('button', { class: 'btn small', type: 'button', onclick: () => view.reset() }, 'World')));
       }
       /* The figures of the deepest built layer at the centre of the view (or of the region). */
-      const focus = () => { if (!world) return null; const c = closeLayer(), r = regionLayer(); return c && inFrame(c.frame, u.lat, u.lon) ? c : r; };
+      const focus = () => { if (!world) return null; const c = closeLayer(), r = regionLayer(), v = view.view(); return c && inFrame(c.frame, v.lat, v.lon) ? c : r; };
       function renderStats() {
         const lay = focus();
         if (!lay) { replace(statsHost, panel('Detail', { tag: 'NONE YET' }, h('p', { class: 'muted', style: { fontSize: '13px', margin: 0 } }, 'Zoom in on the map and press Build detail: first a region (200–3,200 km across), then, inside it and zoomed in further, a close-up (10–200 km). What is built stays; the dashed box shows what the button would build.'))); return; }
@@ -528,7 +495,7 @@
         const lay = focus(), sw = (c) => h('i', { style: { display: 'inline-block', width: '22px', height: '10px', background: `rgb(${c.map(Math.round).join(',')})`, verticalAlign: 'middle', marginRight: '6px' } });
         let items;
         if (u.layer === 'biomes' && lay) items = lay.stats.biomeShare.map((v, i) => [i, v]).filter(([, v]) => v > 0.001).sort((a, b) => b[1] - a[1]).map(([i, v]) => [hex(B.BIOMES[i][2]), `${B.BIOMES[i][1]} ${v < 0.01 ? '<1' : fmt.int(v * 100)} %`]);
-        else { const f = world ? world.layer.planet?.factor ?? 1 : 1; items = [[SEA[6][1], 'deep sea'], [SEA[3][1], 'slope'], [SEA[0][1], 'shallows'], ...[0, 200, 500, 1000, 2000, 3500, 5000].map((m) => [ramp(LAND, m), `${fmt.int(m / f)} m`]), [ICE, 'ice']]; }
+        else { const f = world ? world.map.planet?.factor ?? 1 : 1; items = [[SEA[6][1], 'deep sea'], [SEA[3][1], 'slope'], [SEA[0][1], 'shallows'], ...[0, 200, 500, 1000, 2000, 3500, 5000].map((m) => [ramp(LAND, m), `${fmt.int(m / f)} m`]), [ICE, 'ice']]; }
         items.push([FRESH, 'fresh lake'], [SALT, 'salt lake']);
         if (lay && lay.oxbows && lay.oxbows.length) items.push([hex('#5892c4'), 'oxbow lake']);
         if (lay && lay.braids && lay.braids.length) items.push([[214, 204, 178], 'gravel bed (braided river)']);
@@ -541,7 +508,7 @@
       const save = (blob, name) => { const a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); };
       function exportPng(lay) {
         const F = lay.W < 1500 ? 2 : 1, big = h('canvas'); big.width = lay.W * F; big.height = lay.H * F;
-        const bg = big.getContext('2d'); bg.imageSmoothingEnabled = false; bg.drawImage(imgOf(lay), 0, 0, big.width, big.height);
+        const bg = big.getContext('2d'); bg.imageSmoothingEnabled = false; bg.drawImage(imageOf(lay), 0, 0, big.width, big.height);
         if (u.rivers) drawRivers(lay, (x, y) => [x * F, y * F], F * 0.7, F, bg);
         big.toBlob((b) => save(b, fileName(lay, u.layer, 'png')));
       }
@@ -576,9 +543,9 @@
         el,
         update() {
           if (!ro._on) { ro.observe(host); ro._on = true; }
-          renderAll(); ensure(); fit();
+          renderAll(); ensure(); size();
         },
-        destroy() { ro.disconnect(); clearTimeout(pvTimer); },
+        destroy() { ro.disconnect(); view.destroy(); },
       };
     },
     checks(w) {

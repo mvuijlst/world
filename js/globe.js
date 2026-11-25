@@ -357,7 +357,8 @@ void main() {
     function uploadPatch(i) {
       const p = st.patches[i], slot = T.p || (T.p = []);
       slot[i] = slot[i] || {};
-      if (slot[i].z !== p.z) { p.levels = mipChain(p.z, p.W, p.H, false); slot[i].h = texF(slot[i].h, p.levels, false); slot[i].z = p.z; }
+      if (slot[i].z !== p.z) { slot[i].levels = mipChain(p.z, p.W, p.H, false); slot[i].h = texF(slot[i].h, slot[i].levels, false); slot[i].z = p.z; }
+      p.levels = slot[i].levels;
       if (p.layer && slot[i].layer !== p.layer) { slot[i].l = texC(slot[i].l, p.W, p.H, splitLayer(p.layer, p.W, p.H, p.z).land, false); slot[i].layer = p.layer; }
       bindUnit(`uP${i}H`, slot[i].h); bindUnit(`uP${i}L`, p.layer ? slot[i].l : T.blankC);
     }
