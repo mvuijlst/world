@@ -13,26 +13,21 @@ const T = require('../tools/fidelity.js');
 const SEEDS = [7, 21, 99];
 // today's values on each seed that fails (720 cells), and the phase of docs/worldmap-plan.md that should fix it
 const EXPECTED_FAIL = {
-  // the carving and each belt's rain reorder them (and seed 99 has three young belts)
-  beltRank: { phase: 'D', seeds: { 7: '0.429', 21: '0.690', 99: '0.500' } },
-  // the crests and ridges kept inside belts until the carving shapes them, and the interiors under them
-  beltNoiseR2: { phase: 'C, D', seeds: { 7: '0.409', 21: '0.692', 99: '0.748' } },
-  rockLaid: { phase: 'D', seeds: { 7: '1.5 %', 21: '2.1 %', 99: '1.5 %' } },
-  r6Uncaused: { phase: 'C', seeds: { 7: '82.6 %', 21: '59.5 %', 99: '90.0 %' } },
-  outputNoiseWorld: { phase: 'B, C, D', seeds: { 7: '21', 21: '21', 99: '21' } },
+  // the carving and each belt's rain reorder them
+  beltRank: { phase: 'D', seeds: { 21: '0.524' } },
+  // the crests and ridges kept inside belts until the carving shapes them
+  beltNoiseR2: { phase: 'D', seeds: { 7: '0.663', 21: '0.711', 99: '0.657' } },
+  rockLaid: { phase: 'D', seeds: { 7: '1.9 %', 21: '0.6 %', 99: '4.3 %' } },
+  outputNoiseWorld: { phase: 'D', seeds: { 7: '14', 21: '14', 99: '14' } },
   outputNoiseRegion: { phase: 'E', seeds: { 7: '18', 21: '18', 99: '18' } },
-  landKept: { phase: 'C', seeds: { 7: '69.7 %', 21: '70.3 %', 99: '71.9 %' } },
-  roughCarve: { phase: 'D', seeds: { 7: '599.664', 21: '599.664', 99: '599.664' } },
-  bigRiversNear: { phase: 'D', seeds: { 7: '74.0 %', 21: '68.7 %', 99: '47.4 %' } },
-  mouthsKept: { phase: 'D', seeds: { 7: '8', 21: '4', 99: '5' } },
-  rainShadow: { phase: 'D', seeds: { 7: '1.731', 99: '1.451' } },
-  above2000: { phase: 'C', seeds: { 21: '2.5 %', 99: '2.9 %' } },
-  lakes: { phase: 'C', seeds: { 21: '0.7 %' } },
-  endorheic: { phase: 'C', seeds: { 21: '4.9 %' } },
-  valleysCarve: { phase: 'D', seeds: { 99: '89.9 %' } },
-  below200: { phase: 'C', seeds: { 99: '47.9 %' } },
-  concavity: { phase: 'D', seeds: { 99: '0.924' } },
-  concavityCarve: { phase: 'D', seeds: { 99: '0.875' } },
+  mouthsKept: { phase: 'D', seeds: { 99: '9' } },
+  // no ice sheets yet (D.5), and few young belts in these histories
+  above2000: { phase: 'D', seeds: { 7: '0.4 %', 21: '1.9 %', 99: '0.2 %' } },
+  rainShadow: { phase: 'D', seeds: { 7: '1.052', 21: '0.838' } },
+  // the carving silts up and breaches hollows in three passes at the end (D.2)
+  lakes: { phase: 'D', seeds: { 21: '1.0 %' } },
+  // the carving silts up and breaches hollows in three passes at the end (D.2)
+  endorheic: { phase: 'D', seeds: { 21: '4.2 %' } },
 };
 const LABEL = {
   r1Uphill: 'R1 no drawn river runs uphill', r1Carve: 'R1 no carved channel runs uphill', r2Outside: 'R2 lakes fill hollows of the map',
@@ -78,7 +73,7 @@ test('R5 same inputs, same map: twice in a row, and the same as on other machine
   assert.deepEqual(a.bio.flow, b.bio.flow);
   const hash = (arr) => { let x = 2166136261; for (const v of arr) { x ^= Math.round(v) & 0xffffffff; x = Math.imul(x, 16777619) >>> 0; } return x.toString(16); };
   // pinned on Windows and checked on Linux in CI; change it only with a deliberate change to the map
-  assert.equal(hash(a.map.z), '80c2e13');
+  assert.equal(hash(a.map.z), '39e1c3bb');
 });
 
 test('R7 every random number is in the register', () => {

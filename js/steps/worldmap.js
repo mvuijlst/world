@@ -327,7 +327,7 @@
         replace(setHost,
           h('div', { class: 'auto-grid' },
             num('map.land', 'Land, % of surface', 1, 95, 0.5, 'How much of the surface stands above the sea. By default the Population step’s land share; the crust can only hold so much.', +(w.map.land ?? w.population.land).toFixed(1)),
-            num('map.shelf', 'Shelf width ×', 0.2, 4, 0.1, 'Continental shelves: about 150 km wide on quiet coasts, 40 km where a plate subducts, on Earth.', w.map.shelf),
+            num('map.shelf', 'Shelf width ×', 0.2, 4, 0.1, 'How far in a continent’s edge was thinned: wide coastal plains and shelves on quiet coasts (on Earth some 250 km), narrow where a plate subducts (80 km).', w.map.shelf),
             num('map.relief', 'Relief ×', 0.2, 3, 0.1, 'Mountain heights on top of what gravity allows.', w.map.relief),
             num('map.iceAge', 'Ice ages, °C', 0, 15, 0.5, 'How much colder the ice ages were than today (Earth’s last: about 6 °C, more towards the poles). Glaciers then covered more ground and carved it: troughs, lake basins, fjords. 0: only where there is ice today.', w.map.iceAge ?? 6),
             num('map.erosion', 'Erosion ×', 0.2, 4, 0.1, `How fast the land wears down once it stops rising, × Earth’s: mountain belts and the raised ground beneath them, flood basalts, volcanoes. Faster where it rains (the equator, the fronts between this planet’s ${ctx.d.planet.cells.count} circulation cells), slower in the dry belts and near the poles; how deep the rivers cut follows it too. Earth = 1.`, w.map.erosion ?? 1),

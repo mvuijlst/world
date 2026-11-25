@@ -68,18 +68,15 @@
     { file: 'js/worldmap.js', at: 'V[i] = r() * 2 - 1', kind: 'source', what: 'Value noise on the sphere.' },
     { file: 'js/worldmap.js', at: 'Math.floor(r() * (i + 1))', kind: 'source', what: 'Value noise on the sphere.' },
     { file: 'js/worldmap.js', at: 'nz = noise3(seed ^ 0x6d61)', kind: 'source', what: 'The map’s noise seed.' },
+    { file: 'js/worldmap.js', at: 'hashRng(`p${f.id}`)', kind: 'input', what: 'Starting thickness of each piece of continental crust (a province).', bounds: '33-39 km' },
+    { file: 'js/worldmap.js', at: 'const nS = noise3(seed ^ 0x5737)', kind: 'source', what: 'Seed of the land’s starting relief.' },
+    { file: 'js/worldmap.js', at: 'H(RELIEF0_M) * nS(', kind: 'input', what: 'The land’s relief before the rivers began (a starting condition).', bounds: '±600 m × fbm (about ±200 m), less toward the sea, ÷ g^scaling' },
     { file: 'js/worldmap.js', at: 'const fbm = (k, freq, oct) => nz(', kind: 'source', what: 'Fractal noise at a cell.' },
     { file: 'js/worldmap.js', at: 'const nA = noise3(seed ^ 0xa11)', kind: 'source', what: 'Domain warp.' },
     { file: 'js/worldmap.js', at: 'return nz(x + amt * nA(', kind: 'source', what: 'Domain-warped noise.' },
     { file: 'js/worldmap.js', at: '0.6 * lam * fbm(k, 5, 2)', kind: 'output', what: 'Parallel ridges in a belt.', bounds: '±0.6 × 260 km' },
-    { file: 'js/worldmap.js', at: 'geo(1290) * warped(k, 2.2, 6, 0.4)', kind: 'output', what: 'The coastline.', bounds: '±1290, 400, 130 km' },
-    { file: 'js/worldmap.js', at: 'const big = warped(k, 1.3, 4, 0.6)', kind: 'output', what: 'A continent’s uplands and basins.', bounds: '+900 / −500 m' },
-    { file: 'js/worldmap.js', at: '450 * smooth((warped(k, 2.1, 3, 0.9)', kind: 'output', what: 'Plateaus and escarpments.', bounds: '0-450 m' },
-    { file: 'js/worldmap.js', at: '480 * warped(k, 3.4, 4, 0.3) + 160 * fbm(k, 9, 3)', kind: 'output', what: 'Hills.', bounds: '±220 m' },
-    { file: 'js/worldmap.js', at: '30 + 40 * (fbm(k, 5, 2) + 0.35)', kind: 'output', what: 'Height of basin floors.', bounds: '30-70 m' },
     { file: 'js/worldmap.js', at: '0.35 + 1.4 * warped(k, 6, 4, 0.5)', kind: 'output', what: 'Shape of oceanic plateaus and flood basalts.', bounds: '×0-1' },
     { file: 'js/worldmap.js', at: '1 - Math.abs(warped(k, 9, 5, 0.15))', kind: 'output', what: 'Crests inside a belt.', bounds: '×0.4-1.2' },
-    { file: 'js/worldmap.js', at: '0.5 * (fbm(k, 1.5, 2) + 1)', kind: 'output', what: 'Shelf width.', bounds: '×0.6-1.6' },
     { file: 'js/worldmap.js', at: 'hills = H(180) * fbm(k, 14, 3)', kind: 'output', what: 'Abyssal hills.', bounds: '±180 m' },
     { file: 'js/worldmap.js', at: '300 * fbm(k, 2, 3)', kind: 'output', what: 'Depth of old sea floor.', bounds: '±300 m, −150 m' },
     { file: 'js/worldmap.js', at: '1600 * (fbm(k, 4, 2) + 1)', kind: 'output', what: 'Trench depth.', bounds: '2600-4200 m' },
@@ -92,8 +89,6 @@
     { file: 'js/worldmap.js', at: 'const top = big ? 300 + r() * 1800', kind: 'output', what: 'Height of an arc volcano.', bounds: '−1000 to +2100 m' },
     { file: 'js/worldmap.js', at: 'nz = noise3(((opts.seed ?? 1) ^ 0x1ce) >>> 0)', kind: 'source', what: 'Glacier noise seed.' },
     { file: 'js/worldmap.js', at: '(0.7 + 0.9 * (nz(gr.xyz[k * 3]', kind: 'output', what: 'Depth of glacial troughs (scoured hollows).', bounds: '×0.4-1.6' },
-    { file: 'js/worldmap.js', at: 'nz = noise3(((opts.seed ?? 1) ^ 0x71ae) >>> 0)', kind: 'source', what: 'Carving noise seed.' },
-    { file: 'js/worldmap.js', at: 'v + rough * (1 + nz(gr.xyz[k * 3 + 1]', kind: 'output', what: 'Heights the carving routes its water over.', bounds: '0-600 m ÷ g^scaling' },
     // ── the climate (names: noise3, n, wobble, wob, iceWobble) ──
     { file: 'js/climate.js', at: 'function iceWobble(seed)', kind: 'source', what: 'Sea-ice edge noise.' },
     { file: 'js/climate.js', at: 'const n = M.noise3(seed * 13 + 5)', kind: 'source', what: 'Sea-ice edge noise.' },
@@ -142,7 +137,7 @@
     { file: 'js/region.js', at: 'rCache[i] = 0.12 * nz(', kind: 'output', what: 'Push from the banks’ roughness on a migrating channel.', bounds: '±0.12' },
   ];
   const NAMES = {
-    'js/worldmap.js': ['nz', 'nA', 'nB', 'nC', 'fbm', 'warped', 'hashRng', 'r'], 'js/climate.js': ['n', 'wobble', 'wob', 'iceWobble'], 'js/biomes.js': ['noise'],
+    'js/worldmap.js': ['nz', 'nA', 'nB', 'nC', 'nS', 'fbm', 'warped', 'hashRng', 'r'], 'js/climate.js': ['n', 'wobble', 'wob', 'iceWobble'], 'js/biomes.js': ['noise'],
     'js/region.js': ['gradNoise', 'nc', 'ncw', 'n1', 'n2', 'nw', 'cw', 'nf', 'nb', 'nz', 'lump', 'soft', 'jit'],
   };
   const NOT_SCANNED = ['js/fidelity.js'];                                    // (this register)

@@ -51,8 +51,8 @@ test('water runs downhill to the sea or out of the window, gathering on the way'
 });
 
 test('colder with height: a mountain window has colder biomes on its heights than in its valleys', () => {
-  // the world map's highest ground in low and middle latitudes (nearer the poles even the valleys are boreal)
-  let best = -1; for (let k = 0; k < map.z.length; k++) if (Math.abs(map.grid.lat[Math.floor(k / map.W)]) < 40 &&(best < 0 || map.z[k] > map.z[best])) best = k;
+  // the world map's highest ground away from the poles (where all is ice)
+  let best = -1; for (let k = 0; k < map.z.length; k++) if (Math.abs(map.grid.lat[Math.floor(k / map.W)]) < 65 && (best < 0 || map.z[k] > map.z[best])) best = k;
   const at = [map.grid.lat[Math.floor(best / map.W)], -180 + ((best % map.W) + 0.5) * (360 / map.W)];
   const mtn = R.build(map, water, { lat: at[0], lon: at[1], span: 600, res: 192, seed: 7 });
   const land = []; for (let k = 0; k < mtn.z.length; k++) if (mtn.z[k] > 0 && !mtn.lake[k]) land.push(k);

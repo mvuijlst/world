@@ -60,7 +60,8 @@ test('not only Earth: heavier gravity, lower mountains and shallower trenches (�
   const tallest = (map) => Math.max(...map.belts.map((b) => b.crest));
   // (widths change with gravity too, so the heights are not exactly in proportion)
   assert.ok(Math.abs(tallest(earth) / tallest(heavy) - 2.25) < 0.8, `1.5 g: belts ${tallest(earth) / tallest(heavy)} times lower (2.25 expected)`);
-  assert.ok(Math.abs(ratio(light, earth) - 2) < 0.8, `0.5 g, scaling 1: ${ratio(light, earth)} times higher (2 expected)`);
+  // (under less gravity a belt can stand higher, but only as high as the crust it was fed: not twice)
+  assert.ok(tallest(light) > tallest(earth) && ratio(light, earth) > 1, `0.5 g, scaling 1: belts ${tallest(light) / tallest(earth)}, highest point ${ratio(light, earth)} times higher`);
   assert.ok(heavy.highest.m < earth.highest.m, 'and the highest point lower');
   assert.ok(heavy.deepest.m > earth.deepest.m, 'trenches shallower under more gravity');
   assert.deepEqual(heavy.planet, { gravity: 1.5, factor: 2.25, radiusKm: 6371, ridgeDepth: 2600 });
@@ -94,7 +95,9 @@ test('rivers carve: big rivers cut deep, divides barely change, land stays land,
   const c = S.vec([0, 0]);
   for (let k = 0; k < gr.N; k++) {
     const d = Math.acos(Math.max(-1, Math.min(1, gr.xyz[k * 3] * c[0] + gr.xyz[k * 3 + 1] * c[1] + gr.xyz[k * 3 + 2] * c[2]))) * 180 / Math.PI;
-    if (d < 25) z[k] = 20 + 2500 * (1 - d / 25);
+    // (with the relief the land had before the rivers, the size of a map's: rolls of some ±270 m)
+    const la = Math.asin(c[2] * 0 + gr.xyz[k * 3 + 2]) * 180 / Math.PI, lo = Math.atan2(gr.xyz[k * 3 + 1], gr.xyz[k * 3]) * 180 / Math.PI;
+    if (d < 25) z[k] = 20 + 2500 * (1 - d / 25) + (1 - d / 25) * (170 * Math.sin(la * 0.41) * Math.cos(lo * 0.37) + 100 * Math.sin((la + 2 * lo) * 0.83));
     else if (d < 28) z[k] = -100;                                     // a shelf round it
   }
   const z0 = Float32Array.from(z);
@@ -181,4 +184,24 @@ test('glaciers: troughs where it is cold and snowy, fjords only where the sea re
   const dry = Float32Array.from(base), rd = M.glaciate(gr, dry, { water: water(-5, 30), iceAge: 6, seed: 2 });
   // (a third of it before the ice followed the true fall of the land, D8-LTD, rather than the grid's lines)
   assert.ok(rd.area > 0 && rd.deepest < r.deepest / 2.5, `polar desert ice cuts ${rd.deepest} m vs ${r.deepest} m`);
+});
+
+test('the land stands on its crust: wide plains on a rifted margin, narrow on an active one, basins along a failed rift, the share of land asked for', () => {
+  // one continent, 30° round: its west coast faces a trench (an active margin), its east coast is rifted
+  const trench = Array.from({ length: 13 }, (_, i) => [-30 + 5 * i, -33]);
+  const P = { start: 1000, plates: [{ id: 1, rotations: [] }], features: [
+    { id: 'c', kind: 'crust', plateId: 1, coords: cap(0, 0, 30) },
+    { id: 'z', kind: 'subduction', plateId: 1, coords: trench, side: 'left', begin: 900 },
+    { id: 'f', kind: 'failed', plateId: 1, coords: [[-15, 5], [15, 5]] },
+  ] };
+  const map = M.build(P, { res: 360, land: 0.05, carve: false });
+  assert.ok(Math.abs(map.land - 0.05) < 0.003, `land ${map.land}`);
+  const zAt = (lat, lon) => map.z[M.cellOf(map.grid, lat, lon)];
+  // how far in from the coast the land reaches 90 % of the interior's height, along the equator
+  const inland = Math.max(zAt(20, -10), zAt(-20, -10));
+  const plain = (from, step) => { let lon = from; while (zAt(0, lon) <= 0) lon += step; const coast = lon; while (zAt(0, lon) < 0.9 * inland && Math.abs(lon) < 29) lon += step; return Math.abs(lon - coast); };
+  const west = plain(-31, 0.5), east = plain(31, -0.5);
+  assert.ok(east > 1.5 * west, `plain ${east}° wide on the rifted east coast, ${west}° on the active west`);
+  // the failed rift: a basin along it, below the plain either side
+  assert.ok(zAt(0, 5) < zAt(0, -10) - 100 && zAt(0, 5) < zAt(0, 18) - 100, `rift ${zAt(0, 5)} m, either side ${zAt(0, -10)} and ${zAt(0, 18)} m`);
 });
