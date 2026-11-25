@@ -100,7 +100,9 @@ test('rivers carve: big rivers cut deep, divides barely change, land stays land,
   for (let k = 0; k < gr.N; k++) if (z0[k] > 0) { cuts.push(r.cut[k]); assert.ok(z[k] > 0, 'land stays land'); assert.ok(z[k] <= z0[k] + r.laid[k] + 1e-3); }
   cuts.sort((a, b) => a - b);
   const median = cuts[cuts.length >> 1], top = cuts[Math.floor(cuts.length * 0.99)];
-  assert.ok(top > 300 && top > 4 * median, `valleys ${top} m deep vs ${median} m typical`);
+  // (3.5×: since the water follows the true fall of the land (D8-LTD), a smooth dome no longer gathers it
+  // along the grid's lines into a few deep gorges; it was 4× with that artefact)
+  assert.ok(top > 300 && top > 3.5 * median, `valleys ${top} m deep vs ${median} m typical`);
   assert.ok(r.eroded > 0 && r.delta > 0 && r.delta < r.eroded, `${r.delta} of ${r.eroded} km³ in deltas`);
   let coast = 0, built = 0;
   for (let k = 0; k < gr.N; k++) if (z0[k] === -100) { coast++; if (r.laid[k] > 0) built++; }
@@ -174,5 +176,6 @@ test('glaciers: troughs where it is cold and snowy, fjords only where the sea re
   const warm = Float32Array.from(base), rw = M.glaciate(gr, warm, { water: water(18, 1200), iceAge: 0, seed: 2 });
   assert.equal(rw.area, 0); assert.deepEqual(warm, base);
   const dry = Float32Array.from(base), rd = M.glaciate(gr, dry, { water: water(-5, 30), iceAge: 6, seed: 2 });
-  assert.ok(rd.area > 0 && rd.deepest < r.deepest / 3, `polar desert ice cuts ${rd.deepest} m vs ${r.deepest} m`);
+  // (a third of it before the ice followed the true fall of the land, D8-LTD, rather than the grid's lines)
+  assert.ok(rd.area > 0 && rd.deepest < r.deepest / 2.5, `polar desert ice cuts ${rd.deepest} m vs ${r.deepest} m`);
 });

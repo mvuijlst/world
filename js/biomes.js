@@ -3,8 +3,8 @@
  *   - water: what rain and snow leave after evaporation (a Budyko curve on the climate's rain and a
  *     potential evaporation from its temperatures); none where water cannot be liquid (too thin an
  *     atmosphere, or hotter than boiling at that pressure), none from ice sheets;
- *   - drainage: every land cell drains to the lowest way out, found by flooding the map up from the
- *     sea (priority flood), so hollows fill into lakes and rivers find their way through them;
+ *   - drainage: the one the map was carved with (worldmap.js hydrology: every land cell drains the
+ *     lowest way out over the map's own heights), so the rivers drawn lie in the valleys they cut;
  *   - lakes: a hollow that gathers more water than its surface can evaporate fills and spills, a
  *     fresh lake; one that cannot ends in a salt lake and its rivers never reach the sea (an
  *     endorheic basin);
@@ -68,27 +68,9 @@
     return BI[b];
   }
 
-  /* A min-heap of cell indices keyed by a Float64Array of values. */
-  function heap(key) {
-    const a = [];
-    return {
-      get size() { return a.length; },
-      push(k) { a.push(k); let i = a.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (key[a[p]] <= key[k]) break; a[i] = a[p]; i = p; } a[i] = k; },
-      pop() {
-        const top = a[0], last = a.pop();
-        if (a.length) {
-          let i = 0; const n = a.length;
-          for (;;) { let c = 2 * i + 1; if (c >= n) break; if (c + 1 < n && key[a[c + 1]] < key[a[c]]) c++; if (key[a[c]] >= key[last]) break; a[i] = a[c]; i = c; }
-          a[i] = last;
-        }
-        return top;
-      },
-    };
-  }
-
   /*
    * map: a built world map. clim: its climate (climate.js build). planet: {pressure (atm), seed,
-   * radiusKm, gravity}. opts: minFlow (m³/s for a river line, 600), minCells (cells it drains, 8), rough (m).
+   * radiusKm, gravity}. opts: minFlow (m³/s for a river line, 600), minCells (cells it drains, 8).
    */
   /*
    * The climate on the map's own cells, and the water each land cell sheds a year after evaporation
@@ -165,17 +147,18 @@
     const R = planet.radiusKm ?? map.planet?.radiusKm ?? 6371, kmDeg = (Math.PI * R) / 180;
     const minFlow = opts.minFlow ?? 600, minCells = opts.minCells ?? 8;
     const noise = M.noise3((planet.seed ?? 1) * 7 + 3);
-    const { runoff, P, PET, Tw, Tc, Ta, Pw, land, area, liquid, seaIce, tBoil } = water(map, clim, planet);
+    const wt = water(map, clim, planet), { P, PET, Tw, Tc, Ta, Pw, land, area, liquid, seaIce, tBoil } = wt;
 
-    // ── drainage: flood the land up from the sea (priority flood, with a tiny rise over flats) ──
-    // The map's slopes are smooth, and water on an even slope runs down in parallel lines that never
-    // meet; real land is uneven at every scale and its streams gather into valleys. So the water is
-    // routed over the heights plus a gentle unevenness (scaled like the map's relief).
-    const rough = (opts.rough ?? 450) / (map.planet?.factor ?? 1);
-    const zr = Float32Array.from(z, (v, k) => (v > 0 ? v + rough * (1 + noise(gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], gr.xyz[k * 3], 7, 5)) : v));
-    const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), done = new Uint8Array(N), order = new Int32Array(N);
-    let no = 0;
-    const q = heap(fill);
+    // ── the water: the drainage the carving left (worldmap.js carve: where each cell drains over the
+    // map's own heights, what flows, lakes fresh and salt) when it carved with this climate's water;
+    // otherwise the same, worked out here over the map's heights ──
+    const rv = map.rivers, carved = rv && rv.rain === 'climate' && rv.lake && rv.runoff && rv.recv.length === N;
+    const hy = carved
+      ? { recv: rv.recv, flow: rv.discharge, cellsUp: rv.cellsUp, lake: rv.lake, terminal: rv.terminal, evaporated: rv.evaporated, lakes: rv.lakes, saltLakes: rv.saltLakes, order: Int32Array.from(M.upstreamFirst(rv.recv, land)).reverse() }
+      : M.hydrology(gr, z, { runoff: wt.runoff, P, PET, liquid, radiusKm: R });
+    // (the runoff those rivers carry: the carving's, worked out from the climate before it carved)
+    const runoff = carved ? rv.runoff : wt.runoff;
+    const { recv, flow, cellsUp, terminal, evaporated } = hy, lakeOf = hy.lake, order = hy.order, no = order.length;
     const nb = (k, f) => {
       const j = Math.floor(k / W), i = k - j * W;
       for (let dj = -1; dj <= 1; dj++) {
@@ -183,66 +166,6 @@
         for (let di = -1; di <= 1; di++) { if (!di && !dj) continue; f(jj * W + ((i + di + W) % W), di && dj ? 1.4142 : 1); }
       }
     };
-    for (let k = 0; k < N; k++) if (!land[k]) { done[k] = 1; fill[k] = z[k]; }
-    for (let k = 0; k < N; k++) if (!land[k]) { let coast = false; nb(k, (n) => { if (land[n]) coast = true; }); if (coast) { fill[k] = 0; q.push(k); } }
-    // a land-only world (no sea): drain to its lowest point
-    if (!q.size) { let lo = 0; for (let k = 1; k < N; k++) if (z[k] < z[lo]) lo = k; land[lo] = 0; done[lo] = 1; fill[lo] = z[lo]; q.push(lo); }
-    while (q.size) {
-      const c = q.pop();
-      if (land[c]) order[no++] = c;
-      nb(c, (n) => {
-        if (done[n]) return;
-        done[n] = 1;
-        fill[n] = Math.max(zr[n], fill[c] + 1e-3);
-        recv[n] = c;
-        q.push(n);
-      });
-    }
-
-    // ── lakes: hollows (filled more than a few metres) that are more than a speck ──
-    const pit = new Uint8Array(N);
-    for (let k = 0; k < N; k++) if (land[k] && fill[k] - zr[k] > 3) pit[k] = 1;
-    const comp = new Int32Array(N).fill(-1), comps = [];
-    for (let k = 0; k < N; k++) {
-      if (!pit[k] || comp[k] >= 0) continue;
-      const id = comps.length, cells = [k]; comp[k] = id;
-      for (let s = 0; s < cells.length; s++) nb(cells[s], (n) => { if (pit[n] && comp[n] < 0) { comp[n] = id; cells.push(n); } });
-      let a = 0, depth = 0; for (const c of cells) { a += area[c]; depth = Math.max(depth, fill[c] - zr[c]); }
-      comps.push({ cells, area: a, depth });
-    }
-    const minLake = 2 * (gr.dx * kmDeg) ** 2 * 0.5;                          // a couple of cells' worth
-    for (const cp of comps) if (cp.area < minLake && cp.depth < 60) { for (const c of cp.cells) { pit[c] = 0; comp[c] = -1; } cp.gone = true; }
-
-    // ── flow: add up the water downstream, upstream cells first; lakes evaporate what they can ──
-    const flow = new Float64Array(N), cellsUp = new Int32Array(N).fill(1);   // m³/s; cells drained
-    const lakeLoss = new Float64Array(comps.length);
-    const toM3s = (mm, km2) => (mm / 1000) * km2 * 1e6 / YEAR_S;
-    for (let k = 0; k < N; k++) if (land[k]) flow[k] = toM3s(runoff[k], area[k]);
-    // what each lake can evaporate a year (open water evaporates a fifth more than the land could)
-    comps.forEach((cp, id) => { if (cp.gone) return; let e = 0; for (const c of cp.cells) e += toM3s(Math.max(0, 1.2 * PET[c] - P[c]), area[c]); lakeLoss[id] = liquid ? e : 0; });
-    const terminal = new Uint8Array(N), lakeOf = new Int8Array(N);         // 1 fresh, 2 salt
-    let evaporated = 0;                                                      // m³/s, from lakes
-    for (let o = no - 1; o >= 0; o--) {
-      const k = order[o], r = recv[k];
-      const id = comp[k];
-      if (id >= 0 && (r < 0 || comp[r] !== id)) {
-        // the lake's outlet: everything that reached the lake passes here
-        // (a hollow that nothing reaches stays dry)
-        if (flow[k] <= 0) { comps[id].gone = true; terminal[k] = 1; continue; }
-        const out = flow[k] - lakeLoss[id];
-        if (out <= 0) { terminal[k] = 1; flow[k] = Math.max(0, flow[k]); evaporated += flow[k]; comps[id].salt = true; comps[id].share = lakeLoss[id] > 0 ? flow[k] / lakeLoss[id] : 0; continue; }
-        flow[k] = out; evaporated += lakeLoss[id];
-      }
-      if (r >= 0 && land[r]) { flow[r] += flow[k]; cellsUp[r] += cellsUp[k]; }
-    }
-    // lakes on the map: a fresh lake fills its hollow; a salt lake only the lowest part it can keep wet
-    comps.forEach((cp) => {
-      if (cp.gone) return;
-      if (!cp.salt) { for (const c of cp.cells) lakeOf[c] = 1; return; }
-      const sorted = cp.cells.slice().sort((a, b) => zr[a] - zr[b]);
-      let a = 0; const want = cp.area * clamp(cp.share ?? 0, 0, 1);
-      for (const c of sorted) { if (a >= want) break; lakeOf[c] = 2; a += area[c]; }
-    });
 
     // ── biomes ──
     const biome = new Uint8Array(N);
@@ -269,9 +192,9 @@
     for (let k = 0; k < N; k++) if (isRiver(k) && recv[k] >= 0) kids[recv[k]]++;
     const seen = new Uint8Array(N), rivers = [];
     const ll = (k) => [gr.lat[Math.floor(k / W)], -180 + ((k % W) + 0.5) * gr.dx];
-    // a river runs through a point somewhere in each cell, not its centre: no ruled lines
-    const jit = (k) => { let x = Math.imul(k ^ 0x9e3779b9, 0x85ebca6b); x ^= x >>> 13; x = Math.imul(x, 0xc2b2ae35); x ^= x >>> 16; return [((x & 0xffff) / 0xffff - 0.5) * 0.8, (((x >>> 16) & 0xffff) / 0xffff - 0.5) * 0.8]; };
-    const llj = (k) => { const [a, b] = jit(k), p = ll(k); return [p[0] + a * gr.dx, p[1] + (b * gr.dx) / Math.max(0.2, gr.cosl[Math.floor(k / W)])]; };
+    // (each river through its cells' centres; the corners are rounded below, and the line stays in the
+    // cells the water runs through)
+    const llj = ll;
     for (let s = 0; s < N; s++) {
       if (!isRiver(s) || kids[s]) continue;
       let cur = s, line = [], qs = [];
@@ -333,11 +256,11 @@
       share[biome[k]] += a;
     }
     let wet = false; for (let k = 0; k < N && !wet; k++) if (runoff[k] > 0) wet = true;
-    const lakes = comps.filter((c) => !c.gone).length, salt = comps.filter((c) => !c.gone && c.salt).length;
+    const lakes = hy.lakes, salt = hy.saltLakes;
     return {
       W, H, grid: gr, biome, biomes: BIOMES, lake: lakeOf, seaIce, flow: Float32Array.from(flow), runoff, rivers, minFlow,
       inland: Uint8Array.from(toSea, (v) => (v < 0 ? 1 : 0)),
-      recv, terminal, rough, evaporated,                                     // (for the fidelity rules, js/fidelity.js)
+      recv, terminal, rough: 0, evaporated,                                  // (for the fidelity rules, js/fidelity.js)
       liquid: liquid && tBoil > -50,
       stats: {
         landKm2: landA, lakes, saltLakes: salt, lakeShare: lakeA / Math.max(1, landA), saltShare: saltA / Math.max(1, landA),

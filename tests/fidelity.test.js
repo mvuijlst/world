@@ -1,7 +1,7 @@
 /* The fidelity suite: hard rules R1-R7 and the measures, on the map as the app builds it (land,
- * climate, glaciers and rivers carving it, rivers and biomes), seed 7 at 720 cells, Earth settings.
- * Run with: npm test
- * A rule or measure that fails today is a TODO test carrying today's value, and is listed in
+ * climate, glaciers and rivers carving it, rivers and biomes), seeds 7, 21 and 99 at 720 cells, Earth
+ * settings. Run with: npm test
+ * A rule or measure that fails today on a seed is a TODO test carrying today's value, and is listed in
  * EXPECTED_FAIL; the last test fails if one of them starts to pass, so the list is kept current.
  * Each later phase turns its share green and moves it out of the list. */
 const test = require('node:test');
@@ -10,54 +10,59 @@ const M = require('../js/worldmap.js');
 const F = require('../js/fidelity.js');
 const T = require('../tools/fidelity.js');
 
-// today's values (seed 7, 720 cells), and the phase of docs/worldmap-plan.md that should fix each
+const SEEDS = [7, 21, 99];
+// today's values on each seed that fails (720 cells), and the phase of docs/worldmap-plan.md that should fix it
 const EXPECTED_FAIL = {
-  r1Uphill: ['10.2 % of drawn river segments run uphill (climbing 55 % of their descent)', 4],
-  r1Carve: ['5.3 % of carved channels drain to a higher cell', 4],
-  r2Outside: ['52 % of lake area is not in a hollow of the map', 4],
-  r4Error: ['rock out of balance by 11.7 % (glacier troughs 9.2 %: their rock goes nowhere)', 4],
-  r6Uncaused: ['63 % of land above 1500 m has no tectonic cause near', 4],
-  landKept: ['76 % of land kept when only the map’s noise seed changes', 4],
-  roughDrawn: ['900 m of noise under the drawn rivers’ routing', 4],
-  roughCarve: ['600 m of noise under the carving’s routing', 4],
-  valleys: ['85 % of drawn river beds below the ground beside them', 4],
-  valleysCarve: ['83 % of carved channels below the ground beside them', 4],
-  riversAgree: ['72 % of drawn rivers within a cell of a carved channel', 4],
-  bigRiversNear: ['76 % of big-river cells kept when the rivers’ seed changes', 4],
-  mouthsKept: ['6 of the 10 largest mouths keep their place', 4],
-  rainShadow: ['rain upwind / downwind of high ground 1.21', 5],
-  hackCarve: ['Hack’s exponent on the carving 0.48', 4],
-  concavity: ['concavity of the drawn rivers 0.35 (just under)', 4],
-  outputNoiseWorld: ['27 noise terms added to outputs on the world map, climate and rivers', 4],
-  outputNoiseRegion: ['18 noise terms added to outputs on the Region, Close-up and Atlas', 6],
+  rockLaid: { phase: 'D', seeds: { 7: '1.1 %', 21: '1.3 %', 99: '0.5 %' } },
+  r6Uncaused: { phase: 'C', seeds: { 7: '64.4 %', 21: '61.3 %', 99: '69.8 %' } },
+  outputNoiseWorld: { phase: 'B, C, D', seeds: { 7: '25', 21: '25', 99: '25' } },
+  outputNoiseRegion: { phase: 'E', seeds: { 7: '18', 21: '18', 99: '18' } },
+  landKept: { phase: 'C', seeds: { 7: '75.8 %', 21: '73.1 %', 99: '72.9 %' } },
+  roughCarve: { phase: 'D', seeds: { 7: '599.664', 21: '599.664', 99: '599.664' } },
+  bigRiversNear: { phase: 'D', seeds: { 7: '77.8 %', 21: '74.6 %', 99: '57.7 %' } },
+  mouthsKept: { phase: 'D', seeds: { 7: '7', 21: '8', 99: '1' } },
+  rainShadow: { phase: 'D', seeds: { 7: '1.214' } },
+  concavity: { phase: 'D', seeds: { 7: '0.610', 21: '0.718' } },
+  concavityCarve: { phase: 'D', seeds: { 7: '0.608', 21: '0.734', 99: '0.611' } },
+  valleys: { phase: 'D', seeds: { 99: '88.3 %' } },
+  valleysCarve: { phase: 'D', seeds: { 99: '87.2 %' } },
+  below200: { phase: 'C', seeds: { 99: '52.6 %' } },
+  above2000: { phase: 'B', seeds: { 99: '0.6 %' } },
+  endorheic: { phase: 'C', seeds: { 99: '2.8 %' } },
 };
 const LABEL = {
   r1Uphill: 'R1 no drawn river runs uphill', r1Carve: 'R1 no carved channel runs uphill', r2Outside: 'R2 lakes fill hollows of the map',
-  r3Error: 'R3 water balances within 1 %', r4Error: 'R4 rock balances within 1 %', r6Uncaused: 'R6 high ground has a tectonic cause',
+  r3Error: 'R3 water balances within 1 %', r4Error: 'R4 rock balances within 1 %', rockLaid: 'rock cut is laid somewhere on the map',
+  r6Uncaused: 'R6 high ground has a tectonic cause',
   outputNoiseWorld: 'R7 no noise added to outputs (world)', outputNoiseRegion: 'R7 no noise added to outputs (Region, Close-up, Atlas)',
   landKept: 'stability: land kept under a new noise seed', roughDrawn: 'no noise under the drawn rivers', roughCarve: 'no noise under the carving',
   valleys: 'drawn rivers lie in valleys', valleysCarve: 'carved channels lie in valleys', riversAgree: 'drawn rivers follow the carved channels',
-  bigRiversNear: 'stability: big rivers kept under a new rivers’ seed', mouthsKept: 'stability: great river mouths kept',
+  bigRiversNear: 'stability: big rivers kept under a new carving seed', mouthsKept: 'stability: great river mouths kept under a new carving seed',
   below200: 'hypsometry: land below 200 m', above2000: 'hypsometry: land above 2000 m', rainShadow: 'rain shadows',
   hack: 'Hack’s law (drawn rivers)', hackCarve: 'Hack’s law (carving)', concavity: 'channel concavity (drawn rivers)', concavityCarve: 'channel concavity (carving)',
   lakes: 'lakes, share of land', endorheic: 'land draining inland',
 };
 
 const scan = F.scan(T.sources());
-const r = { ...T.run(T.seedWorld(7), 720), outputNoiseWorld: scan.outputNoiseWorld, outputNoiseRegion: scan.outputNoiseRegion };
+const R = Object.fromEntries(SEEDS.map((s) => [s, { ...T.run(T.seedWorld(s), 720), outputNoiseWorld: scan.outputNoiseWorld, outputNoiseRegion: scan.outputNoiseRegion }]));
 const fmt = (v) => (v == null ? 'none' : Number.isInteger(v) ? String(v) : v.toFixed(4));
 
-for (const id of Object.keys(LABEL)) {
-  const known = EXPECTED_FAIL[id];
-  test(LABEL[id], known ? { todo: `fails until Phase ${known[1]}: ${known[0]}` } : {}, () => {
-    assert.ok(F.inRange(id, r[id]), `${id} = ${fmt(r[id])}, target ${F.TARGETS[id].join('-')}`);
+for (const seed of SEEDS) for (const id of Object.keys(LABEL)) {
+  const known = EXPECTED_FAIL[id] && EXPECTED_FAIL[id].seeds[seed];
+  test(`${LABEL[id]} (seed ${seed})`, known ? { todo: `fails until Phase ${EXPECTED_FAIL[id].phase}: ${known}` } : {}, () => {
+    assert.ok(F.inRange(id, R[seed][id]), `${id} = ${fmt(R[seed][id])}, target ${F.TARGETS[id].join('-')}`);
   });
 }
 
-test('R3 on every example world (180 cells)', () => {
+test('the rock book never sends a negative amount to the deep sea', () => {
+  for (const seed of SEEDS) assert.ok(R[seed].toDeep >= 0, `seed ${seed}: ${R[seed].toDeep} km³`);
+});
+
+test('R3 on every example world (180 cells), and its rock book', () => {
   for (const f of T.EXAMPLES()) {
     const p = T.pipeline(T.exampleWorld(f), { res: 180 });
     assert.ok(F.waterBalance(p.map, p.bio).error <= 0.01, f);
+    if (p.map.rivers) assert.ok(p.map.rivers.toDeep >= 0, `${f}: ${p.map.rivers.toDeep} km³ to the deep sea`);
   }
 });
 
@@ -67,7 +72,7 @@ test('R5 same inputs, same map: twice in a row, and the same as on other machine
   assert.deepEqual(a.bio.flow, b.bio.flow);
   const hash = (arr) => { let x = 2166136261; for (const v of arr) { x ^= Math.round(v) & 0xffffffff; x = Math.imul(x, 16777619) >>> 0; } return x.toString(16); };
   // pinned on Windows and checked on Linux in CI; change it only with a deliberate change to the map
-  assert.equal(hash(a.map.z), 'cf0df2dc');
+  assert.equal(hash(a.map.z), '585fedb4');
 });
 
 test('R7 every random number is in the register', () => {
@@ -109,6 +114,7 @@ test('the measures on made-up cases', () => {
 });
 
 test('expected failures still fail (move any that pass out of EXPECTED_FAIL)', () => {
-  const passing = Object.keys(EXPECTED_FAIL).filter((id) => F.inRange(id, r[id]));
+  const passing = [];
+  for (const [id, e] of Object.entries(EXPECTED_FAIL)) for (const seed of Object.keys(e.seeds)) if (F.inRange(id, R[seed][id])) passing.push(`${id} seed ${seed}`);
   assert.deepEqual(passing, []);
 });

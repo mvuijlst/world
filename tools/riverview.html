@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>River check</title>
+<style>body{background:#111;color:#ddd;font:13px monospace;margin:8px}canvas{display:block;margin:6px 0;image-rendering:auto}</style>
+<div id="out">building…</div>
+<script src="../js/calc.js"></script><script src="../js/data.js"></script><script src="../js/sphere.js"></script><script src="../js/rotation.js"></script>
+<script src="../js/supercontinent.js"></script><script src="../js/worldmap.js"></script><script src="../js/climate.js"></script><script src="../js/biomes.js"></script>
+<script>
+// A throwaway check (not part of the app): the app's pipeline for a seed, shaded relief, lakes and the drawn rivers.
+const { calc: C, data: D, supercontinent: G, worldmap: M, climate: K, biomes: B } = WS;
+const out = document.getElementById('out');
+function seedWorld(seed) {
+  const w = D.defaultWorld('x'), d = C.computeAll(w);
+  const P = G.makeWorld({ seed, plates: 4, crust: 0.33, start: 1000, maxSpeed: 4, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity, scaling: 2 });
+  Object.assign(w.plates, { plates: P.plates, features: P.features, nextPlate: P.nextPlate, seed: P.seed, step: P.step });
+  return w;
+}
+function build(w, res) {
+  const d = C.computeAll(w);
+  const tides = M.planetTides({ moonMass: w.moon.enabled ? w.moon.mass : 0, moonKm: w.moon.a, starMass: w.star.mass, au: w.planet.a, locked: w.planet.rotation >= 0.95 * d.planet.yearEarthDays * 24, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity });
+  const s = { res, land: (w.map.land ?? w.population.land) / 100, shelf: w.map.shelf, relief: w.map.relief, seed: w.plates.seed, gravity: d.planet.gravity, scaling: w.tectonics.scaling, radiusKm: d.planet.radiusKm, ridgeDepth: w.tectonics.ridgeDepth, erosion: w.map.erosion ?? 1, cells: d.planet.cells.count, tides, carve: false, strokes: [] };
+  const map = M.build(w.plates, s), clim = K.build(map, K.planetOf(w, d));
+  if (w.map.carve !== false && w.planet.pressure >= 0.0061) M.carveMap(map, { water: B.water(map, clim, B.planetOf(w, d)), strokes: w.map.strokes || [], iceAge: w.map.iceAge ?? 6 });
+  return { map, bio: B.build(map, clim, B.planetOf(w, d)) };
+}
+function draw({ map, bio }, crop, scale, label) {
+  const { W, H, z } = map, [i0, j0, cw, ch] = crop || [0, 0, W, H];
+  const cv = document.createElement('canvas'); cv.width = cw * scale; cv.height = ch * scale;
+  const g = cv.getContext('2d'), img = g.createImageData(cw, ch);
+  for (let j = 0; j < ch; j++) for (let i = 0; i < cw; i++) {
+    const k = (j0 + j) * W + ((i0 + i) % W), o = (j * cw + i) * 4, v = z[k];
+    let c;
+    if (v <= 0) c = [30, 55, 95];
+    else if (bio.lake[k]) c = bio.lake[k] === 1 ? [70, 130, 200] : [190, 215, 215];
+    else {
+      const e = z[(j0 + j) * W + ((i0 + i + 1) % W)] - z[(j0 + j) * W + ((i0 + i - 1 + W) % W)], n = z[Math.max(0, j0 + j - 1) * W + ((i0 + i) % W)] - z[Math.min(H - 1, j0 + j + 1) * W + ((i0 + i) % W)];
+      const sh = Math.max(0.45, Math.min(1.5, 1 + 0.0025 * (-e + n))), t = Math.min(1, v / 3000);
+      c = [150 + 80 * t, 160 + 40 * t, 110 + 90 * t].map((x) => x * sh);
+    }
+    img.data.set([c[0], c[1], c[2], 255], o);
+  }
+  const off = document.createElement('canvas'); off.width = cw; off.height = ch; off.getContext('2d').putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = false; g.drawImage(off, 0, 0, cv.width, cv.height);
+  g.strokeStyle = 'rgb(20,70,170)'; g.lineCap = 'round'; g.lineJoin = 'round';
+  const px = (la, lo) => { let x = ((lo + 180) / 360) * W - i0; if (x < -W / 2) x += W; return [x * scale, (((90 - la) / 180) * H - j0) * scale]; };
+  for (const rv of bio.rivers) for (let i = 1; i < rv.pts.length; i++) {
+    const a = px(...rv.pts[i - 1]), b = px(...rv.pts[i]);
+    if (Math.abs(a[0] - b[0]) > cv.width / 2) continue;
+    g.lineWidth = Math.max(0.6, scale * 0.25 * (0.6 + Math.log10(1 + rv.q[i] / bio.minFlow)));
+    g.beginPath(); g.moveTo(...a); g.lineTo(...b); g.stroke();
+  }
+  const cap = document.createElement('div'); cap.textContent = label; out.append(cap, cv);
+}
+setTimeout(async () => {
+  out.textContent = '';
+  const ex = new URLSearchParams(location.search).get('ex');
+  const worlds = ex ? await Promise.all(ex.split(',').map(async (n) => [n, await (await fetch(`../examples/${n}.worldsmith.json`)).json()])) : [7, 21, 99].map((s) => [`seed ${s}`, seedWorld(s)]);
+  for (const [seed, w] of worlds) {
+    const t0 = performance.now(), r = build(w, 720);
+    // the whole map, and a close look round the mouth of its biggest river
+    draw(r, null, 2, `${seed}: ${r.bio.rivers.length} river lines, ${r.bio.stats.lakes} lakes · ${Math.round(performance.now() - t0)} ms`);
+    const m = r.bio.stats.biggest ? r.bio.stats.biggest.at : [0, 0], W = r.map.W, i = Math.round(((m[1] + 180) / 360) * W), j = Math.round(((90 - m[0]) / 180) * r.map.H);
+    draw(r, [(i - 90 + W) % W, Math.max(0, Math.min(r.map.H - 120, j - 60)), 180, 120], 6, `${seed}: round the biggest mouth (${m.map((x) => x.toFixed(1)).join(', ')})`);
+  }
+  document.title = 'River check · done';
+}, 50);
+</script>

@@ -99,6 +99,12 @@ test('carved with its climate, a map keeps its basins: dry ones stay closed, lak
   const bp = B.build(plain, cp, { ...EARTH, seed: 7 }), bc = B.build(carved, cp, { ...EARTH, seed: 7 });
   assert.equal(carved.rivers.rain, 'climate');
   assert.ok(carved.rivers.eroded > 0);
-  assert.ok(bc.stats.lakes > 0.6 * bp.stats.lakes, `lakes ${bc.stats.lakes} vs ${bp.stats.lakes} uncarved`);
+  // (the rivers silt up the shallow hollows they flow through, so fewer lakes than on the uncarved
+  // map's own hollows; the deep ones and the closed basins stay)
+  assert.ok(bc.stats.lakes > 5 && bc.stats.lakeShare > 0.005, `lakes ${bc.stats.lakes} (${(bc.stats.lakeShare * 100).toFixed(1)} %) vs ${bp.stats.lakes} uncarved`);
   assert.ok(bc.stats.endorheic > 0.5 * bp.stats.endorheic, `inland drainage ${bc.stats.endorheic} vs ${bp.stats.endorheic} uncarved`);
+  // one drainage: the rivers drawn are the channels the carving left, and every lake is a hollow
+  assert.deepEqual(bc.recv, carved.rivers.recv);
+  const fill = M.hydrology(carved.grid, carved.z, { runoff: bc.runoff }).fill;
+  for (let k = 0; k < carved.z.length; k++) if (bc.lake[k]) assert.ok(fill[k] - carved.z[k] > 0.5, 'a lake lies in a hollow');
 });

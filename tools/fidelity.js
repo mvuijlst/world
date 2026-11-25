@@ -65,6 +65,7 @@ function settingsOf(w, d, res) {
 function pipeline(w, opts = {}) {
   const Mod = opts.Mod || M, d = C.computeAll(w), s = settingsOf(w, d, opts.res), t = {};
   if (opts.mapSeed != null) s.seed = opts.mapSeed;
+  // (carveSeed: the carving's own noise seed, the map's left as it is)
   const time = (key, f) => { const t0 = process.hrtime.bigint(), v = f(); t[key] = Number(process.hrtime.bigint() - t0) / 1e6; return v; };
   const pl = K.planetOf(w, d), bpl = { ...B.planetOf(w, d), ...(opts.bioSeed != null ? { seed: opts.bioSeed } : {}) };
   const map = time('map', () => Mod.build(w.plates, { ...s, carve: false, strokes: s.carve ? [] : w.map.strokes }));
@@ -73,6 +74,7 @@ function pipeline(w, opts = {}) {
   if (s.carve) {
     const water = time('water', () => B.water(map, clim, B.planetOf(w, d)));
     before = Float32Array.from(map.z);
+    if (opts.carveSeed != null) map.carving.seed = opts.carveSeed;
     time('carve', () => Mod.carveMap(map, { water, strokes: [], iceAge: w.map.iceAge ?? 6 }));
     carved = Float32Array.from(map.z);
     for (const st of w.map.strokes) Mod.stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); if (map.cause) map.cause[k] |= 32; });
@@ -88,11 +90,11 @@ function run(w, res = 720, compare = true) {
   if (compare) {
     const other = pipeline(w, { res, mapSeed: (w.plates.seed ?? 1) + 1000 }).map;       // only the map's noise seed differs
     const flat = pipeline(w, { res, Mod: noiseFree() }).map;                          // the map's noise off
-    const bio2 = B.build(p.map, p.clim, { ...B.planetOf(w, p.d), seed: (w.plates.seed ?? 1) + 1 });   // only the rivers' noise differs
+    const q = pipeline(w, { res, carveSeed: (w.plates.seed ?? 1) + 1 });                // only the carving's noise seed differs
     const ov = F.landOverlap(p.map, other);
     Object.assign(out, {
       landKept: ov.iou, flip: ov.flip, landNoNoise: F.landOverlap(p.map, flat).iou, heightR2: F.heightR2(p.map, flat),
-      bigRiversNear: F.riversNear(p.map, p.bio, bio2, 5000, 2), mouthsKept: F.mouthsKept(p.map, p.bio, bio2),
+      bigRiversNear: F.riversNear(p.map, p.bio, q.bio, 5000, 2), mouthsKept: F.mouthsKept(p.map, p.bio, q.bio),
     });
   }
   return out;
@@ -108,7 +110,9 @@ const ROWS = [
   ['R2', 'Lake area not in a hollow of the map', 'r2Outside', pc],
   ['R3', 'Water balance error (drawn rivers)', 'r3Error', pc],
   ['R4', 'Rock balance error (carving and glaciers)', 'r4Error', pc],
-  ['', '  glaciers’ share of the rock cut (carried nowhere)', 'r4Glacier', pc],
+  ['', '  glaciers’ share of the rock cut', 'r4Glacier', pc],
+  ['', 'Rock cut that is laid somewhere on the map', 'rockLaid', pc],
+  ['', '  basins / moraines / deltas / deep sea, % of the cut', 'rockParts', (x) => (x == null ? '—' : x.map((v) => (v * 100).toFixed(v < 0.1 ? 1 : 0)).join(' / '))],
   ['R6', 'High land with no tectonic cause near', 'r6Uncaused', pc],
   ['', 'Land kept when only the map’s noise seed changes', 'landKept', pc],
   ['', '  share of the globe that flips', 'flip', pc],
@@ -120,8 +124,8 @@ const ROWS = [
   ['', 'Drawn river bed below the ground 2 cells either side', 'valleys', pc],
   ['', 'Carved channel below the ground 2 cells either side', 'valleysCarve', pc],
   ['', 'Drawn rivers within a cell of a carved channel', 'riversAgree', pc],
-  ['', 'Big rivers (≥ 5000 m³/s) kept within 110 km, rivers’ seed changed', 'bigRiversNear', pc],
-  ['', 'Largest 10 mouths that keep their place', 'mouthsKept', (x) => (x == null ? '—' : String(x))],
+  ['', 'Big rivers (≥ 5000 m³/s) kept within 110 km, carving’s seed changed', 'bigRiversNear', pc],
+  ['', 'Largest 10 mouths that keep their place, carving’s seed changed', 'mouthsKept', (x) => (x == null ? '—' : String(x))],
   ['', 'Deltas / estuaries the carving built', 'deltas', (x, r) => (x == null ? '—' : `${x} / ${r.estuaries}`)],
   ['', 'Land below 200 m', 'below200', pc],
   ['', 'Land above 2000 m', 'above2000', pc],

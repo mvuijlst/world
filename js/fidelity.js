@@ -32,7 +32,7 @@
   /* Target ranges at Earth settings ([lo, hi]; null: no target). Rules hold on any planet; the
      measures with `earth` only at Earth-like settings. */
   const TARGETS = {
-    r1Uphill: [0, 0], r1Carve: [0, 0], r2Outside: [0, 0], r3Error: [0, 0.01], r4Error: [0, 0.01], r6Uncaused: [0, 0],
+    r1Uphill: [0, 0], r1Carve: [0, 0], r2Outside: [0, 0], r3Error: [0, 0.01], r4Error: [0, 0.01], rockLaid: [0.99, 1], r6Uncaused: [0, 0],
     landKept: [0.9, 1], landNoNoise: null, heightR2: null, step: null, roughDrawn: [0, 0], roughCarve: [0, 0],
     valleys: [0.9, 1], valleysCarve: [0.9, 1], riversAgree: [0.9, 1], bigRiversNear: [0.9, 1], mouthsKept: [10, 10],
     below200: [0.2, 0.35], above2000: [0.05, 0.15], rainShadow: [2, 10],
@@ -105,13 +105,10 @@
     { file: 'js/climate.js', at: 'seaCold[k] + wobble(', kind: 'output', what: 'Sea-ice edge.', bounds: '±8 °C' },
     { file: 'js/climate.js', at: 'wob = iceWobble(seed)', kind: 'source', what: 'Sea-ice edge noise.' },
     { file: 'js/climate.js', at: 'v / sw + wob(', kind: 'output', what: 'Sea-ice edge.', bounds: '±8 °C' },
-    // ── water, rivers and biomes (names: noise3, noise, jit) ──
+    // ── water, rivers and biomes (names: noise3, noise) ──
     { file: 'js/biomes.js', at: 'const noise = M.noise3(', kind: 'source', what: 'Water, rivers’ and biomes’ noise seed (in water and in build).' },
     { file: 'js/biomes.js', at: '0.8 * noise(x, y, zz, 9, 3)', kind: 'output', what: 'Temperature and rain on each cell, so biome edges wander; the rain then feeds the runoff that carves the map.', bounds: '±0.8 °C, ±12 % rain' },
-    { file: 'js/biomes.js', at: 'rough * (1 + noise(', kind: 'output', what: 'Heights the drawn rivers are routed over.', bounds: '0-900 m ÷ g^scaling' },
     { file: 'js/biomes.js', at: '11, 2) > 0) biome[k] = BI.wetland', kind: 'output', what: 'Lake-shore wetlands.', bounds: 'half of them' },
-    { file: 'js/biomes.js', at: 'const jit = (k) =>', kind: 'output', what: 'River points off the cell centres.', bounds: '±0.4 cell' },
-    { file: 'js/biomes.js', at: 'const [a, b] = jit(k)', kind: 'output', what: 'River points off the cell centres.', bounds: '±0.4 cell' },
     // ── Region, Close-up and Atlas (names: gradNoise, nc, ncw, n1, n2, nw, cw, nf, nb, nz, lump, soft, jit) ──
     { file: 'js/region.js', at: 'let h = s ^ Math.imul(xi, 0x8da6b343)', kind: 'source', what: 'Gradient noise.' },
     { file: 'js/region.js', at: 'h = Math.imul(h ^ (h >>> 13), 0x5bd1e995)', kind: 'source', what: 'Gradient noise.' },
@@ -148,7 +145,7 @@
     { file: 'js/region.js', at: 'rCache[i] = 0.12 * nz(', kind: 'output', what: 'Push from the banks’ roughness on a migrating channel.', bounds: '±0.12' },
   ];
   const NAMES = {
-    'js/worldmap.js': ['nz', 'nA', 'nB', 'nC', 'fbm', 'warped', 'hashRng', 'r'], 'js/climate.js': ['n', 'wobble', 'wob', 'iceWobble'], 'js/biomes.js': ['noise', 'jit'],
+    'js/worldmap.js': ['nz', 'nA', 'nB', 'nC', 'fbm', 'warped', 'hashRng', 'r'], 'js/climate.js': ['n', 'wobble', 'wob', 'iceWobble'], 'js/biomes.js': ['noise'],
     'js/region.js': ['gradNoise', 'nc', 'ncw', 'n1', 'n2', 'nw', 'cw', 'nf', 'nb', 'nz', 'lump', 'soft', 'jit'],
   };
   const NOT_SCANNED = ['js/fidelity.js'];                                    // (this register)
@@ -215,11 +212,14 @@
 
   // ── hard rules ──
   /* R1: drawn river segments that climb on the map's own heights (more than 2 m), and the total climb
-     against the total descent. */
-  function uphill(map, bio) {
+     against the total descent. On a fresh lake the water's height is its surface, the level of its
+     outlet, not its bed (a river leaving a lake leaves at that level); a salt lake stands below its
+     rim, on its bed. */
+  function uphill(map, bio, fill) {
     let up = 0, seg = 0, climb = 0, drop = 0;
+    const at = (p) => { const k = M.cellOf(map.grid, p[0], p[1]); return bio.lake && bio.lake[k] === 1 && fill ? Math.max(map.z[k], fill[k]) : map.z[k]; };
     for (const rv of bio.rivers) for (let i = 1; i < rv.pts.length; i++) {
-      const a = zAt(map, ...rv.pts[i - 1]), b = zAt(map, ...rv.pts[i]);
+      const a = at(rv.pts[i - 1]), b = at(rv.pts[i]);
       if (!(a > 0 && b > 0)) continue;
       seg++;
       if (b > a + 2) { up++; climb += b - a; } else drop += Math.max(0, a - b);
@@ -285,8 +285,19 @@
       if (d < 0) removed -= d; else added += d;
       if (map.glaciers) glacier += Math.max(0, map.glaciers.cut[k]) * cellArea(map, k) / 1000;
     }
-    const rv = map.rivers, toDeep = rv ? Math.max(0, rv.eroded - rv.basins - rv.delta) : 0;
+    // (the carving's book: rock cut by rivers, glaciers and the tide in estuaries, less what it laid)
+    const rv = map.rivers, toDeep = !rv ? 0 : rv.toDeep != null ? rv.toDeep : Math.max(0, rv.eroded - rv.basins - rv.delta);
     return { error: removed > 0 ? Math.abs(removed - added - toDeep) / removed : 0, removed, added, toDeep, glacier, eroded: rv ? rv.eroded : 0 };
+  }
+  /* Of the rock the carving cut (rivers, glaciers, estuaries' scour), the share laid somewhere on the
+     map, and how it divides: [basins, moraines, deltas, out to the deep sea]; null when nothing cut. */
+  function rockLaid(map) {
+    const rv = map.rivers;
+    if (!rv || rv.toDeep == null) return { share: null, parts: null, toDeep: null };
+    const cut = rv.eroded + (rv.glacial || 0) + (rv.scour || 0);
+    if (!(cut > 0)) return { share: null, parts: null, toDeep: rv.toDeep };
+    const parts = [rv.basins, rv.moraine || 0, rv.delta, rv.toDeep].map((v) => v / cut);
+    return { share: (rv.basins + (rv.moraine || 0) + rv.delta) / cut, parts, toDeep: rv.toDeep };
   }
   /* R6: the share of land above 1500 m ÷ g^scaling that is more than 300 km (÷ g^scaling) from
      anything that raised it (a belt, plateau, igneous province, hotspot, arc, or the brush). */
@@ -455,6 +466,7 @@
     Object.assign(out, {
       below200: hy.below200, above2000: hy.above2000, meanLand: hy.mean, step: step(map), r6Uncaused: uncaused(map).share,
       r4Error: r4.error, r4Removed: r4.removed ?? null, r4Glacier: r4.removed ? r4.glacier / r4.removed : null,
+      rockLaid: rockLaid(map).share, rockParts: rockLaid(map).parts, toDeep: rockLaid(map).toDeep,
       r1Carve: carveUphill(map, fill).share, valleysCarve: valleysCarve(map), roughCarve: map.rivers ? 2 * (map.carving?.rough ?? 0) : null,
     });
     if (map.rivers) {
@@ -463,7 +475,7 @@
     }
     if (clim) out.rainShadow = rainShadow(clim, factorOf(map)).median;
     if (bio) {
-      const up = uphill(map, bio), net = network(map, bio.recv, bio.terminal), hk = hack(map, net, bio.lake), cc = concavity(map, net, bio.lake);
+      const up = uphill(map, bio, fill), net = network(map, bio.recv, bio.terminal), hk = hack(map, net, bio.lake), cc = concavity(map, net, bio.lake);
       Object.assign(out, {
         r1Uphill: up.share, r1Climb: up.climb, r1Segments: up.segments, r2Outside: lakesInHollows(map, bio, fill).share, r3Error: waterBalance(map, bio).error,
         roughDrawn: 2 * (bio.rough ?? 0), valleys: valleys(map, bio), riversAgree: riversAgree(map, bio), hack: hk.h, concavity: cc.theta, concavityNotDown: cc.notDown,
@@ -477,7 +489,7 @@
   function rules(map, bio) {
     const pc = (x) => `${(x * 100).toFixed(x < 0.1 ? 1 : 0)} %`, out = [], fill = filled(map);
     if (bio) {
-      const up = uphill(map, bio), r2 = lakesInHollows(map, bio, fill), r3 = waterBalance(map, bio);
+      const up = uphill(map, bio, fill), r2 = lakesInHollows(map, bio, fill), r3 = waterBalance(map, bio);
       out.push({ id: 'R1', ok: up.share === 0, text: !up.segments ? 'R1 · No rivers.' : up.share === 0 ? 'R1 · Rivers run downhill.' : `R1 · ${pc(up.share)} of river stretches run uphill.` });
       out.push({ id: 'R2', ok: r2.share === 0, text: !r2.lakeArea ? 'R2 · No lakes.' : r2.share === 0 ? 'R2 · Lakes lie in hollows.' : `R2 · ${pc(r2.share)} of lake area is not in a hollow.` });
       out.push({ id: 'R3', ok: r3.error <= 0.01, text: `R3 · Water balances${r3.error <= 0.01 ? '' : ` to ${pc(r3.error)} only`}.` });
@@ -487,7 +499,7 @@
     return out;
   }
 
-  const api = { TARGETS, EARTH_ONLY, RANDOM, inRange, scan, filled, uphill, carveUphill, lakesInHollows, waterBalance, rockBalance, uncaused, hypsometry, step, valleys, valleysCarve, riversAgree, network, hack, concavity, rainShadow, landOverlap, heightR2, riversNear, mouthsKept, measure, rules, fit };
+  const api = { TARGETS, EARTH_ONLY, RANDOM, inRange, scan, filled, uphill, carveUphill, lakesInHollows, waterBalance, rockBalance, rockLaid, uncaused, hypsometry, step, valleys, valleysCarve, riversAgree, network, hack, concavity, rainShadow, landOverlap, heightR2, riversNear, mouthsKept, measure, rules, fit };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.fidelity = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

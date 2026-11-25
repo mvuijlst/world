@@ -275,7 +275,232 @@
         spill[n] = Math.max(z[n], land[c] ? spill[c] : 0);
       });
     }
-    return { fill, recv, dist, spill, order, no };
+    return { fill, recv, dist, spill, order, no, surface: zr };
+  }
+
+  /*
+   * Which way each cell drains, by D8-LTD (Orlandini, Moretti, Franchini, Aldighieri and Testa 2003,
+   * Water Resources Research 39(6) 1144). On the eight triangular facets round a cell (Tarboton 1997)
+   * the steepest way down is found; of the two grid directions bounding that facet, the one is taken
+   * that keeps the transversal deviation from the true direction, summed down the path, the smaller
+   * (eqs. 1-4, λ = 1: full memory, as the paper advocates). Cells go from the highest down; where
+   * paths meet, the path draining the most area carries its deviation on. So water follows the true
+   * fall of the land, not the grid's eight directions. Real distances on the sphere: a cell is
+   * narrower east-west by the cosine of its latitude.
+   * e: the surface, its pits and flats already raised to drain; recv: changed in place, except where
+   * keep[k] (flats, lakes), whose way is followed as it is; kmDeg: km per degree. Returns recv.
+   */
+  // the facets [cardinal (di, dj), diagonal (di, dj)], j counting southward (Table 1's eight facets)
+  const FACETS = [[[-1, 0], [-1, 1]], [[-1, 0], [-1, -1]], [[0, -1], [-1, -1]], [[0, -1], [1, -1]], [[1, 0], [1, -1]], [[1, 0], [1, 1]], [[0, 1], [1, 1]], [[0, 1], [-1, 1]]]
+    // (σ = +1 where the diagonal lies counterclockwise of the cardinal, east and north up; -1 otherwise)
+    .map(([c, d]) => [c, d, Math.sign(c[0] * -d[1] - -c[1] * d[0])]);
+  function steer(gr, e, land, recv, keep, kmDeg) {
+    const { W, H, N } = gr, dNS = gr.dx * kmDeg, dEW = (j) => gr.dx * kmDeg * Math.max(0.02, gr.cosl[j]);
+    const cells = [];
+    for (let k = 0; k < N; k++) if (land[k]) cells.push(k);
+    cells.sort((a, b) => e[b] - e[a]);
+    // area drained, and the deviation (km) carried down the largest path into each cell
+    const A = new Float64Array(N), dev = new Float64Array(N), devA = new Float64Array(N);
+    for (const c of cells) {
+      const j = Math.floor(c / W), i = c - j * W, e0 = e[c];
+      A[c] += dNS * dEW(j);
+      let out = 0;
+      if (!keep || !keep[c]) {
+        let best = null, bs = 0;
+        for (const [[ci, cj], [di, dj], sg] of FACETS) {
+          const jc = j + cj, jd = j + dj;
+          if (jc < 0 || jc >= H || jd < 0 || jd >= H) continue;
+          const p1 = jc * W + ((i + ci + W) % W), p2 = jd * W + ((i + di + W) % W);
+          const d1 = cj ? dNS : dEW(j), d2 = cj ? dEW(jc) : dNS, rmax = Math.atan2(d2, d1);
+          const s1 = (e0 - e[p1]) / d1, s2 = (e[p1] - e[p2]) / d2;
+          let r = Math.atan2(s2, s1), s;
+          if (r < 0) { r = 0; s = s1; } else if (r > rmax) { r = rmax; s = (e0 - e[p2]) / Math.hypot(d1, d2); } else s = Math.hypot(s1, s2);
+          if (s > bs) { bs = s; best = { p1, p2, sg, d1, d2, r, rmax }; }
+        }
+        if (best) {
+          // the cumulative transversal deviations of the two choices (eqs. 1, 2), and the smaller (eqs. 3, 4)
+          const { p1, p2, sg, d1, d2, r, rmax } = best, up = dev[c];
+          const a = sg * d1 * Math.sin(r) + up, b = -sg * Math.hypot(d1, d2) * Math.sin(rmax - r) + up;
+          let p = Math.abs(a) <= Math.abs(b) ? p1 : p2, v = p === p1 ? a : b;
+          if (!(e[p] < e0)) { p = p === p1 ? p2 : p1; v = p === p1 ? a : b; }        // (only ever downhill)
+          if (e[p] < e0) { recv[c] = p; out = v; }
+        }
+      }
+      const r = recv[c];
+      if (r >= 0 && land[r]) { A[r] += A[c]; if (A[c] > devA[r]) { devA[r] = A[c]; dev[r] = out; } }
+    }
+    return recv;
+  }
+
+  /*
+   * A flood's drainage (drain) turned to the true fall of its surface (steer: D8-LTD), outside the
+   * hollows it filled (there the flood's way is kept): with the distance to each cell's receiver, the
+   * spill level along the way, and the order, downstream first.
+   */
+  function settle(gr, z, land, d, kmDeg) {
+    const { W, N } = gr, { fill, recv } = d;
+    const keep = Uint8Array.from(fill, (f, k) => (land[k] && f - (d.surface ? d.surface[k] : z[k]) > 1e-3 ? 1 : 0));
+    steer(gr, fill, land, recv, keep, kmDeg);
+    const order = Int32Array.from(upstreamFirst(recv, land)).reverse(), dist = new Float32Array(N), spill = new Float32Array(N);
+    for (const k of order) {
+      const r = recv[k], j = Math.floor(k / W), di = r >= 0 ? Math.min(Math.abs((k % W) - (r % W)), W - Math.abs((k % W) - (r % W))) : 0, dj = r >= 0 ? Math.floor(r / W) - j : 0;
+      dist[k] = gr.dx * kmDeg * Math.hypot(di * Math.max(0.02, gr.cosl[j]), dj);
+      spill[k] = Math.max(z[k], r >= 0 && land[r] ? spill[r] : 0);
+    }
+    return { fill, recv, dist, spill, order, no: order.length };
+  }
+
+  /* Land cells in an order where each comes before the cell it drains to (upstream first). */
+  function upstreamFirst(recv, land) {
+    const N = recv.length, indeg = new Int32Array(N), out = new Int32Array(N), stack = [];
+    let n = 0;
+    for (let k = 0; k < N; k++) { const r = recv[k]; if (land[k] && r >= 0 && land[r]) indeg[r]++; }
+    for (let k = 0; k < N; k++) if (land[k] && !indeg[k]) stack.push(k);
+    while (stack.length) { const k = stack.pop(); out[n++] = k; const r = recv[k]; if (r >= 0 && land[r] && --indeg[r] === 0) stack.push(r); }
+    return out.subarray(0, n);
+  }
+
+  /*
+   * Where the water goes over the map's own heights, and what it does there: the one drainage that
+   * the carving finishes with and the Rivers step draws. Every land cell drains the lowest way out
+   * (a priority flood from the sea, or from the lowest cell of a world without one). A hollow deeper
+   * than `deep` m is a lake if water reaches it: fresh if more flows in than its surface can
+   * evaporate (it fills to its spill point and flows on from its outlet), salt if not (only its lowest
+   * part stays wet, and water on its floor runs down to it). Shallower hollows the water crosses.
+   * gr, z; o: runoff (mm a year per cell), P and PET (mm; what a lake evaporates: 1.2·PET − P), liquid
+   * (false: no lakes, nothing flows), radiusKm, deep (2). Returns recv (where each land cell drains;
+   * -1 at a basin's floor or the sea), flow (m³/s), cellsUp, lake (1 fresh, 2 salt), terminal (where
+   * water ends inland), evaporated (m³/s, from lakes and basin floors), fill (the level water would
+   * stand at), comp (the hollow each cell is in, or -1), comps [{cells, depth, kind: fresh | salt |
+   * dry}], order (land cells, downstream first), lakes, saltLakes.
+   */
+  function hydrology(gr, z, o = {}) {
+    const { W, N } = gr, kmDeg = (Math.PI * (o.radiusKm ?? 6371)) / 180, DEEP = o.deep ?? 2, YEAR_S = 3.156e7;
+    const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0)), area = new Float64Array(N);
+    for (let k = 0; k < N; k++) area[k] = (gr.dx * kmDeg) ** 2 * gr.cosl[Math.floor(k / W)];
+    const toM3s = (mm, km2) => ((mm / 1000) * km2 * 1e6) / YEAR_S;
+    // the flood (a tiny rise over flats, so even a flat drains one way)
+    const fill = new Float64Array(N), recv = new Int32Array(N).fill(-1), done = new Uint8Array(N), pos = new Int32Array(N).fill(-1);
+    const q = heap(fill);
+    for (let k = 0; k < N; k++) if (!land[k]) { done[k] = 1; fill[k] = z[k]; let coast = false; neighbours(gr, k, (n) => { if (land[n]) coast = true; }); if (coast) { fill[k] = 0; q.push(k); } }
+    if (!q.size) { let lo = 0; for (let k = 1; k < N; k++) if (z[k] < z[lo]) lo = k; land[lo] = 0; done[lo] = 1; fill[lo] = z[lo]; q.push(lo); }
+    let np = 0;
+    while (q.size) {
+      const c = q.pop();
+      if (land[c]) pos[c] = np++;
+      neighbours(gr, c, (n) => { if (done[n]) return; done[n] = 1; fill[n] = Math.max(z[n], fill[c] + 1e-7); recv[n] = c; q.push(n); });
+    }
+    // the way down over that surface: by the true fall of the land (steer: D8-LTD); across a flat (no
+    // neighbour a centimetre lower: silted ground, a shallow hollow filled over) towards the flat's way
+    // out and away from the higher ground round it, as water finds its way over a plain (Garbrecht &
+    // Martz 1997; Barnes et al. 2014), rather than in the flood's straight lines
+    const flood = Int32Array.from(recv), landN = land.reduce((a, v) => a + v, 0);
+    {
+      const TOL = 0.01, flat = new Uint8Array(N), lakeBed = (k) => land[k] && fill[k] - z[k] > DEEP;   // (lakes: below)
+      const slope = (k, n, di, dj, j) => (fill[k] - fill[n]) / Math.hypot(di * Math.max(0.02, gr.cosl[j]), dj);
+      for (let k = 0; k < N; k++) {
+        if (!land[k] || lakeBed(k)) continue;
+        let best = -1, bs = 0, drop = 0;
+        neighbours(gr, k, (n, di, dj, j) => { const s = slope(k, n, di, dj, j); if (s > bs) { bs = s; best = n; } drop = Math.max(drop, fill[k] - fill[n]); });
+        if (drop > TOL) recv[k] = best; else flat[k] = 1;
+      }
+      const low = new Int32Array(N).fill(-1), dLow = new Int32Array(N).fill(-1), dHigh = new Int32Array(N).fill(-1), id = new Int32Array(N).fill(-1);
+      for (let k = 0; k < N; k++) {
+        if (!flat[k] || id[k] >= 0) continue;
+        const cells = [k]; id[k] = k;
+        for (let s = 0; s < cells.length; s++) neighbours(gr, cells[s], (n) => { if (flat[n] && id[n] < 0 && Math.abs(fill[n] - fill[k]) < TOL) { id[n] = k; cells.push(n); } });
+        // its ways out (beside ground lower than it that drains on), and its edges against higher ground
+        const lows = [], highs = [];
+        for (const c of cells) {
+          let out = -1, hi = false;
+          neighbours(gr, c, (n) => { if (id[n] === k) return; if (fill[n] < fill[c] && (!land[n] || !(flat[n] || lakeBed(n))) && (out < 0 || fill[n] < fill[out])) out = n; if (fill[n] > fill[c] + TOL) hi = true; });
+          if (out >= 0) { low[c] = out; dLow[c] = 0; lows.push(c); }
+          if (hi) { dHigh[c] = 0; highs.push(c); }
+        }
+        if (!lows.length) { for (const c of cells) recv[c] = flood[c]; continue; }   // (none: as the flood went)
+        const bfs = (front, d) => { for (let s = 0; s < front.length; s++) neighbours(gr, front[s], (n) => { if (id[n] === k && d[n] < 0) { d[n] = d[front[s]] + 1; front.push(n); } }); };
+        bfs(lows.slice(), dLow); bfs(highs.slice(), dHigh);
+        let far = 0; for (const c of cells) if (dHigh[c] > far) far = dHigh[c];
+        const g = (c) => 2 * dLow[c] + (highs.length && dHigh[c] >= 0 ? far - dHigh[c] : 0);
+        for (const c of cells) {
+          if (low[c] >= 0) { recv[c] = low[c]; continue; }
+          let best = -1, bg = g(c), bl = dLow[c];
+          neighbours(gr, c, (n) => { if (id[n] !== k) return; const gn = g(n); if (gn < bg || (gn === bg && dLow[n] < bl)) { bg = gn; bl = dLow[n]; best = n; } });
+          if (best < 0) neighbours(gr, c, (n) => { if (id[n] === k && dLow[n] < bl) { bl = dLow[n]; best = n; } });
+          recv[c] = best >= 0 ? best : flood[c];
+        }
+      }
+      const keep = Uint8Array.from(flat, (v, k) => (v || lakeBed(k) ? 1 : 0));
+      steer(gr, fill, land, recv, keep, kmDeg);
+    }
+    // hollows deeper than DEEP, as connected pieces; each drains (if it overflows) by its first-flooded cell
+    const comp = new Int32Array(N).fill(-1), comps = [];
+    for (let k = 0; k < N; k++) {
+      if (!land[k] || comp[k] >= 0 || !(fill[k] - z[k] > DEEP)) continue;
+      const id = comps.length, cells = [k]; comp[k] = id;
+      for (let s = 0; s < cells.length; s++) neighbours(gr, cells[s], (n) => { if (land[n] && comp[n] < 0 && fill[n] - z[n] > DEEP) { comp[n] = id; cells.push(n); } });
+      let depth = 0, out = cells[0], a = 0;
+      for (const c of cells) { depth = Math.max(depth, fill[c] - z[c]); if (pos[c] < pos[out]) out = c; a += area[c]; }
+      // (within it, every cell drains towards that outlet: the lake is level, its water leaves there,
+      // the way the flood came in)
+      const seen = new Set([out]), front = [out], tree = [[out, flood[out]]];
+      for (let s = 0; s < front.length; s++) neighbours(gr, front[s], (n) => { if (comp[n] === id && !seen.has(n)) { seen.add(n); tree.push([n, front[s]]); front.push(n); } });
+      for (const [n, r] of tree) recv[n] = r;
+      let loss = 0;
+      if (o.liquid !== false && o.PET) for (const c of cells) loss += toM3s(Math.max(0, 1.2 * o.PET[c] - (o.P ? o.P[c] : 0)), area[c]);
+      comps.push({ cells, depth, outlet: out, area: a, loss, kind: 'fresh', tree });
+    }
+    // (should any of that loop back on itself, the flood's own way is kept)
+    if (upstreamFirst(recv, land).length < landN) { recv.set(flood); for (const cp of comps) for (const [n, r] of cp.tree) recv[n] = r; }
+    // the water, upstream first; at each hollow's outlet, what its lake evaporates
+    const flow = new Float64Array(N), cellsUp = new Int32Array(N), lake = new Int8Array(N), terminal = new Uint8Array(N);
+    const runoff = o.runoff, wetOK = o.liquid !== false;
+    for (let k = 0; k < N; k++) if (land[k]) { flow[k] = wetOK && runoff ? toM3s(runoff[k], area[k]) : 0; cellsUp[k] = 1; }
+    let evaporated = 0;
+    for (const k of upstreamFirst(recv, land)) {
+      const c = comp[k];
+      if (c >= 0 && comps[c].outlet === k) {
+        const cp = comps[c];
+        if (flow[k] <= 0) { cp.kind = 'dry'; continue; }
+        if (flow[k] - cp.loss <= 0) { cp.kind = 'salt'; cp.share = cp.loss > 0 ? flow[k] / cp.loss : 0; continue; }
+        flow[k] -= cp.loss; evaporated += cp.loss;
+      }
+      const r = recv[k];
+      if (r >= 0 && land[r]) { flow[r] += flow[k]; cellsUp[r] += cellsUp[k]; }
+    }
+    // a basin that does not overflow: water on its floor runs down (steepest) to its lowest places,
+    // where it evaporates; a salt lake covers the lowest part it can keep wet
+    const closed = comps.filter((cp) => cp.kind !== 'fresh');
+    if (closed.length) {
+      const inflow = new Map();
+      for (let k = 0; k < N; k++) { const r = recv[k]; if (land[k] && r >= 0 && comp[r] >= 0 && comp[k] !== comp[r] && comps[comp[r]].kind !== 'fresh') inflow.set(k, r); }
+      for (const cp of closed) {
+        const id = comp[cp.cells[0]];
+        for (const c of cp.cells) {
+          let best = -1, bs = 0;
+          const j = Math.floor(c / W);
+          neighbours(gr, c, (n, di, dj) => { if (comp[n] !== id || z[n] >= z[c]) return; const s = (z[c] - z[n]) / Math.hypot(di * Math.max(0.02, gr.cosl[j]), dj); if (s > bs) { bs = s; best = n; } });
+          recv[c] = best;
+          if (best < 0) terminal[c] = 1;
+          flow[c] = wetOK && runoff ? toM3s(runoff[c], area[c]) : 0; cellsUp[c] = 1;
+        }
+      }
+      for (const [k, r] of inflow) { flow[r] += flow[k]; cellsUp[r] += cellsUp[k]; }
+      for (const cp of closed) {
+        const cells = cp.cells.slice().sort((a, b) => z[b] - z[a]);              // (downhill is downstream)
+        for (const c of cells) { const r = recv[c]; if (r >= 0) { flow[r] += flow[c]; cellsUp[r] += cellsUp[c]; } else evaporated += flow[c]; }
+        if (cp.kind === 'salt') {
+          let a = 0; const want = cp.area * Math.min(1, cp.share);
+          for (const c of cells.reverse()) { if (a >= want) break; lake[c] = 2; a += area[c]; }
+        }
+      }
+    }
+    for (const cp of comps) if (cp.kind === 'fresh') for (const c of cp.cells) lake[c] = 1;
+    const up = upstreamFirst(recv, land), order = Int32Array.from(up).reverse();
+    return {
+      recv, flow, cellsUp, lake, terminal, evaporated, fill, comp, comps, order,
+      lakes: comps.filter((cp) => cp.kind !== 'dry').length, saltLakes: comps.filter((cp) => cp.kind === 'salt').length,
+    };
   }
 
   /*
@@ -309,7 +534,7 @@
       if (ice[k] > 0.5) glaciated += area[k];
     }
     if (!glaciated) return { ice, cut, area: 0, fjords: 0, deepest: 0 };
-    const { recv, order, no } = drain(gr, z, land, z, kmDeg);
+    const { recv, order, no } = settle(gr, z, land, drain(gr, z, land, z, kmDeg), kmDeg);
     const Ai = Float64Array.from(wI);
     for (let o = no - 1; o >= 0; o--) { const k = order[o], r = recv[k]; if (r >= 0 && land[r]) Ai[r] += Ai[k]; }
     // troughs: deepest along the main ice streams, wide (a U, not a V), the floor uneven (scoured hollows)
@@ -391,8 +616,8 @@
     };
 
     // where the water goes: flood the land up from the coast
-    const { fill, recv, dist, spill, order, no } = drain(gr, z, land, zr, kmDeg);
-    if (!no) return { cut, laid, mouths: 0, mouthList: [], eroded: 0, delta: 0, basins: 0, deltaArea: 0, estuaryArea: 0, deepest: 0, recv, discharge: new Float32Array(N) };
+    const { fill, recv, dist, spill, order, no } = settle(gr, z, land, drain(gr, z, land, zr, kmDeg), kmDeg);
+    if (!no) return { cut, laid, mouths: 0, mouthList: [], eroded: 0, glacial: 0, scour: 0, basins: 0, moraine: 0, delta: 0, overflow: 0, toDeep: 0, deltaArea: 0, estuaryArea: 0, deepest: 0, recv, discharge: new Float32Array(N) };
     // basins: hollows deeper than the unevenness. Whether one overflows depends on its rain against
     // what its lake can evaporate: in a dry belt its water stays (an endorheic basin, its rim uncut), in
     // a wet one it spills over the rim and on to the sea (and the river cuts the rim down)
@@ -409,16 +634,13 @@
     }
     // the rain gathered on the way down (upstream cells first); a basin passes on what its lake cannot
     // evaporate (from the climate) or, by latitude, all of it in a wet belt and none in a dry one
+    // (A in km² of Earth-like runoff: what sets how hard the water cuts)
     const A = Float64Array.from(wA);
-    // (A in km² of Earth-like runoff: × Q1 gives m³/s); the main stream into each cell, and the land
-    // cell that reaches the sea at each mouth
-    const Q1 = (RUN / 1000) * 1e6 / 3.156e7, mainUp = new Int32Array(N).fill(-1), mouthLand = new Map();
     for (let o = no - 1; o >= 0; o--) {
       const k = order[o], r = recv[k];
       if (exitOf[k] === k) out[k] = evap ? (A[k] > 0 ? clamp(1 - cap[k] / A[k], 0, 1) : 0) : passes(k);
       if (r < 0) continue;
-      if (land[r]) { A[r] += A[k] * out[k]; if (mainUp[r] < 0 || A[k] > A[mainUp[r]]) mainUp[r] = k; }
-      else if (!mouthLand.has(r) || A[k] > A[mouthLand.get(r)]) mouthLand.set(r, k);
+      if (land[r]) A[r] += A[k] * out[k];
     }
 
     // the cutting, downstream first; hollows (a cell whose way out is higher) are left alone
@@ -442,18 +664,58 @@
     }
     for (let k = 0; k < N; k++) if (land[k] && side[k] > cut[k]) { cut[k] = side[k]; z[k] = Math.max(z0[k] - cut[k], Math.min(z0[k], 1)); cut[k] = z0[k] - z[k]; }
 
-    // the rock goes downstream: basins on the way fill up with it (halfway at most: they stay basins),
-    // what leaves a basin goes as its water does, the rest reaches the sea
-    const Qs = new Float64Array(N), mouths = new Map();
-    let eroded = 0, basins = 0;
-    for (let o = no - 1; o >= 0; o--) {
-      const k = order[o], r = recv[k];
-      Qs[k] += cut[k] * area[k] / 1000; eroded += cut[k] * area[k] / 1000;      // km³
-      const room = inBasin(k) ? Math.max(0, z0[k] + 0.5 * (spill[k] - z0[k]) - z[k]) : 0;
-      if (room > 0) cut[k] = Math.max(0, cut[k] - room);          // (what was cut there and laid back is not cut)
-      if (room > 0 && Qs[k] > 0) { const d = Math.min(room, (Qs[k] * 1000) / area[k]); z[k] += d; laid[k] += d; Qs[k] -= (d * area[k]) / 1000; basins += (d * area[k]) / 1000; }
-      if (out[k] < 1) { basins += Qs[k] * (1 - out[k]); Qs[k] *= out[k]; }
-      if (land[r]) Qs[r] += Qs[k]; else mouths.set(r, (mouths.get(r) || 0) + Qs[k]);
+    // ── from here on one surface: the water's way over the carved heights themselves (hydrology: no
+    // unevenness added), which is the drainage the map keeps and the Rivers step draws ──
+    const factor = opts.factor ?? 1, runoff = wt ? wt.runoff : Float32Array.from({ length: N }, (_, k) => (land[k] ? RUN * wet(gr.lat[Math.floor(k / W)]) : 0));
+    const hydIn = { runoff, P: wt ? wt.P : runoff, PET: wt ? wt.PET : null, liquid: !wt || wt.liquid !== false, radiusKm: R };
+    const hy = hydrology(gr, z, hydIn), up = upstreamFirst(hy.recv, land);
+
+    // the rock goes downstream, as the water does: the rivers' own cutting, and what the glaciers cut
+    // (opts.load, m per cell: carried off by their meltwater). A shallow hollow on the way silts up;
+    // a deep one fills halfway at most (it stays a lake); where a glacier ended, it leaves a moraine;
+    // a basin that never overflows keeps all that reaches it; the rest reaches the sea
+    const Qs = new Float64Array(N), mouths = new Map(), load = opts.load, ice = opts.ice, kept = new Float64Array(hy.comps.length);
+    const moraineH = 30 / factor, km3 = (k, m) => (m * area[k]) / 1000;
+    let eroded = 0, glacial = 0, basins = 0, moraine = 0, scour = 0, overflow = 0;
+    // (what the ice cut where the sea now is, a fjord, the tide takes out)
+    if (load) for (let k = 0; k < N; k++) if (!land[k] && load[k] > 0) glacial += km3(k, load[k]);
+    for (const k of up) {
+      eroded += km3(k, cut[k]); Qs[k] += km3(k, cut[k]);
+      if (load && load[k] > 0) { glacial += km3(k, load[k]); Qs[k] += km3(k, load[k]); }
+      // (a hollow that holds a lake, or never overflows, stays one: half full at most)
+      const c = hy.comp[k], hol = hy.fill[k] - z[k], keeps = c >= 0 && (hy.comps[c].depth > basinMin || hy.comps[c].kind !== 'fresh');
+      let room = hol > 0.5 ? (keeps ? 0.5 * hol : hol) : 0, isMoraine = false;
+      if (ice && ice[k] < 0.3) { let fed = false; nb(k, (n) => { if (hy.recv[n] === k && ice[n] >= 0.5) fed = true; }); if (fed && moraineH > room) { room = moraineH; isMoraine = true; } }
+      if (room > 0 && Qs[k] > 0) {
+        const d = Math.min(room, (Qs[k] * 1000) / area[k]);
+        z[k] += d; laid[k] += d; Qs[k] -= km3(k, d);
+        if (isMoraine) moraine += km3(k, d); else basins += km3(k, d);
+      }
+      if (hy.terminal[k]) { kept[c] += Qs[k]; continue; }
+      const r = hy.recv[k];
+      if (r >= 0 && land[r]) Qs[r] += Qs[k]; else mouths.set(r, (mouths.get(r) || 0) + Qs[k]);
+    }
+    // a closed basin's floor rises with what it kept, from its lowest ground up, halfway to its rim:
+    // it stays a basin; anything more spills out with the next flood and goes to the sea
+    hy.comps.forEach((cp, c) => {
+      let left = kept[c];
+      if (!(left > 0)) return;
+      const cells = cp.cells.slice().sort((a, b) => z[a] - z[b]);
+      for (const share of [0.5]) for (const k of cells) {
+        if (!(left > 0)) break;
+        const room = z0[k] + share * (hy.fill[k] - z0[k]) - z[k];
+        if (room <= 0) continue;
+        const d = Math.min(room, (left * 1000) / area[k]);
+        z[k] += d; laid[k] += d; left -= km3(k, d); basins += km3(k, d);
+      }
+      if (left > 0) overflow += left;
+    });
+    // where each mouth's river comes from, and the main stream into each cell (for estuaries)
+    const mainIn = new Int32Array(N).fill(-1), mouthFrom = new Map();
+    for (const k of up) {
+      const r = hy.recv[k];
+      if (r >= 0 && land[r]) { if (mainIn[r] < 0 || hy.flow[k] > hy.flow[mainIn[r]]) mainIn[r] = k; }
+      else if (r >= 0 && !hy.terminal[k] && (!mouthFrom.has(r) || hy.flow[k] > hy.flow[mouthFrom.get(r)])) mouthFrom.set(r, k);
     }
 
     // the mouths, the biggest first. What the tide does there (its range, m: opts.tides) decides
@@ -465,17 +727,18 @@
     // a delta cannot hold, go out over the shelf and down the slope.
     const tides = opts.tides, cellKm = gr.dx * kmDeg;
     let deltaArea = 0, delta = 0, estuaryArea = 0;
-    const shelf = -250 / (opts.factor ?? 1), cellA = cellKm * cellKm, mouthList = [];
-    const big = [...mouths].sort((a, b) => b[1] - a[1]), biggest = big.length ? big[0][1] : 0;
+    const shelf = -250 / factor, cellA = cellKm * cellKm, mouthList = [];
+    const big = [...mouths].filter(([m]) => m >= 0).sort((a, b) => b[1] - a[1]), biggest = big.length ? big[0][1] : 0;
     for (const [m, vol] of big) {
-      const kl = mouthLand.get(m), tr = tides ? tides[m] : 1.5;
-      const info = { cell: m, from: kl, sediment: vol, discharge: kl >= 0 ? A[kl] * Q1 : 0, tide: tr, kind: 'river' };
+      const kl = mouthFrom.has(m) ? mouthFrom.get(m) : -1, tr = tides ? tides[m] : 1.5;
+      const info = { cell: m, from: kl, sediment: vol, discharge: kl >= 0 ? hy.flow[kl] : 0, tide: tr, kind: 'river' };
       if (vol < biggest * 0.08) { if (info.discharge > 1000) mouthList.push(info); continue; }
       const tideShare = clamp(1 - (tr - 2) / 4, 0.1, 1);                   // what stays at the mouth
       // an estuary up the river's lower course
       if (tr > 3 && kl >= 0) {
         // a funnel up the river's lower course: widest at the mouth (wider the larger the tide), narrowing
-        // to the river; low ground within it goes under the sea, deeper along the channel
+        // to the river; low ground within it goes under the sea, deeper along the channel; the tide
+        // carries what it scours out to sea
         const n = clamp(Math.round(((tr - 2) * 20) / cellKm), 1, 8), mouthW = clamp(20 * (tr - 1), 30, 160);   // km
         let k = kl;
         for (let i = 0; i < n && k >= 0 && land[k]; i++) {
@@ -484,9 +747,9 @@
           stamp(gr, at, Math.max(rad, gr.dx * 0.55), (q, dd) => {
             if (!land[q] || z[q] <= -1 || z[q] > 60 + 12 * tr) return;
             const lower = -1 - (depth - 1) * Math.max(0, 1 - dd / Math.max(rad, gr.dx * 0.55));
-            if (lower < z[q]) { if (z[q] > 0) estuaryArea += area[q]; cut[q] += z[q] - lower; z[q] = lower; }
+            if (lower < z[q]) { if (z[q] > 0) estuaryArea += area[q]; cut[q] += z[q] - lower; scour += km3(q, z[q] - lower); z[q] = lower; }
           });
-          k = mainUp[k];
+          k = mainIn[k];
         }
         info.kind = 'estuary';
       }
@@ -507,12 +770,19 @@
       mouthList.push(info);
     }
     let deepest = 0; for (let k = 0; k < N; k++) if (cut[k] > deepest) deepest = cut[k];
-    // the drainage, for later use (a closer map of a region, or drawing): where each land cell drains
-    // to (-1 at the sea), and the water through it (m³/s)
-    const discharge = new Float32Array(N);
-    for (let k = 0; k < N; k++) if (land[k]) discharge[k] = A[k] * Q1;
-    return { cut, laid, mouths: mouths.size, mouthList, eroded, delta, basins, deltaArea, estuaryArea, deepest, recv, discharge };
+    // the drainage over the finished heights, for drawing and for closer maps: where each land cell
+    // drains, the water through it (m³/s), lakes, and where water ends inland
+    const fin = hydrology(gr, z, hydIn);
+    for (const m of mouthList) if (m.from >= 0 && z[m.from] > 0) m.discharge = fin.flow[m.from];
+    // (the rock's book: what left the land, against what was laid and what went out past the deltas)
+    const toDeep = eroded + glacial + scour - basins - moraine - delta;
+    return {
+      cut, laid, mouths: mouths.size, mouthList, eroded, glacial, scour, basins, moraine, delta, overflow, toDeep, deltaArea, estuaryArea, deepest,
+      ...settled(fin, runoff), hydIn,
+    };
   }
+  /* What a map keeps of its drainage (hydrology), with the runoff that made it. */
+  const settled = (h, runoff) => ({ recv: h.recv, discharge: Float32Array.from(h.flow), cellsUp: h.cellsUp, lake: h.lake, terminal: h.terminal, evaporated: h.evaporated, lakes: h.lakes, saltLakes: h.saltLakes, runoff });
 
   /*
    * Build the map. P: the world's plates {plates, features, start}. opts: res (cells round, 720),
@@ -808,8 +1078,9 @@
     const tideX = Math.max(0, opts.tides ?? 1), tides = tidalRange(gr, z, tideX, radius, f);
     const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, rough: 300 / f, seed, k: opts.carveK, gravity: g, tides, factor: f });
 
-    // 9. what was drawn on it
+    // 9. what was drawn on it (and the water's way over the drawing)
     for (const s of opts.strokes || []) stamp(gr, [s.lat, s.lon], s.r, (k, dd) => { z[k] += s.dz * smooth(1 - dd / s.r); cause[k] |= 32; });
+    if (carved && (opts.strokes || []).length) Object.assign(carved, settled(hydrology(gr, z, carved.hydIn), carved.hydIn.runoff));
 
     // 10. plate boundaries (Log 20): convergent near a trench, divergent on a young ridge, else transform
     const boundary = new Uint8Array(N);
@@ -829,7 +1100,11 @@
     };
     return measure(map);
   }
-  const riversOf = (c, rain) => c && { cut: c.cut, laid: c.laid, eroded: c.eroded, delta: c.delta, basins: c.basins, mouths: c.mouths, mouthList: c.mouthList, deltaArea: c.deltaArea, estuaryArea: c.estuaryArea, deepest: c.deepest, recv: c.recv, discharge: c.discharge, rain };
+  const riversOf = (c, rain) => c && {
+    cut: c.cut, laid: c.laid, eroded: c.eroded, glacial: c.glacial, scour: c.scour, delta: c.delta, basins: c.basins, moraine: c.moraine, overflow: c.overflow, toDeep: c.toDeep,
+    mouths: c.mouths, mouthList: c.mouthList, deltaArea: c.deltaArea, estuaryArea: c.estuaryArea, deepest: c.deepest,
+    recv: c.recv, discharge: c.discharge, cellsUp: c.cellsUp, lake: c.lake, terminal: c.terminal, evaporated: c.evaporated, lakes: c.lakes, saltLakes: c.saltLakes, runoff: c.runoff, rain,
+  };
   /* A map's land share, highest and deepest points (after its heights have changed). */
   function measure(map) {
     const { W, z, grid: gr } = map;
@@ -848,8 +1123,12 @@
     const s = map.carving || {}, wt = opts.water;
     // glaciers first (their troughs, basins and fjords), then the rivers in what they left
     map.glaciers = wt ? Object.assign(glaciate(map.grid, map.z, { water: wt, iceAge: opts.iceAge ?? s.iceAge, erosion: s.erosion, gravity: map.planet.gravity, radiusKm: map.planet.radiusKm, seed: s.seed, k: opts.glacierK }), { iceAge: opts.iceAge ?? s.iceAge ?? 6 }) : null;
-    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides, factor: map.planet.factor });
+    // (the rock the glaciers cut goes with the rivers: their meltwater carries it, and it is laid
+    // as moraines where the ice ended, in hollows, in deltas, or out at sea)
+    const gl = map.glaciers && map.glaciers.area > 0 ? map.glaciers : null;
+    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, rough: s.rough, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides, factor: map.planet.factor, load: gl && gl.cut, ice: gl && gl.ice });
     for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); if (map.cause) map.cause[k] |= 32; });
+    if (carved && (opts.strokes || []).length) Object.assign(carved, settled(hydrology(map.grid, map.z, carved.hydIn), carved.hydIn.runoff));
     map.rivers = riversOf(carved, wt ? 'climate' : 'latitude');
     return measure(map);
   }
@@ -857,7 +1136,7 @@
   /* Sample a built map at [lat, lon] (nearest cell). */
   const sample = (map, la, lo) => map.z[cellOf(map.grid, la, lo)];
 
-  const api = { build, carve, carveMap, glaciate, tidalRange, planetTides, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
+  const api = { build, carve, carveMap, hydrology, upstreamFirst, glaciate, tidalRange, planetTides, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.worldmap = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
