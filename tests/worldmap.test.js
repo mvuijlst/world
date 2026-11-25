@@ -56,9 +56,12 @@ test('not only Earth: heavier gravity, lower mountains and shallower trenches (Ã
   const w = G.makeWorld({ seed: 7, plates: 4 });
   const earth = M.build(w, { res: 180, gravity: 1, scaling: 2 }), heavy = M.build(w, { res: 180, gravity: 1.5, scaling: 2 }), light = M.build(w, { res: 180, gravity: 0.5, scaling: 1 });
   const ratio = (a, b) => a.highest.m / b.highest.m;
+  // the mountains: the tallest belt (the highest point of an Earth map can be its interiors, Phase C)
+  const tallest = (map) => Math.max(...map.belts.map((b) => b.crest));
   // (widths change with gravity too, so the heights are not exactly in proportion)
-  assert.ok(Math.abs(ratio(earth, heavy) - 2.25) < 0.8, `1.5 g: ${ratio(earth, heavy)} times lower (2.25 expected)`);
+  assert.ok(Math.abs(tallest(earth) / tallest(heavy) - 2.25) < 0.8, `1.5 g: belts ${tallest(earth) / tallest(heavy)} times lower (2.25 expected)`);
   assert.ok(Math.abs(ratio(light, earth) - 2) < 0.8, `0.5 g, scaling 1: ${ratio(light, earth)} times higher (2 expected)`);
+  assert.ok(heavy.highest.m < earth.highest.m, 'and the highest point lower');
   assert.ok(heavy.deepest.m > earth.deepest.m, 'trenches shallower under more gravity');
   assert.deepEqual(heavy.planet, { gravity: 1.5, factor: 2.25, radiusKm: 6371, ridgeDepth: 2600 });
 });

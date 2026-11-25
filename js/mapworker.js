@@ -7,7 +7,7 @@
  * In: {id, plates, settings, strokes, carve, iceAge, climPlanet, bioPlanet}. Out: {id, map} or {id, error}.
  */
 /* global importScripts, WS */
-importScripts('calc.js', 'sphere.js', 'rotation.js', 'supercontinent.js', 'worldmap.js', 'climate.js', 'biomes.js');
+importScripts('calc.js', 'sphere.js', 'rotation.js', 'crust.js', 'supercontinent.js', 'worldmap.js', 'climate.js', 'biomes.js');
 
 self.onmessage = (e) => {
   const { id, plates, settings, strokes, carve, iceAge, climPlanet, bioPlanet } = e.data;

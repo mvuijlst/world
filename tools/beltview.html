@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Belt check</title>
+<style>body{background:#111;color:#ddd;font:13px monospace;margin:8px}canvas{display:block;margin:6px 0;width:100%;height:auto}</style>
+<div id="out">building…</div>
+<script src="../js/calc.js"></script><script src="../js/data.js"></script><script src="../js/sphere.js"></script><script src="../js/rotation.js"></script><script src="../js/crust.js"></script>
+<script src="../js/supercontinent.js"></script><script src="../js/worldmap.js"></script><script src="../js/climate.js"></script><script src="../js/biomes.js"></script>
+<script>
+// A throwaway check (not part of the app): the app's map for seeds or example worlds (?seeds=7,21 or
+// ?ex=the-anvil), shaded relief by height, young belts outlined and labelled with what fed them.
+const { calc: C, data: D, supercontinent: G, worldmap: M, climate: K, biomes: B } = WS;
+const out = document.getElementById('out'), q = new URLSearchParams(location.search);
+function seedWorld(seed) {
+  const w = D.defaultWorld('x'), d = C.computeAll(w);
+  const P = G.makeWorld({ seed, plates: 4, crust: 0.33, start: 1000, maxSpeed: 4, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity, scaling: 2 });
+  Object.assign(w.plates, { plates: P.plates, features: P.features, nextPlate: P.nextPlate, seed: P.seed, step: P.step });
+  return w;
+}
+function build(w, res) {
+  const d = C.computeAll(w);
+  const tides = M.planetTides({ moonMass: w.moon.enabled ? w.moon.mass : 0, moonKm: w.moon.a, starMass: w.star.mass, au: w.planet.a, locked: w.planet.rotation >= 0.95 * d.planet.yearEarthDays * 24, radiusKm: d.planet.radiusKm, gravity: d.planet.gravity });
+  const s = { res, land: (w.map.land ?? w.population.land) / 100, shelf: w.map.shelf, relief: w.map.relief, seed: w.plates.seed, gravity: d.planet.gravity, scaling: w.tectonics.scaling, radiusKm: d.planet.radiusKm, ridgeDepth: w.tectonics.ridgeDepth, erosion: w.map.erosion ?? 1, cells: d.planet.cells.count, tides, carve: false, strokes: [] };
+  const map = M.build(w.plates, s), clim = K.build(map, K.planetOf(w, d));
+  if (w.map.carve !== false && w.planet.pressure >= 0.0061) M.carveMap(map, { water: B.water(map, clim, B.planetOf(w, d)), strokes: w.map.strokes || [], iceAge: w.map.iceAge ?? 6 });
+  return { map, f: map.planet.factor };
+}
+const ramp = [[0, [70, 110, 60]], [300, [120, 150, 80]], [1000, [170, 160, 100]], [2000, [160, 120, 80]], [3500, [140, 110, 100]], [5000, [230, 230, 235]]];
+const colour = (v) => { for (let i = 1; i < ramp.length; i++) if (v <= ramp[i][0]) { const [a, ca] = ramp[i - 1], [b, cb] = ramp[i], t = (v - a) / (b - a); return ca.map((x, k) => x + (cb[k] - x) * t); } return ramp[ramp.length - 1][1]; };
+function draw({ map, f }, scale, label, crop) {
+  const { W, H, z } = map, [i0, j0, cw, ch] = crop || [0, 0, W, H];
+  const cv = document.createElement('canvas'); cv.width = cw * scale; cv.height = ch * scale;
+  const g = cv.getContext('2d'), img = g.createImageData(cw, ch);
+  for (let jj = 0; jj < ch; jj++) for (let ii = 0; ii < cw; ii++) {
+    const j = j0 + jj, i = (i0 + ii) % W, k = j * W + i, v = z[k];
+    let c;
+    if (v <= 0) c = [30, 55, 95].map((x) => x * (1 + Math.max(-0.5, v / 12000)));
+    else {
+      const e = z[j * W + ((i + 1) % W)] - z[j * W + ((i - 1 + W) % W)], n = z[Math.max(0, j - 1) * W + i] - z[Math.min(H - 1, j + 1) * W + i];
+      const sh = Math.max(0.4, Math.min(1.6, 1 + 0.0012 * f * (-e + n)));
+      c = colour(v * f).map((x) => x * sh);
+    }
+    img.data.set([c[0], c[1], c[2], 255], (jj * cw + ii) * 4);
+  }
+  const off = document.createElement('canvas'); off.width = cw; off.height = ch; off.getContext('2d').putImageData(img, 0, 0);
+  g.drawImage(off, 0, 0, cv.width, cv.height);
+  // young belts: labelled where they stand highest
+  g.font = '15px monospace'; g.fillStyle = '#fff'; g.strokeStyle = '#000'; g.lineWidth = 3;
+  const top = new Map();
+  for (let k = 0; k < z.length; k++) { const b = map.beltOf[k]; if (b >= 0 && z[k] > 0 && (!top.has(b) || z[k] > z[top.get(b)])) top.set(b, k); }
+  for (const [b, k] of top) {
+    const bt = map.belts[b];
+    if (!(bt.rising || bt.active <= 50)) continue;
+    const x = ((((k % W) - i0) + W) % W) * scale, y = (Math.floor(k / W) - j0) * scale; if (x > cv.width || y < 0 || y > cv.height) continue;
+    const t = `${bt.type}${bt.atCap ? '*' : ''} ${Math.round(z[k])} m · ${Math.round(bt.fed / 1000)}k km² fed · ${bt.begin}-${Math.round(bt.active)} Ma`;
+    g.strokeText(t, x + 4, y); g.fillText(t, x + 4, y);
+  }
+  const cap = document.createElement('div'); cap.textContent = label; out.append(cap, cv);
+}
+setTimeout(async () => {
+  out.textContent = 'young belts labelled: type (* at the height cap), highest point, crust fed (km² in cross-section), began-stopped rising';
+  const ex = q.get('ex'), seeds = (q.get('seeds') || '7,21,99,3,12').split(',').map(Number), res = Number(q.get('res') || 720);
+  const worlds = ex ? await Promise.all(ex.split(',').map(async (n) => [n, await (await fetch(`../examples/${n}.worldsmith.json`)).json()])) : seeds.map((s) => [`seed ${s}`, seedWorld(s)]);
+  for (const [name, w] of worlds) {
+    const t0 = performance.now(), r = build(w, res);
+    // close looks: the tallest and the lowest young belt
+    const { map } = r, W = map.W, H = map.H, tops = new Map();
+    for (let k = 0; k < map.z.length; k++) { const b = map.beltOf[k]; if (b >= 0 && map.z[k] > 0 && (!tops.has(b) || map.z[k] > map.z[tops.get(b)])) tops.set(b, k); }
+    const young = [...tops].filter(([b]) => map.belts[b].rising || map.belts[b].active <= 50).sort((a, b) => map.z[b[1]] - map.z[a[1]]);
+    const picks = young.length > 1 ? [young[0], young[young.length - 1]] : young;
+    for (const [b, k] of picks) {
+      const cw = Math.round(W / 6), ch = Math.round(H / 5), i0 = ((k % W) - (cw >> 1) + W) % W, j0 = Math.max(0, Math.min(H - ch, Math.floor(k / W) - (ch >> 1)));
+      const bt = map.belts[b];
+      draw(r, 4, `${name}: close look, ${bt.type} ${bt.name} (${bt.begin}-${Math.round(bt.active)} Ma, ${Math.round(bt.fed)} km² fed${bt.atCap ? ', at the cap' : ''})`, [i0, j0, cw, ch]);
+    }
+    draw(r, 1440 / r.map.W, `${name}: highest ${Math.round(r.map.highest.m)} m, ${r.map.belts.length} belts, ${r.map.belts.filter((b) => b.rising || b.active <= 50).length} young, ${r.map.belts.filter((b) => b.atCap).length} at the cap · ${Math.round(performance.now() - t0)} ms`);
+  }
+  document.title = 'Belt check · done';
+}, 50);
+</script>

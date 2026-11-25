@@ -51,16 +51,19 @@ test('water runs downhill to the sea or out of the window, gathering on the way'
 });
 
 test('colder with height: a mountain window has colder biomes on its heights than in its valleys', () => {
-  // the world map's highest ground away from the poles
-  let best = -1; for (let k = 0; k < map.z.length; k++) if (Math.abs(map.grid.lat[Math.floor(k / map.W)]) < 50 && (best < 0 || map.z[k] > map.z[best])) best = k;
+  // the world map's highest ground in low and middle latitudes (nearer the poles even the valleys are boreal)
+  let best = -1; for (let k = 0; k < map.z.length; k++) if (Math.abs(map.grid.lat[Math.floor(k / map.W)]) < 40 &&(best < 0 || map.z[k] > map.z[best])) best = k;
   const at = [map.grid.lat[Math.floor(best / map.W)], -180 + ((best % map.W) + 0.5) * (360 / map.W)];
   const mtn = R.build(map, water, { lat: at[0], lon: at[1], span: 600, res: 192, seed: 7 });
   const land = []; for (let k = 0; k < mtn.z.length; k++) if (mtn.z[k] > 0 && !mtn.lake[k]) land.push(k);
   land.sort((a, b) => mtn.z[a] - mtn.z[b]);
-  const tenth = Math.floor(land.length / 10), cold = new Set([B.BI.ice, B.BI.tundra, B.BI.barren, B.BI.boreal]);
-  const share = (ks) => ks.filter((k) => cold.has(mtn.biome[k])).length / ks.length;
+  // (biomes by how warm a climate they need: tropical 4, temperate 3, boreal and cold desert 2, tundra 1,
+  // ice and barren rock 0; a tropical range need not reach tundra, but its heights are cooler than its valleys)
+  const tenth = Math.floor(land.length / 10), BI = B.BI;
+  const warmth = { [BI.ice]: 0, [BI.barren]: 0, [BI.tundra]: 1, [BI.boreal]: 2, [BI.colddesert]: 2, [BI.temperate]: 3, [BI.temprain]: 3, [BI.medit]: 3, [BI.grass]: 3, [BI.hotdesert]: 4, [BI.savanna]: 4, [BI.tropdry]: 4, [BI.rainforest]: 4 };
+  const mean = (ks) => { const v = ks.map((k) => warmth[mtn.biome[k]]).filter((x) => x != null); return v.reduce((a, b) => a + b, 0) / v.length; };
   assert.ok(mtn.z[land[land.length - 1]] - mtn.z[land[0]] > 1500, 'a window with relief');
-  assert.ok(share(land.slice(-tenth)) > share(land.slice(0, tenth)), `cold biomes: heights ${share(land.slice(-tenth))}, lowland ${share(land.slice(0, tenth))}`);
+  assert.ok(mean(land.slice(-tenth)) < mean(land.slice(0, tenth)), `biome warmth: heights ${mean(land.slice(-tenth))}, lowland ${mean(land.slice(0, tenth))}`);
 });
 
 test('the same window twice: the same map (seeded)', () => {

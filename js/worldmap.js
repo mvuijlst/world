@@ -8,8 +8,9 @@
  *     subduction zone, divergent on a young ridge, otherwise transform;
  *   - continents and shelves (Log 23): the crust rises gently inland; its rim is flooded shelf, wide
  *     on passive margins, narrow on active ones; sea level is set so land covers the share asked for;
- *   - land topography (Log 24): mountain belts by type and by how long ago they stopped rising
- *     (worn down after), large igneous provinces as plateaus;
+ *   - land topography (Log 24): mountain belts from what their plates did (js/crust.js: the crust
+ *     fed to each as the plates closed, worn by erosion, standing on what is left), large igneous
+ *     provinces as plateaus;
  *   - islands (Log 22): island arcs, and hotspot volcanoes that sink into seamounts as they age;
  *   - sea topography (Log 26): depth from the ocean floor's age (ridges shallow, old floor deep),
  *     continental slopes, trenches off subduction zones, oceanic plateaus.
@@ -17,7 +18,8 @@
  *
  * Not only Earth: like the Tectonics step, heights and widths are divided by g^scaling (gravity in
  * Earth g; scaling 1-2, 2 by default), widths are set in km and turned into degrees by the planet's
- * radius, and the sea floor follows the world's own ridge depth and depth curve.
+ * radius, and the sea floor follows the world's own ridge depth and depth curve. (Mountain belts follow
+ * from their crust instead: the most it holds up, and the relief rock keeps, ÷ g^scaling.)
  */
 (function (root) {
   'use strict';
@@ -26,12 +28,15 @@
   const Q = node ? require('./rotation.js') : root.WS.rotation;
   const G = node ? require('./supercontinent.js') : root.WS.supercontinent;
   const C = node ? require('./calc.js') : root.WS.calc;
+  const CR = node ? require('./crust.js') : root.WS.crust;
   const D2R = Math.PI / 180, R2D = 180 / Math.PI;
   const OCEAN_LIFE = 200;                                    // older ocean floor has been subducted
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const smooth = (t) => { const x = clamp(t, 0, 1); return x * x * (3 - 2 * x); };
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
   /* A seeded random sequence from a string (a feature's id): the same feature, the same draws. */
   const hashRng = (str) => {
     let a = 2166136261;
@@ -801,7 +806,7 @@
     const seed = (opts.seed ?? P.seed ?? 1) >>> 0, nz = noise3(seed ^ 0x6d61), shelfF = opts.shelf ?? 1;
     // the planet: heights and widths shrink as gravity grows (÷ g^scaling); km become degrees by its radius
     const g = Math.max(0.05, opts.gravity ?? 1), f = g ** clamp(opts.scaling ?? 2, 0, 3), radius = opts.radiusKm ?? 6371;
-    const H = (metres) => metres / f, relief = (opts.relief ?? 1) / f;
+    const H = (metres) => metres / f;
     const km = (k) => ((k / f) * 180) / (Math.PI * radius);           // a mountain feature's width on Earth, in degrees here (÷ g^scaling)
     // the lie of the land (coasts, shelves, basins, how far inland) does not shrink with gravity: only
     // what stands up does (ranges, trenches, volcanoes); this is a plain distance, in degrees
@@ -867,73 +872,100 @@
     const activeMargin = new Uint8Array(N);
     for (const t of trenches) stamp(gr, S.latLon(t.v), geo(550), (k) => { activeMargin[k] = 1; });
 
-    // mountain belts (Log 24): heights by type (a collision range, a plateau behind one, a cordillera,
-    // accreted highlands), worn down once they stop rising: Alps-like while young, Appalachian after
-    // some 250 Myr, low hills after a billion years
-    const oro = new Float32Array(N), plat = new Float32Array(N);
-    const PEAK = { collision: 6600, cordillera: 4600, accretion: 2600, plateau: 3800 };
-    const worn = (since) => 0.12 + 0.88 * Math.exp(-since / 110);
     // erosion: × opts.erosion, and by latitude as a stand-in for the climate (which is worked out from
     // this map): faster where air rises and it rains (the equator, the fronts between circulation cells),
     // slower in the dry belts where it sinks, and near the frozen poles. Averaged over the globe it is 1.
-    // Times since a feature stopped growing are scaled by it, as if that much more time had passed.
     const E = clamp(opts.erosion ?? 1, 0, 5), nCells = clamp(Math.round(opts.cells ?? 3), 1, 9);
     const wetRaw = (lat) => { const a = Math.abs(lat); return (0.35 + 1.3 * (0.5 + 0.5 * Math.cos((Math.PI * nCells * a) / 90))) * (1 - 0.7 * smooth((a - 60) / 25)); };
     let wetMean = 0, wetW = 0;
     for (let l = 0.25; l < 90; l += 0.5) { const c = Math.cos(l * D2R); wetMean += wetRaw(l) * c; wetW += c; }
     wetMean /= wetW;
+    // (igneous provinces and hotspots: the time since they formed is scaled by it, as if that much more had passed)
     const rate = (lat) => (E * wetRaw(lat)) / wetMean;
     const latOf = (coords) => S.latLon(S.centroid(coords))[0];
-    // the thickened crust under a belt holds the ground up after the peaks are gone (the Appalachians),
-    // but it is worn away too: after a billion years or so a belt is a flat shield (the Grenville)
-    const rootW = new Float32Array(N);
-    // A belt is not a flat-topped block: it rises from its edges to a crest along its middle, has peaks
-    // and passes along its length, and parallel ranges within it. So each belt's height follows the
-    // distance in from its edge (relative to its half-width), times a slow variation along it, times
-    // parallel ridges at that distance (a few hundred km apart, wandering). Plateaus stay flat-topped.
-    const inBelt = new Int32Array(N).fill(-1), dEdge = new Float32Array(N);
-    const dyDeg = 180 / gr.H;
-    let beltNo = 0;
-    for (const o of P.features.filter((x) => x.kind === 'orogen' && live(x) && x.coords.length >= 3)) {
-      const pl = placed(o), into = o.type === 'plateau' ? plat : oro;
-      const since = Math.max(0, (o.active ?? 0) - age) * rate(latOf(pl));
-      const h = (PEAK[o.type] ?? 3000) * (o.type === 'plateau' ? Math.exp(-since / 60) : worn(since) * (since > 500 ? Math.exp(-(since - 500) / 500) : 1)) * relief;
-      const root = Math.exp(-since / 500);
-      const cells = [], id = beltNo++;
-      fillPolygon(gr, pl, (k) => { if (inBelt[k] !== id) { inBelt[k] = id; cells.push(k); } if (root > rootW[k]) rootW[k] = root; });
-      if (!cells.length) continue;
-      if (o.type === 'plateau') { for (const k of cells) if (h > into[k]) into[k] = h; continue; }
-      // distance in from the edge (degrees), by relaxing over the belt's cells
-      const nbr = (k, f) => {
-        const j = Math.floor(k / W), i = k - j * W, dx = dyDeg * Math.max(0.05, gr.cosl[j]);
-        f(j * W + ((i + 1) % W), dx); f(j * W + ((i - 1 + W) % W), dx);
-        if (j > 0) f(k - W, dyDeg); if (j + 1 < gr.H) f(k + W, dyDeg);
-      };
-      for (const k of cells) { let edge = false; nbr(k, (n) => { if (inBelt[n] !== id) edge = true; }); dEdge[k] = edge ? 0.5 * dyDeg : 1e9; }
-      for (let pass = 0, moved = true; moved && pass < 400; pass++) {
-        moved = false;
-        for (const k of cells) nbr(k, (n, step) => { if (inBelt[n] === id && dEdge[n] + step < dEdge[k] - 1e-6) { dEdge[k] = dEdge[n] + step; moved = true; } });
-      }
-      let half = 0; for (const k of cells) half = Math.max(half, dEdge[k]);
-      const lam = km(260);
-      for (const k of cells) {
-        // edges to crest, the foothills fading out along a ragged line rather than the outline; how much
-        // of the belt's width stands up changes along it (a range is not a strip of even width)
-        const wide = 0.4 + 0.6 * smooth((fbm(k, 6, 2) + 0.28) / 0.56);
-        const t = clamp((dEdge[k] / Math.max(half, 1e-6) - (1 - wide)) / wide + 0.3 * fbm(k, 8, 3), 0, 1);
-        const profile = 0.05 + 0.95 * Math.pow(smooth(t * 1.25), 0.85);
-        // massifs, passes and gaps along it, a few hundred km apart
-        const along = 0.12 + 1.08 * smooth((fbm(k, 12, 3) + 0.2) / 0.42);
-        const par = 0.5 + 0.5 * Math.cos((2 * Math.PI * (dEdge[k] + 0.6 * lam * fbm(k, 5, 2))) / lam);
-        const v = h * profile * along * (0.88 + 0.17 * par);
-        if (v > into[k]) into[k] = v;
-      }
-    }
-    // what raised each cell (for the fidelity rules, js/fidelity.js): 1 belt, 2 plateau, 4 igneous
-    // province, 8 hotspot, 16 island arc, 32 drawn with the brush
+
+    // what raised each cell (for the fidelity rules, js/fidelity.js): 1 belt, 2 plateau (older maps; belts
+    // make their own plateaus now), 4 igneous province, 8 hotspot, 16 island arc, 32 drawn with the brush
     const cause = new Uint8Array(N);
-    for (let k = 0; k < N; k++) { if (inBelt[k] >= 0) cause[k] |= 1; if (plat[k] > 0) cause[k] |= 2; }
-    const oroS = blur(gr, oro, Math.max(1, Math.round(km(65) / gr.dx)), 2), platS = blur(gr, plat, Math.max(1, Math.round(km(120) / gr.dx)), 2);
+    // mountain belts (Log 24), each from what its plates did (js/crust.js): crust fed to it as they closed,
+    // worn by erosion all the while and after, standing on what is left (Airy isostasy), so an old belt
+    // still stands on its thickened crust. Point by point along each belt: where the plates closed faster
+    // it is higher and wider. A belt rises from its edges to its crest at the wedge's taper; where its crust
+    // reaches the most that rock holds up, it widens into a plateau instead.
+    // The rain the belts erode under is a STAND-IN: the latitude curve above (at each point of a belt, where
+    // its plate carried it), until the climate is worked out with the land (Phase D).
+    const oro = new Float32Array(N), beltOf = new Int32Array(N).fill(-1);
+    const beltRows = CR.beltsAt(P, { radiusKm: radius, gravity: g, scaling: opts.scaling ?? 2, age, erosion: E, rain: (lat) => wetRaw(lat) / wetMean, key: `cells ${nCells}`, model: m });
+    const tanW = Math.tan(CR.C.TAPER_DEG * D2R), kmDeg = (Math.PI * radius) / 180, reliefX = opts.relief ?? 1;
+    const orogens = new Map(P.features.filter((x) => x.kind === 'orogen').map((x) => [x.id, x]));
+    const belts = [], dyDeg = 180 / gr.H, lam = km(260);
+    for (const b of beltRows) {
+      const o = orogens.get(b.id);
+      if (!b.born || !o || !live(o)) continue;
+      const st = b.stations, idx = belts.length;
+      // a station's value at a fraction along the belt
+      const val = (q, key) => {
+        if (st.length === 1) return st[0][key];
+        let i = 1; while (i < st.length - 1 && st[i].frac < q) i++;
+        const a = st[i - 1], c = st[i], u = c.frac > a.frac ? clamp((q - a.frac) / (c.frac - a.frac), 0, 1) : 0;
+        return a[key] + (c[key] - a[key]) * u;
+      };
+      // (parallel ridges within it, a few hundred km apart, wandering: kept as they were until the carving
+      // shapes the belt, Phase D)
+      const put = (k, T, dEdgeDeg) => {
+        if (!(T > 0)) return;
+        cause[k] |= 1;
+        const par = 0.5 + 0.5 * Math.cos((2 * Math.PI * (dEdgeDeg + 0.6 * lam * fbm(k, 5, 2))) / lam);
+        const h = CR.airy(T) * reliefX * (0.88 + 0.17 * par);
+        if (h > oro[k]) { oro[k] = h; beltOf[k] = idx; }
+      };
+      if (b.ref === 'drawn') {
+        // drawn by hand: its outline as drawn, rising from the edge at the wedge's taper to the crest its crust allows
+        const cells = [], dEdge = new Map();
+        fillPolygon(gr, placed(o), (k) => { if (!dEdge.has(k)) { dEdge.set(k, 1e9); cells.push(k); } });
+        const nbr = (k, f) => {
+          const j = Math.floor(k / W), i = k - j * W, dx = dyDeg * Math.max(0.05, gr.cosl[j]);
+          f(j * W + ((i + 1) % W), dx); f(j * W + ((i - 1 + W) % W), dx);
+          if (j > 0) f(k - W, dyDeg); if (j + 1 < gr.H) f(k + W, dyDeg);
+        };
+        for (const k of cells) { let edge = false; nbr(k, (n) => { if (!dEdge.has(n)) edge = true; }); if (edge) dEdge.set(k, 0.5 * dyDeg); }
+        for (let pass = 0, moved = true; moved && pass < 400; pass++) {
+          moved = false;
+          for (const k of cells) nbr(k, (n, sp) => { if (dEdge.has(n) && dEdge.get(n) + sp < dEdge.get(k) - 1e-6) { dEdge.set(k, dEdge.get(n) + sp); moved = true; } });
+        }
+        for (const k of cells) put(k, Math.min(st[0].crestDT, dEdge.get(k) * kmDeg * tanW), dEdge.get(k));
+      } else {
+        // along its line: each cell takes the nearest point of it, and how far across it (and past an end) it lies
+        const rot = m.absolute(b.plateId, age), line = b.line.map((v) => Q.rotate(rot, v)), al = CR.alongLine(line);
+        const inl = b.inland ? CR.alongLine(b.inland.map((v) => Q.rotate(rot, v))) : null;
+        const n = Math.max(2, Math.ceil(al.length / 0.4) + 1), pts = [];
+        for (let j = 0; j < n; j++) {
+          const q = j / (n - 1), [p, tg] = al.at(q), nrm = norm(cross(p, tg));
+          // (a cordillera lies inland of its line: towards its outline's other side)
+          const sg = inl ? Math.sign(dot(sub3(inl.at(q)[0], p), nrm)) || 1 : 1;
+          pts.push({ p, tg, nrm, sg, w: val(q, 'width'), ct: val(q, 'crestDT') });
+        }
+        const best = new Map();
+        pts.forEach((pt, j) => {
+          if (!(pt.w > 0)) return;
+          const reach = (b.ref === 'edge' ? pt.w : pt.w / 2) / kmDeg + 1.5 * gr.dx;
+          stamp(gr, S.latLon(pt.p), reach, (k, dd) => { const cur = best.get(k); if (!cur || dd < cur[0]) best.set(k, [dd, j]); });
+        });
+        for (const [k, [, j]] of best) {
+          const pt = pts[j], c = at(k), d = sub3(c, pt.p);
+          const across = Math.asin(clamp(dot(c, pt.nrm), -1, 1)) * R2D * kmDeg * pt.sg;
+          let beyond = 0;                                                       // past an end of the line
+          if (j === 0) beyond = Math.max(0, -dot(d, pt.tg)); else if (j === pts.length - 1) beyond = Math.max(0, dot(d, pt.tg));
+          const dIn = b.ref === 'edge' ? (across >= 0 ? Math.min(across, pt.w - across) : -1) : pt.w / 2 - Math.abs(across);
+          const dEdge = dIn - beyond * R2D * kmDeg;
+          if (dEdge > 0) put(k, Math.min(pt.ct, dEdge * tanW), dEdge / kmDeg);
+        }
+      }
+      const top = st.reduce((x, s) => (s.crest > x.crest ? s : x), st[0]);
+      belts.push({ id: b.id, name: o.name, type: b.type, path: b.path, fed: b.fed, atCap: b.atCap, rising: b.rising, begin: o.begin ?? start, active: o.active ?? 0, crest: top.crest * reliefX, width: Math.max(...st.map((s) => s.width)) });
+    }
+    // (no smoothing: a belt's wedge already falls to nothing at its edges)
+    const oroS = oro;
 
     // 4. where the coast runs (Log 23): not the crust's outline but a field of "how far inland", the
     // distance into the crust (negative out at sea) roughened by domain-warped fractal noise, so the
@@ -945,17 +977,13 @@
     };
     // three scales (the noise's spread is about 0.35): peninsulas and gulfs shifting the coast by some
     // 450 km, bays and headlands by 140 km, coves by 45 km
-    // a mountain belt stands on crust thickened beneath it, and stays high long after it is worn down
-    // (the Appalachians, the Urals): the ground under any belt, however old, is lifted
-    const beltS = blur(gr, rootW, Math.max(1, Math.round(km(90) / gr.dx)), 2);
     const reachK = geo(3000), Pot = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       const sd = cont[k] ? dIn[k] : -dOut[k];
       Pot[k] = Math.abs(sd) > reachK ? sd : sd + geo(1290) * warped(k, 2.2, 6, 0.4) + geo(400) * warped(k, 7.5, 4, 0.2) + geo(130) * fbm(k, 22, 3);
       // mountains and plateaus near the crust stand above the sea: ranges join the land they rise on
       // (on the continent and just off it: a range does not lay a strip of land out over the sea beyond)
-      if (sd > -geo(60) && (oroS[k] > H(300) || platS[k] > H(300))) Pot[k] += geo(500) * clamp(Math.max(oroS[k], platS[k]) / H(1500), 0, 1) * smooth((sd + geo(60)) / geo(160));
-      if (sd > -geo(30) && beltS[k] > 0.02) Pot[k] += geo(650) * smooth(beltS[k] * 1.6) * smooth((sd + geo(30)) / geo(200));
+      if (sd > -geo(60) && oroS[k] > H(300)) Pot[k] += geo(500) * clamp(oroS[k] / H(1500), 0, 1) * smooth((sd + geo(60)) / geo(160));
     }
     // 5. sea level: the coast is where that field crosses the level that leaves the share asked for dry
     const crustShare = shareAbove(gr, Float32Array.from(cont, (c) => (c ? 1 : 0)), 0.5);
@@ -1002,7 +1030,7 @@
     for (let k = 0; k < N; k++) {
       if (!dry(k)) continue;
       const ridged = 1 - Math.abs(warped(k, 9, 5, 0.15));        // sharp, branching crests
-      z[k] += oroS[k] * (0.4 + 0.8 * ridged * ridged) + platS[k] * (0.85 + 0.15 * fbm(k, 6, 3)) + lipS[k] * 0.8;
+      z[k] += oroS[k] * (0.4 + 0.8 * ridged * ridged) + lipS[k] * 0.8;
     }
 
     // 7. the sea floor (Log 26): shelf, slope, then depth from the floor's age; oceanic plateaus
@@ -1093,7 +1121,7 @@
     }
 
     const map = {
-      W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr, cause,
+      W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr, cause, belts, beltOf, beltH: oroS, age,
       crust: crustShare, target, sea, at, rivers: riversOf(carved, 'latitude'), tides, tideX,
       // what carveMap needs to carve it later, with the climate's water
       carving: { erosion: E, seed, rough: 300 / f, k: opts.carveK, wet: (lat) => wetRaw(lat) / wetMean },

@@ -38,8 +38,9 @@
     below200: [0.2, 0.35], above2000: [0.05, 0.15], rainShadow: [2, 10],
     hack: [0.5, 0.65], hackCarve: [0.5, 0.65], concavity: [0.35, 0.6], concavityCarve: [0.35, 0.6],
     lakes: [0.01, 0.05], endorheic: [0.05, 0.3], outputNoiseWorld: [0, 0], outputNoiseRegion: [0, 0],
+    beltRank: [0.7, 1], beltNoiseR2: [0.85, 1], beltsAtCap: [0, 5], highestAllowed: [0, 1],
   };
-  const EARTH_ONLY = ['below200', 'above2000', 'rainShadow', 'lakes', 'endorheic', 'hack', 'hackCarve', 'concavity', 'concavityCarve'];
+  const EARTH_ONLY = ['below200', 'above2000', 'rainShadow', 'lakes', 'endorheic', 'hack', 'hackCarve', 'concavity', 'concavityCarve', 'beltsAtCap'];
   const inRange = (id, v) => { const t = TARGETS[id]; return !t || (v != null && v >= t[0] - 1e-12 && v <= t[1] + 1e-12); };
 
   /*
@@ -70,9 +71,6 @@
     { file: 'js/worldmap.js', at: 'const fbm = (k, freq, oct) => nz(', kind: 'source', what: 'Fractal noise at a cell.' },
     { file: 'js/worldmap.js', at: 'const nA = noise3(seed ^ 0xa11)', kind: 'source', what: 'Domain warp.' },
     { file: 'js/worldmap.js', at: 'return nz(x + amt * nA(', kind: 'source', what: 'Domain-warped noise.' },
-    { file: 'js/worldmap.js', at: '0.4 + 0.6 * smooth((fbm(k, 6, 2)', kind: 'output', what: 'How much of a belt’s width stands up.', bounds: '40-100 %' },
-    { file: 'js/worldmap.js', at: '0.3 * fbm(k, 8, 3)', kind: 'output', what: 'Ragged foothill line of a belt.', bounds: '±0.3 of its half-width' },
-    { file: 'js/worldmap.js', at: '1.08 * smooth((fbm(k, 12, 3)', kind: 'output', what: 'Massifs, passes and gaps along a belt.', bounds: '×0.12-1.2' },
     { file: 'js/worldmap.js', at: '0.6 * lam * fbm(k, 5, 2)', kind: 'output', what: 'Parallel ridges in a belt.', bounds: '±0.6 × 260 km' },
     { file: 'js/worldmap.js', at: 'geo(1290) * warped(k, 2.2, 6, 0.4)', kind: 'output', what: 'The coastline.', bounds: '±1290, 400, 130 km' },
     { file: 'js/worldmap.js', at: 'const big = warped(k, 1.3, 4, 0.6)', kind: 'output', what: 'A continent’s uplands and basins.', bounds: '+900 / −500 m' },
@@ -81,7 +79,6 @@
     { file: 'js/worldmap.js', at: '30 + 40 * (fbm(k, 5, 2) + 0.35)', kind: 'output', what: 'Height of basin floors.', bounds: '30-70 m' },
     { file: 'js/worldmap.js', at: '0.35 + 1.4 * warped(k, 6, 4, 0.5)', kind: 'output', what: 'Shape of oceanic plateaus and flood basalts.', bounds: '×0-1' },
     { file: 'js/worldmap.js', at: '1 - Math.abs(warped(k, 9, 5, 0.15))', kind: 'output', what: 'Crests inside a belt.', bounds: '×0.4-1.2' },
-    { file: 'js/worldmap.js', at: '0.15 * fbm(k, 6, 3)', kind: 'output', what: 'Plateau surface.', bounds: '×0.85 ± 0.15' },
     { file: 'js/worldmap.js', at: '0.5 * (fbm(k, 1.5, 2) + 1)', kind: 'output', what: 'Shelf width.', bounds: '×0.6-1.6' },
     { file: 'js/worldmap.js', at: 'hills = H(180) * fbm(k, 14, 3)', kind: 'output', what: 'Abyssal hills.', bounds: '±180 m' },
     { file: 'js/worldmap.js', at: '300 * fbm(k, 2, 3)', kind: 'output', what: 'Depth of old sea floor.', bounds: '±300 m, −150 m' },
@@ -427,6 +424,48 @@
     return { median: ratios.length ? ratios[ratios.length >> 1] : null, n: ratios.length };
   }
 
+  // ── mountain belts (worldmap.js: what the plates fed each, js/crust.js) ──
+  /* Spearman's rank correlation of two lists (null under 3). */
+  function spearman(x, y) {
+    const n = x.length;
+    if (n < 3) return null;
+    const rank = (a) => { const idx = a.map((v, i) => [v, i]).sort((p, q) => p[0] - q[0]), r = new Array(n); idx.forEach(([, i], k) => { r[i] = k; }); return r; };
+    const rx = rank(x), ry = rank(y), mx = (n - 1) / 2;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < n; i++) { sxy += (rx[i] - mx) * (ry[i] - mx); sxx += (rx[i] - mx) ** 2; syy += (ry[i] - mx) ** 2; }
+    return sxy / Math.sqrt(sxx * syy);
+  }
+  /* Each belt the map drew: its height on the finished map (the 90th percentile of the land where it is
+     the highest belt), the crust the plates fed it (km² in cross-section: shortening × crust kept), whether
+     it is young (still rising, or stopped within 50 Myr of the map's age) and at the height cap. */
+  function beltHeights(map) {
+    if (!map.belts || !map.beltOf) return [];
+    const hs = map.belts.map(() => []);
+    for (let k = 0; k < map.z.length; k++) { const b = map.beltOf[k]; if (b >= 0 && map.z[k] > 0) hs[b].push(map.z[k]); }
+    const age = map.age ?? 0;
+    return map.belts.map((b, i) => {
+      const a = hs[i].sort((x, y) => x - y);
+      return { id: b.id, type: b.type, fed: b.fed, height: a.length ? a[Math.floor(0.9 * (a.length - 1))] : null, young: b.rising || (b.active ?? 0) - age <= 50, atCap: b.atCap };
+    });
+  }
+  /* Rank correlation of belt height on the finished map with the crust the plates fed it, young belts. */
+  function beltRank(map) {
+    const bs = beltHeights(map).filter((b) => b.young && b.height != null && b.fed > 0);
+    return { rho: spearman(bs.map((b) => b.fed), bs.map((b) => b.height)), n: bs.length };
+  }
+  /* How much of the belts' height in one build the other explains (R², land in both where a belt itself
+     stands at least 1000 m ÷ g^scaling: where the belt, not the ground under it, makes the height). */
+  function beltR2(a, b) {
+    let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    const tall = 1000 / factorOf(a);
+    for (let k = 0; k < a.z.length; k++) if (a.beltH && a.beltH[k] >= tall && a.z[k] > 0 && b.z[k] > 0) { const x = b.z[k], y = a.z[k], w = weight(a, k); n += w; sx += w * x; sy += w * y; sxx += w * x * x; syy += w * y * y; sxy += w * x * y; }
+    if (!n) return null;
+    const r = (sxy / n - (sx / n) * (sy / n)) / Math.sqrt((sxx / n - (sx / n) ** 2) * (syy / n - (sy / n) ** 2));
+    return r * r;
+  }
+  /* The map's highest point as a share of what the planet's gravity allows (Everest's 8850 m ÷ g^scaling). */
+  const highestAllowed = (map) => (map.highest ? map.highest.m / (8850 / factorOf(map)) : null);
+
   // ── comparing two builds ──
   /* Land in both against land in either (area), and the share of the globe that changed. */
   function landOverlap(a, b) {
@@ -469,6 +508,10 @@
       rockLaid: rockLaid(map).share, rockParts: rockLaid(map).parts, toDeep: rockLaid(map).toDeep,
       r1Carve: carveUphill(map, fill).share, valleysCarve: valleysCarve(map), roughCarve: map.rivers ? 2 * (map.carving?.rough ?? 0) : null,
     });
+    if (map.belts) {
+      const br = beltRank(map);
+      Object.assign(out, { beltRank: br.rho, beltsYoung: br.n, beltsAtCap: map.belts.filter((b) => b.atCap).length, beltsDrawn: map.belts.length, highestAllowed: highestAllowed(map) });
+    }
     if (map.rivers) {
       const netC = network(map, map.rivers.recv, null), hc = hack(map, netC, null), cc = concavity(map, netC, null);
       Object.assign(out, { hackCarve: hc.h, concavityCarve: cc.theta, deltas: map.rivers.mouthList.filter((m) => /delta/.test(m.kind)).length, estuaries: map.rivers.mouthList.filter((m) => m.kind === 'estuary').length });
@@ -499,7 +542,7 @@
     return out;
   }
 
-  const api = { TARGETS, EARTH_ONLY, RANDOM, inRange, scan, filled, uphill, carveUphill, lakesInHollows, waterBalance, rockBalance, rockLaid, uncaused, hypsometry, step, valleys, valleysCarve, riversAgree, network, hack, concavity, rainShadow, landOverlap, heightR2, riversNear, mouthsKept, measure, rules, fit };
+  const api = { TARGETS, EARTH_ONLY, RANDOM, inRange, scan, filled, uphill, carveUphill, lakesInHollows, waterBalance, rockBalance, rockLaid, uncaused, hypsometry, step, valleys, valleysCarve, riversAgree, network, hack, concavity, rainShadow, landOverlap, heightR2, riversNear, mouthsKept, measure, rules, fit, spearman, beltHeights, beltRank, beltR2, highestAllowed };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.fidelity = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

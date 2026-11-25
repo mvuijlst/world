@@ -7,7 +7,7 @@
  * frame, water, lake, recv, flow, planet, rivers}), water (the world map's, or null), opts}. Out: {id, region} or {id, error}.
  */
 /* global importScripts, WS */
-importScripts('calc.js', 'sphere.js', 'rotation.js', 'supercontinent.js', 'worldmap.js', 'biomes.js', 'region.js');
+importScripts('calc.js', 'sphere.js', 'rotation.js', 'crust.js', 'supercontinent.js', 'worldmap.js', 'biomes.js', 'region.js');
 
 self.onmessage = (e) => {
   const { id, map, water, opts } = e.data;

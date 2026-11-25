@@ -93,7 +93,7 @@ function run(w, res = 720, compare = true) {
     const q = pipeline(w, { res, carveSeed: (w.plates.seed ?? 1) + 1 });                // only the carving's noise seed differs
     const ov = F.landOverlap(p.map, other);
     Object.assign(out, {
-      landKept: ov.iou, flip: ov.flip, landNoNoise: F.landOverlap(p.map, flat).iou, heightR2: F.heightR2(p.map, flat),
+      landKept: ov.iou, flip: ov.flip, landNoNoise: F.landOverlap(p.map, flat).iou, heightR2: F.heightR2(p.map, flat), beltNoiseR2: F.beltR2(p.map, flat),
       bigRiversNear: F.riversNear(p.map, p.bio, q.bio, 5000, 2), mouthsKept: F.mouthsKept(p.map, p.bio, q.bio),
     });
   }
@@ -114,6 +114,10 @@ const ROWS = [
   ['', 'Rock cut that is laid somewhere on the map', 'rockLaid', pc],
   ['', '  basins / moraines / deltas / deep sea, % of the cut', 'rockParts', (x) => (x == null ? '—' : x.map((v) => (v * 100).toFixed(v < 0.1 ? 1 : 0)).join(' / '))],
   ['R6', 'High land with no tectonic cause near', 'r6Uncaused', pc],
+  ['', 'Young belts: height against the crust the plates fed them (rank, n)', 'beltRank', (x, r) => (x == null ? (r && r.beltsYoung === 0 ? 'no young belts' : '—') : r && r.beltsYoung != null ? `${x.toFixed(2)} (${r.beltsYoung})` : x.toFixed(2))],
+  ['', 'Belt height explained by the noise-free build (R²)', 'beltNoiseR2', n2],
+  ['', 'Belts at the height cap', 'beltsAtCap', (x, r) => (x == null ? '—' : r && r.beltsDrawn != null ? `${x} of ${r.beltsDrawn}` : String(x))],
+  ['', 'Highest point, share of what gravity allows', 'highestAllowed', pc],
   ['', 'Land kept when only the map’s noise seed changes', 'landKept', pc],
   ['', '  share of the globe that flips', 'flip', pc],
   ['', 'Land overlap with the map’s noise off', 'landNoNoise', pc],
@@ -147,7 +151,7 @@ function print(results, scan, earthLike) {
   const cols = results.map((r) => r.name), rows = [];
   for (const [rule, label, id, f] of ROWS) {
     const vals = results.map((r) => (id.startsWith('outputNoise') ? scan[id] : r[id]));
-    const judged = vals.filter((v, i) => v != null && (!F.EARTH_ONLY.includes(id) || earthLike[i]));
+    const judged = vals.filter((v, i) => (v != null || (id === 'beltRank' && results[i].beltsDrawn > 0)) && (!F.EARTH_ONLY.includes(id) || earthLike[i]));
     const ok = judged.every((v) => F.inRange(id, v));
     rows.push([rule, label, ...vals.map((v, i) => f(v, results[i])), target(id, f) + (F.EARTH_ONLY.includes(id) && F.TARGETS[id] ? ' (Earth)' : ''), F.TARGETS[id] && judged.length ? (ok ? 'ok' : 'FAIL') : '']);
   }

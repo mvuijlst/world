@@ -238,8 +238,11 @@ test('advance carries a history on to a new present, keeping the old marks', () 
     assert.equal(new Set(ids).size, ids.length, `${mode}: ids stay unique`);
     for (const f of a.features) for (const k of ['begin', 'end', 'active']) if (f[k] != null) assert.ok(f[k] >= 0 && f[k] <= a.start, `${mode}: ${f.id} ${k} ${f[k]}`);
     // the old marks keep their shapes, D Myr older; old trenches stop at the old present
-    // (a break-up splits the crust it rifts, and the lines across the rift, into new pieces)
-    for (const f of mode === 'breakup' ? [] : w.features) {
+    // (a break-up splits the crust it rifts, and the lines across the rift, into new pieces; trenches
+    // and arcs that only began at the old present go, with their belts: the new stretch makes its own)
+    const atPresent = (f) => f.auto && (f.kind === 'subduction' || (f.kind === 'arc' && !f.accreted)) && f.end == null && (f.begin ?? w.start) <= 1e-9;
+    const dropped = new Set(w.features.filter(atPresent).map((f) => f.id));
+    for (const f of mode === 'breakup' ? [] : w.features.filter((x) => !dropped.has(x.id) && !(x.kind === 'orogen' && dropped.has(x.id.slice(1))))) {
       const g = a.features.find((x) => x.id === f.id);
       assert.ok(g, `${mode}: ${f.id} kept`);
       assert.deepEqual(g.coords, f.coords);
@@ -265,4 +268,15 @@ test('no trench or island arc ends at the age it begins', () => {
     const ids = new Set(w.features.map((f) => f.id));
     for (const o of w.features.filter((f) => f.kind === 'orogen' && f.type === 'cordillera' && f.auto)) assert.ok(ids.has(o.id.slice(1)), `${o.name} has its trench`);
   }
+});
+
+test('a supercontinent gathered at the middle drifts on: plates never stop, and its margins stay active', () => {
+  // seed 7 gathers into one continent at the middle of the last run; it used to stand still there for 127 Myr
+  const w = G.makeWorld({ seed: 7, plates: 4 }), m = R.model(w.plates, w.start);
+  for (const p of w.plates) for (let a = 125; a > 0; a -= 25) {
+    const turn = R.toPole(R.mul(m.absolute(p.id, a - 25), R.inverse(m.absolute(p.id, a))));
+    assert.ok(turn.angle > 0.5, `plate ${p.id} moves between ${a} and ${a - 25} Ma (${turn.angle.toFixed(2)}°)`);
+  }
+  assert.ok(w.features.some((f) => f.kind === 'subduction' && (f.end ?? 0) < 50 && (f.begin ?? 1000) > 0), 'trenches in the last 50 Myr');
+  assert.ok(w.features.some((f) => f.kind === 'orogen' && (f.active ?? 0) <= 50), 'young mountain belts');
 });
