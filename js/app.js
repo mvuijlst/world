@@ -65,10 +65,22 @@
     app.saveTimer = null;
     const ok = WS.store.save(app.world);
     if (touch) { WS.sync.touched(app.world.id); schedulePush(); }
-    app.storageOk = ok;
+    if (!ok) storageFailed();
+    else if (WS.store.backend !== 'indexeddb') app.storageOk = true; // (IndexedDB reports through onStatus)
     showSaveState();
   }
+  function storageFailed() {
+    if (app.storageOk !== false) toast(`“${app.world.name}” could not be saved in this browser${WS.sync.state.user ? '; the server still gets it' : ': export it to keep it'}.`);
+    app.storageOk = false;
+  }
+  WS.store.onStatus(({ id, ok }) => {
+    if (!app.world || id !== app.world.id) return;
+    if (ok) app.storageOk = true; else storageFailed();
+    showSaveState();
+  });
   window.addEventListener('beforeunload', () => { if (app.saveTimer) saveNow(); });
+  // (an IndexedDB write may not finish while the page unloads: write as soon as the tab is hidden)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && app.saveTimer) saveNow(); });
 
   function showSaveState() {
     const el = saveEl();
@@ -126,7 +138,8 @@
     lastSync = Date.now();
     const currentId = app.world.id;
     const pristine = WS.sync.isPristine(currentId);
-    const { replaced, removed } = await WS.sync.syncAll();
+    const { replaced, removed, recovered } = await WS.sync.syncAll();
+    if (recovered.length) toast(`The last changes to ${recovered.map((id) => `“${(WS.store.index().find((x) => x.id === id) || {}).name || id}”`).join(', ')} were missing in this browser: taken from the server.`);
     if (pristine && WS.store.index().length > 1) {
       // a fresh template on a new device: open the newest synced world instead
       WS.store.remove(currentId);
@@ -416,7 +429,8 @@
   }
 
   // ── boot ─────────────────────────────────────────────────────────────
-  function boot() {
+  async function boot() {
+    await WS.store.ready();
     let theme = 'crt';
     try { theme = localStorage.getItem('worldsmith.theme') || 'crt'; } catch { /* ignore */ }
     applyTheme(theme);

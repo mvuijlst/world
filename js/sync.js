@@ -1,5 +1,5 @@
 /*
- * Server sync. localStorage stays the working copy, so the app works offline, from file://
+ * Server sync. The browser's copy (js/store.js) stays the working copy, so the app works offline, from file://
  * and without an account. When the page is served by the WorldSmith server and you are
  * signed in, every saved world is also sent to /api/worlds, and worlds saved on other
  * devices are fetched.
@@ -125,7 +125,7 @@
   async function syncAll() {
     if (!state.user) return { replaced: [], removed: [] };
     state.busy++; setStatus('syncing');
-    const replaced = [], removed = [];
+    const replaced = [], removed = [], recovered = [];
     try {
       const r = await api('GET', 'worlds');
       if (r.status === 401) { state.user = null; setStatus('signed-out'); return { replaced, removed }; }
@@ -137,12 +137,15 @@
           if (local.has(s.id) && !m.dirty) { WS.store.remove(s.id); dropMeta(s.id); removed.push(s.id); }
           continue;
         }
-        if (!local.has(s.id) || (s.rev !== m.rev && !m.dirty)) {
+        // (stale: this browser lost the last save of it, so the server's copy is the newer one)
+        const stale = local.has(s.id) && WS.store.isStale(s.id);
+        if (!local.has(s.id) || (s.rev !== m.rev && !m.dirty) || stale) {
           const g = await api('GET', `worlds/${encodeURIComponent(s.id)}`);
           if (g.ok) {
             WS.store.save(WS.store.migrate(g.json.data), { keepCurrent: true, keepStamp: true });
             setMeta(s.id, { rev: g.json.rev, dirty: false });
             replaced.push(s.id);
+            if (stale) { WS.store.settled(s.id); recovered.push(s.id); }
           }
         }
         local.delete(s.id);
@@ -162,7 +165,7 @@
     } finally {
       state.busy--;
     }
-    return { replaced, removed };
+    return { replaced, removed, recovered };
   }
 
   WS.sync = {
