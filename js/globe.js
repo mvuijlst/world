@@ -697,18 +697,30 @@ void main() {
       },
       /* Frame times: the last ones drawn (ms, CPU side), and n frames drawn and waited for (with the GPU). */
       stats() { const a = times.slice().sort((x, y) => x - y); return { gl: !!gl, res, frames: a.length, median: a[a.length >> 1], max: a[a.length - 1], dpr, size: [Math.round(cam.w * dpr), Math.round(cam.h * dpr)] }; },
-      bench(n = 60, what = 'drag') {
-        const out = [], g0 = Cam.grab(cam, cam.w / 2, cam.h / 2);
+      /* n frames of a drag or a zoom, at `size` device px if given: the CPU's time for each (the overlay
+         included) and, where the browser can time it, the GPU's (a promise). */
+      async bench(n = 60, what = 'drag', size = null) {
+        const keep = { w: cam.w, h: cam.h, lat: cam.lat, lon: cam.lon, alt: cam.alt, auto: cam.auto };
+        if (size) Cam.resize(cam, size[0] / dpr, size[1] / dpr);
+        const cpuT = [], qs = [], g0 = Cam.grab(cam, cam.w / 2, cam.h / 2);
         for (let i = 0; i < n; i++) {
           if (what === 'drag') Cam.drag(cam, g0, cam.w / 2 + 6 * i, cam.h / 2 + 2 * i);
           else Cam.zoomAt(cam, cam.w * 0.6, cam.h * 0.4, i < n / 2 ? 0.93 : 1 / 0.93);
-          const t0 = performance.now(); render(false);
-          if (gl) gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));          // (waits for the GPU)
-          out.push(performance.now() - t0);
+          const q = gl && timer ? gl.createQuery() : null;
+          if (q) gl.beginQuery(timer.TIME_ELAPSED_EXT, q);
+          const t0 = performance.now(); render(false); cpuT.push(performance.now() - t0);
+          if (q) { gl.endQuery(timer.TIME_ELAPSED_EXT); qs.push(q); }
         }
-        out.sort((a, b) => a - b);
-        kick();
-        return { n, median: +out[n >> 1].toFixed(2), p90: +out[Math.floor(n * 0.9)].toFixed(2), max: +out[n - 1].toFixed(2), size: [cv.width, cv.height], gl: !!gl };
+        const measured = [cv.width, cv.height];
+        const gpuT = [];
+        for (const q of qs) {
+          for (let k = 0; k < 200 && !gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE); k++) await new Promise((r) => setTimeout(r, 5));
+          if (!gl.getParameter(timer.GPU_DISJOINT_EXT)) gpuT.push(gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6);
+          gl.deleteQuery(q);
+        }
+        Object.assign(cam, keep); Cam.resize(cam, keep.w, keep.h); kick();
+        const sum = (a) => { if (!a.length) return null; a.sort((x, y) => x - y); return { median: +a[a.length >> 1].toFixed(2), p90: +a[Math.floor(a.length * 0.9)].toFixed(2), max: +a[a.length - 1].toFixed(2) }; };
+        return { n, cpu: sum(cpuT), gpu: sum(gpuT), size: measured, gl: !!gl };
       },
       camera: cam,
       destroy() {
@@ -718,6 +730,7 @@ void main() {
         el.remove(); host.classList.remove('has-viewer');
       },
     };
+    el.viewer = api;                                                     // (for the console: $('.viewer').viewer.stats())
     fit();
     return api;
   }

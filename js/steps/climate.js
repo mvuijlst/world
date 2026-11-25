@@ -5,10 +5,9 @@
 (function () {
   'use strict';
   const { h, panel, fmt, replace, info, tabs } = WS.ui;
-  const K = WS.climate, S = WS.sphere, D = WS.data;
-  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  const K = WS.climate, D = WS.data;
+  const D2R = Math.PI / 180;
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const hex = (h2) => [1, 3, 5].map((i) => parseInt(h2.slice(i, i + 2), 16));
   const ramp = (stops, x) => { if (x <= stops[0][0]) return stops[0][1]; for (let i = 1; i < stops.length; i++) if (x <= stops[i][0]) { const [a, ca] = stops[i - 1], [b, cb] = stops[i], t = (x - a) / (b - a); return ca.map((v, k) => v + (cb[k] - v) * t); } return stops[stops.length - 1][1]; };
   const TEMP = [[-40, [60, 40, 120]], [-20, [70, 90, 190]], [-5, [120, 170, 230]], [5, [180, 225, 220]], [15, [170, 210, 120]], [25, [240, 200, 80]], [35, [225, 110, 50]], [50, [150, 30, 40]]];

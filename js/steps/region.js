@@ -169,7 +169,7 @@
    * region), for what is on screen; the build is shown in place as it goes. Built detail stays where it
    * was built; around it, the world map.
    */
-  const D2R = Math.PI / 180, wrapLon = (lo) => ((((lo + 180) % 360) + 360) % 360) - 180;
+  const wrapLon = (lo) => ((((lo + 180) % 360) + 360) % 360) - 180;
   const LEVELS = { region: { L: REGION, name: 'region', min: 200, max: 3200 }, closeup: { L: CLOSEUP, name: 'close-up', min: 10, max: 200 } };
   /* Whether [lat, lon] lies in a frame. */
   const inFrame = (fr, la, lo) => { let d = lo - fr.west; d = ((d % 360) + 360) % 360; return la <= fr.north && la >= fr.south && d <= fr.dLon; };

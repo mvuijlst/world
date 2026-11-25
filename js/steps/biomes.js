@@ -5,10 +5,8 @@
 (function () {
   'use strict';
   const { h, panel, fmt, replace, tabs } = WS.ui;
-  const B = WS.biomes, S = WS.sphere;
-  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  const B = WS.biomes;
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const hex = (h2) => [1, 3, 5].map((i) => parseInt(h2.slice(i, i + 2), 16));
   const ramp = (stops, x) => { if (x <= stops[0][0]) return stops[0][1]; for (let i = 1; i < stops.length; i++) if (x <= stops[i][0]) { const [a, ca] = stops[i - 1], [b, cb] = stops[i], t = (x - a) / (b - a); return ca.map((v, k) => v + (cb[k] - v) * t); } return stops[stops.length - 1][1]; };
   const SEA = [34, 66, 110], SHELF = [52, 92, 138], FRESH = [64, 124, 186], SALT = [176, 204, 204], ICE = [236, 242, 246], RIVER = 'rgb(36, 92, 172)';
@@ -116,24 +114,25 @@
       /* Rivers a little wider as the view closes in. */
       const riverScale = (v) => clamp(0.9 * Math.pow(v.scale / 2.5, 0.35), 0.7, 3);
       const riverWidth = (q, scale) => scale * (0.5 + 0.75 * Math.log10(1 + q / bio.minFlow));
-      /* Each river as runs of one width (one path each), skipping what is out of sight. */
+      /* Every river's segments gathered by width (a quarter pixel apart), one path a width, skipping what is out of sight. */
       function drawRivers(gg, proj, scale, W, H) {
         gg.strokeStyle = RIVER; gg.lineCap = 'round'; gg.lineJoin = 'round';
         const out = (p) => p[0] < -20 || p[1] < -20 || p[0] > W + 20 || p[1] > H + 20;
+        const paths = new Map();
         for (const rv of bio.rivers) {
-          let prev = null, w = -1, open = false;
+          let prev = null, w = -1, path = null;
           for (let i = 0; i < rv.pts.length; i++) {
             const p = proj(rv.pts[i][0], rv.pts[i][1]);
             const ok = prev && p[2] && prev[2] && Math.abs(p[0] - prev[0]) < W / 4 && !(out(p) && out(prev));
             if (ok) {
               const wi = Math.round(riverWidth(rv.q[i], scale) * 4) / 4;
-              if (!open || wi !== w) { if (open) gg.stroke(); gg.lineWidth = w = wi; gg.beginPath(); gg.moveTo(prev[0], prev[1]); open = true; }
-              gg.lineTo(p[0], p[1]);
-            } else if (open) { gg.stroke(); open = false; }
+              if (!path || wi !== w) { w = wi; path = paths.get(wi); if (!path) { path = new Path2D(); paths.set(wi, path); } path.moveTo(prev[0], prev[1]); }
+              path.lineTo(p[0], p[1]);
+            } else path = null;
             prev = p;
           }
-          if (open) gg.stroke();
         }
+        for (const [wi, path] of [...paths].sort((x, y) => x[0] - y[0])) { gg.lineWidth = wi; gg.stroke(path); }
       }
 
       // ── reading a place ──
