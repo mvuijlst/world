@@ -52,24 +52,23 @@
         h('div', { class: 'grid two' },
           h('div', { class: 'stack-gap' }, statsHost, keyHost),
           h('div', { class: 'stack-gap' }, panel('What drives it', { tag: 'PLANET' }, inHost), panel('Take it away', { tag: 'EXPORT' }, expHost))));
-      const cv = h('canvas', { class: 'scene-canvas', role: 'img', 'aria-label': 'Climate map' });
-      host.appendChild(cv);
-      const g = cv.getContext('2d');
-      let clim = null, fmap = null, img = null, off = null, busy = false;
+      let clim = null, fmap = null, img = null, busy = false;
+      const proj = () => (u.view === 'globe' ? 'globe' : 'flat'), saved = u.cam && u.cam.projection === proj() ? u.cam : null;
+      const view = WS.globe.create(host, { projection: proj(), lat: saved ? saved.lat : 20, lon: saved ? saved.lon : 0, alt: saved && !saved.auto ? saved.alt : null, radiusKm: ctx.d.planet.radiusKm, label: 'Climate map', onView: (v) => { u.cam = v; }, onHover: (p) => hover(p) });
 
       function ensure() {
         const w = ctx.world, d = ctx.d;
         if (!w.plates.features.some((f) => f.kind === 'crust')) { clim = null; return; }
         if (busy) return;
         const pl = K.planetOf(w, d), have = WS.currentClimate(w, d, { peek: true });
-        if (have) { if (clim !== have.clim || !off) { clim = have.clim; fmap = have.mapRef.map; paint(); renderStats(); renderKey(); hint.textContent = `${clim.W} × ${clim.H} cells · hover for a place${pl.locked ? ' · tidally locked' : ''}`; } return; }   // nothing changed
-        busy = true; hint.textContent = 'Working out the map and its climate…';
+        if (have) { if (clim !== have.clim || !img) { clim = have.clim; fmap = have.mapRef.map; paint(); renderStats(); renderKey(); hint.textContent = `${clim.W} × ${clim.H} cells · hover for a place${pl.locked ? ' · tidally locked' : ''}`; } return; }   // nothing changed
+        busy = true; hint.textContent = 'Working out the map and its climate…'; show();
         const t0 = performance.now();
         WS.climateReady(w, d).then((c) => {
           busy = false;
           if (!host.isConnected || !c) return;
           clim = c.clim; fmap = c.mapRef.map;
-          paint(); renderStats(); renderIn(); renderKey(); draw();
+          paint(); renderStats(); renderIn(); renderKey();
           hint.textContent = `${clim.W} × ${clim.H} cells · ${fmt.int(performance.now() - t0)} ms${pl.locked ? ' · tidally locked' : ''}`;
           WS.app.refresh();
         }, (err) => { busy = false; hint.textContent = `Could not work out the climate: ${err.message}`; });
@@ -100,53 +99,33 @@
           // (warm and cold by how much: a faint tint for a slow drift, strong for a real current)
           else if (u.layer === 'currents') { const t = clamp(Math.abs(clim.sst[k]) / 5, 0, 1), to = clim.sst[k] > 0 ? [220, 60, 110] : [40, 190, 235]; c = isLand ? [150, 145, 130] : iced ? SEAICE : SEA.map((x, q) => x + (to[q] - x) * t); }
           else c = isLand ? [150, 145, 130] : iced ? SEAICE : clim.reef[k] ? [255, 110, 150] : [30, 60 + Math.min(150, clim.fish[k] * 80), 100 + Math.min(80, clim.fish[k] * 40)];
-          // the coast, on every layer but the zones (which show it anyway)
-          if (u.layer !== 'zones') { const ii = kk % MW, jj = (kk - ii) / MW; if (isLand !== fz[jj * MW + ((ii + 1) % MW)] > 0 || (jj + 1 < MH && isLand !== fz[kk + MW] > 0)) c = [25, 25, 30]; }
           px.set([c[0], c[1], c[2], 255], kk * 4);
         }
         img = new ImageData(px, MW, MH);
-        off = h('canvas'); off.width = MW; off.height = MH; off.getContext('2d').putImageData(img, 0, 0);
+        show();
       }
 
-      // ── drawing: map or globe, with arrows for winds and currents ──
-      const fit = () => {
-        const w = host.clientWidth || 700, hh = u.view === 'map' ? Math.round(w / 2) : Math.round(clamp(w * 0.8, 320, window.innerHeight * 0.75));
-        const dpr = Math.min(2, window.devicePixelRatio || 1);
-        cv.style.height = `${hh}px`; cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr);
-        draw();
+      // ── the map viewer: the layer draped over the map's relief, arrows for winds and currents on top ──
+      const size = () => {
+        const w = host.clientWidth || 700;
+        host.style.height = `${u.view === 'map' ? Math.round(w / 2) : Math.round(clamp(w * 0.8, 320, window.innerHeight * 0.75))}px`;
       };
-      const ro = new ResizeObserver(fit);
-      const R = () => Math.min(cv.width, cv.height) * 0.46;
-      const pr = () => S.orthographic(u.lat, u.lon, R(), cv.width / 2, cv.height / 2);
-      function toScreen(la, lo) {
-        if (u.view === 'map') return [((lo + 180) / 360) * cv.width, ((90 - la) / 180) * cv.height, true];
-        return pr().project([la, lo]);
+      const ro = new ResizeObserver(size);
+      let shownMap = null;
+      /* The map's heights (once per map) and this layer to the viewer. */
+      function show() {
+        view.setRadius(ctx.d.planet.radiusKm);
+        if (!clim || !img) { view.setHeight(null); view.setLayer(null); shownMap = null; view.setMessage(busy ? 'Working out the climate…' : ctx.world.plates.features.some((f) => f.kind === 'crust') ? '' : 'Make a world on the Plates step first.'); return; }
+        view.setMessage('');
+        if (shownMap !== fmap) { view.setHeight({ W: fmap.W, H: fmap.H, z: fmap.z, factor: fmap.planet?.factor ?? 1 }); shownMap = fmap; }
+        view.setStyle({ coast: u.layer === 'zones' ? null : '#19191e' });
+        view.setLayer({ W: img.width, H: img.height, data: img.data });
+        view.setOverlay(u.layer === 'wind' || u.layer === 'currents' ? arrows : null);
       }
-      function draw() {
-        if (!cv.width) return;
-        g.fillStyle = css('--bg'); g.fillRect(0, 0, cv.width, cv.height);
-        if (!clim || !off) { g.fillStyle = css('--muted'); g.font = `${16 * (cv.width / cv.clientWidth)}px ${css('--font-mono') || 'monospace'}`; g.fillText(busy ? 'Working out the climate…' : 'Make a world on the Plates step first.', 20, 40); return; }
-        if (u.view === 'map') { g.imageSmoothingEnabled = true; g.drawImage(off, 0, 0, cv.width, cv.height); }
-        else {
-          const W = cv.width, H = cv.height, r = R(), cx = W / 2, cy = H / 2, out = g.createImageData(W, H), d = out.data;
-          const la0 = u.lat * D2R, lo0 = u.lon * D2R, sla = Math.sin(la0), cla = Math.cos(la0);
-          for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-            const o = (y * W + x) * 4, px2 = (x - cx) / r, py = (cy - y) / r, r2 = px2 * px2 + py * py;
-            if (r2 > 1) { d[o + 3] = 0; continue; }
-            const pz = Math.sqrt(1 - r2), la = Math.asin(clamp(pz * sla + py * cla, -1, 1)), lo = lo0 + Math.atan2(px2, pz * cla - py * sla);
-            const IW = img.width, IH = img.height, j = clamp(Math.floor(((90 - la * R2D) / 180) * IH), 0, IH - 1), i = ((Math.floor(((((lo * R2D + 180) % 360) + 360) % 360) / 360 * IW)) % IW + IW) % IW;
-            const k = (j * IW + i) * 4, lit = 0.6 + 0.4 * pz;
-            d[o] = img.data[k] * lit; d[o + 1] = img.data[k + 1] * lit; d[o + 2] = img.data[k + 2] * lit; d[o + 3] = 255;
-          }
-          g.putImageData(out, 0, 0);
-          g.strokeStyle = css('--line'); g.lineWidth = 1.5; g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke();
-        }
-        if (u.layer === 'wind' || u.layer === 'currents') arrows();
-      }
-      function arrows() {
-        const s = u.layer === 'wind' ? (u.season === 'year' ? clim.seasons.jul : season()) : null, dpr = cv.width / cv.clientWidth;
+      function arrows(g, v) {
+        const s = u.layer === 'wind' ? (u.season === 'year' ? clim.seasons.jul : season()) : null;
         const step = Math.max(4, Math.round(clim.W / 36));
-        g.lineWidth = 1.2 * dpr;
+        g.lineWidth = 1.2;
         for (let j = step / 2; j < clim.H; j += step) for (let i = step / 2; i < clim.W; i += step) {
           const k = Math.floor(j) * clim.W + Math.floor(i), la = clim.lat[Math.floor(j)], lo = -180 + ((i + 0.5) * 360) / clim.W;
           let ux, vy, col;
@@ -162,48 +141,31 @@
           }
           const l = Math.hypot(ux, vy); if (l < 1e-6) continue;
           const len = (2.4 * Math.min(1, l * (s ? 6 : 1.4)) + 0.6) * (drift ? 0.6 : 1);   // degrees
-          const a = toScreen(la, lo), b = toScreen(clamp(la + (vy / l) * len, -89, 89), lo + ((ux / l) * len) / Math.max(0.2, Math.cos(la * D2R)));
-          if (!a[2] || !b[2] || Math.abs(b[0] - a[0]) > cv.width / 4) continue;
+          const a = v.project(la, lo), b = v.project(clamp(la + (vy / l) * len, -89, 89), lo + ((ux / l) * len) / Math.max(0.2, Math.cos(la * D2R)));
+          if (!a[2] || !b[2] || Math.abs(b[0] - a[0]) > v.w / 4) continue;
+          if ((a[0] < -20 && b[0] < -20) || (a[0] > v.w + 20 && b[0] > v.w + 20) || (a[1] < -20 && b[1] < -20) || (a[1] > v.h + 20 && b[1] > v.h + 20)) continue;
           g.strokeStyle = col; g.fillStyle = col;
           g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
-          const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), hd = 4 * dpr;
+          const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), hd = 4;
           g.beginPath(); g.moveTo(b[0], b[1]); g.lineTo(b[0] - hd * Math.cos(ang - 0.5), b[1] - hd * Math.sin(ang - 0.5)); g.lineTo(b[0] - hd * Math.cos(ang + 0.5), b[1] - hd * Math.sin(ang + 0.5)); g.closePath(); g.fill();
         }
       }
 
-      // ── pointer: turn the globe, read a place ──
-      let drag = null;
-      const at = (e) => {
-        const r = cv.getBoundingClientRect(), dpr = cv.width / r.width, x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
-        return u.view === 'map' ? [90 - (y / cv.height) * 180, (x / cv.width) * 360 - 180] : pr().invert(x, y);
-      };
-      cv.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, lat: u.lat, lon: u.lon }; cv.setPointerCapture(e.pointerId); });
-      cv.addEventListener('pointermove', (e) => {
-        const p = at(e);
-        if (clim && p) {
-          const j = clamp(Math.floor(((90 - p[0]) / 180) * clim.H), 0, clim.H - 1), i = clamp(Math.floor(((p[1] + 180) / 360) * clim.W), 0, clim.W - 1), k = j * clim.W + i;
-          const fk = fineAt(p[0], p[1]), z = fmap.z[fk], isLand = z > 0, k2 = cellFor(fk, isLand), iced = !isLand && clim.iceMap && clim.iceMap[fk];
-          const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ;
-          const code = isLand ? clim.zones[clim.zone[k2] - 1]?.[0] : null;
-          hint.textContent = `${fmt.num(p[0], 1)}°, ${fmt.num(p[1], 1)}° · ${isLand ? `${fmt.int(z)} m` : 'sea'} · ${fmt.num(J.T[k2], 0)} / ${fmt.num(E.T[k2], 0)} / ${fmt.num(L.T[k2], 0)} °C · ${fmt.int(clim.rainYear[k2])} mm a year${code ? ` · ${code} ${NAME[code] || ''}` : iced ? ' · sea ice (winter)' : clim.reef[k2] ? ' · coral reefs' : ''}`;
-        }
-        if (!drag || u.view !== 'globe') return;
-        const k = (180 / Math.PI) / R() * (cv.width / cv.clientWidth);
-        u.lon = ((drag.lon - (e.clientX - drag.x) * k / Math.max(0.2, Math.cos(u.lat * D2R))) + 540) % 360 - 180;
-        u.lat = clamp(drag.lat + (e.clientY - drag.y) * k, -89, 89);
-        draw();
-      });
-      const end = () => { drag = null; };
-      cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
-      cv.style.touchAction = 'none';
-
+      // ── reading a place ──
+      function hover(p) {
+        if (!clim || !p) return;
+        const fk = fineAt(p[0], p[1]), z = fmap.z[fk], isLand = z > 0, k2 = cellFor(fk, isLand), iced = !isLand && clim.iceMap && clim.iceMap[fk];
+        const J = clim.seasons.jan, L = clim.seasons.jul, E = clim.seasons.equ;
+        const code = isLand ? clim.zones[clim.zone[k2] - 1]?.[0] : null;
+        hint.textContent = `${fmt.num(p[0], 1)}°, ${fmt.num(p[1], 1)}° · ${isLand ? `${fmt.int(z)} m` : 'sea'} · ${fmt.num(J.T[k2], 0)} / ${fmt.num(E.T[k2], 0)} / ${fmt.num(L.T[k2], 0)} °C · ${fmt.int(clim.rainYear[k2])} mm a year${code ? ` · ${code} ${NAME[code] || ''}` : iced ? ' · sea ice (winter)' : clim.reef[k2] ? ' · coral reefs' : ''}`;
+      }
       // ── panels ──
       function renderBar() {
         const layerSel = h('select', { class: 'sel', 'aria-label': 'Layer', style: { width: 'auto' } }, LAYERS.map(([v, t]) => h('option', { value: v, selected: u.layer === v }, t)));
-        layerSel.addEventListener('change', () => { u.layer = layerSel.value; paint(); draw(); renderKey(); renderBar(); });
+        layerSel.addEventListener('change', () => { u.layer = layerSel.value; paint(); renderKey(); renderBar(); });
         const seasonal = u.layer === 'temp' || u.layer === 'rain' || u.layer === 'wind';
-        replace(bar, tabs([['map', 'Map'], ['globe', 'Globe']], u.view, (v) => { u.view = v; renderBar(); fit(); }), layerSel,
-          seasonal ? tabs([['jan', 'Northern winter'], ['equ', 'Equinoxes'], ['jul', 'Northern summer'], ['year', 'Year']].filter(([v]) => u.layer !== 'wind' || v !== 'year'), u.season === 'year' && u.layer === 'wind' ? 'jul' : u.season, (v) => { u.season = v; paint(); draw(); renderBar(); renderKey(); }) : null);
+        replace(bar, tabs([['map', 'Map'], ['globe', 'Globe']], u.view, (v) => { u.view = v; renderBar(); size(); view.setProjection(proj()); }), layerSel,
+          seasonal ? tabs([['jan', 'Northern winter'], ['equ', 'Equinoxes'], ['jul', 'Northern summer'], ['year', 'Year']].filter(([v]) => u.layer !== 'wind' || v !== 'year'), u.season === 'year' && u.layer === 'wind' ? 'jul' : u.season, (v) => { u.season = v; paint(); renderBar(); renderKey(); }) : null);
       }
       function renderKey() {
         const sw = (c) => h('i', { style: { display: 'inline-block', width: '22px', height: '10px', background: `rgb(${c.map(Math.round).join(',')})`, verticalAlign: 'middle', marginRight: '6px' } });
@@ -254,7 +216,7 @@
       }
       function renderExport() {
         replace(expHost, h('div', { class: 'btn-row' },
-          h('button', { class: 'btn small primary', type: 'button', onclick: () => { if (!off) return; const big = h('canvas'); big.width = clim.W * 4; big.height = clim.H * 4; const bg = big.getContext('2d'); bg.imageSmoothingEnabled = false; bg.drawImage(off, 0, 0, big.width, big.height); big.toBlob((b) => { const a = h('a', { href: URL.createObjectURL(b), download: `${(ctx.world.name || 'world').replace(/[^\w-]+/g, '_')}-${u.layer}${u.layer === 'temp' || u.layer === 'rain' ? '-' + u.season : ''}.png` }); document.body.appendChild(a); a.click(); a.remove(); }); } }, 'This layer (PNG)')));
+          h('button', { class: 'btn small primary', type: 'button', onclick: () => { if (!img) return; const off = h('canvas'); off.width = img.width; off.height = img.height; off.getContext('2d').putImageData(img, 0, 0); const big = h('canvas'); big.width = clim.W * 4; big.height = clim.H * 4; const bg = big.getContext('2d'); bg.imageSmoothingEnabled = false; bg.drawImage(off, 0, 0, big.width, big.height); big.toBlob((b) => { const a = h('a', { href: URL.createObjectURL(b), download: `${(ctx.world.name || 'world').replace(/[^\w-]+/g, '_')}-${u.layer}${u.layer === 'temp' || u.layer === 'rain' ? '-' + u.season : ''}.png` }); document.body.appendChild(a); a.click(); a.remove(); }); } }, 'This layer (PNG)')));
       }
 
       return {
@@ -263,9 +225,9 @@
           if (!ro._on) { ro.observe(host); ro._on = true; }
           renderBar(); renderKey(); renderIn(); renderExport();
           ensure();                                            // reuses what it can: the map and the climate are cached
-          renderStats(); fit();
+          renderStats(); size(); show();
         },
-        destroy() { ro.disconnect(); },
+        destroy() { ro.disconnect(); view.destroy(); },
       };
     },
     checks(w, d) {

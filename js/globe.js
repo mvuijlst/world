@@ -236,7 +236,7 @@ void main() {
     col *= clamp((0.3 + 0.95 * dot(n, L)) / (0.3 + 0.95 * 0.63), 0.45, 1.3);
   }
   float fw = fwidth(h);
-  if (uCoast.a > 0.0) col = mix(col, uCoast.rgb, uCoast.a * (1.0 - smoothstep(0.6 * uPx, 1.4 * uPx, abs(h) / max(fw, 1e-6))));
+  if (uCoast.a > 0.0) col = mix(col, uCoast.rgb, uCoast.a * (1.0 - smoothstep(0.35 * uPx, 0.9 * uPx, abs(h) / max(fw, 1e-6))));
   if (uHasMask == 1 && !inPatch) { vec4 m = textureLod(uMask, uv, max(lodOf(fp, PI / float(textureSize(uMask, 0).y)), 0.0)); col = mix(col, m.rgb, m.a); }
   if (uProj == 0) {
     col *= 0.62 + 0.38 * mu;
@@ -463,7 +463,7 @@ void main() {
       gl.uniform1i(U.uShade, sty.shade !== false ? 1 : 0);
       gl.uniform4f(U.uRim, ...colours.rim, sty.rim === false || (!Hh && !n) ? 0 : 0.9);
       const cc = sty.coast ? rgbOf(sty.coast, [0.1, 0.1, 0.12]) : [0, 0, 0];
-      gl.uniform4f(U.uCoast, ...cc, sty.coast ? 0.9 : 0);
+      gl.uniform4f(U.uCoast, ...cc, sty.coast ? 0.8 : 0);
     }
     /* What the overlay is given to draw with. */
     function viewOf() {
