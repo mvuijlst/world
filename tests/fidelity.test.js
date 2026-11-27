@@ -13,21 +13,29 @@ const T = require('../tools/fidelity.js');
 const SEEDS = [7, 21, 99];
 // today's values on each seed that fails (720 cells), and the phase of docs/worldmap-plan.md that should fix it
 const EXPECTED_FAIL = {
-  // the carving and each belt's rain reorder them
-  beltRank: { phase: 'D', seeds: { 21: '0.524' } },
+  // each belt's rain (the latitude stand-in) and the carving reorder them; seed 7 has no young belts in
+  // its history
+  beltRank: { phase: 'D.3', seeds: { 7: 'none', 21: '0.458' } },
   // the crests and ridges kept inside belts until the carving shapes them
-  beltNoiseR2: { phase: 'D', seeds: { 7: '0.663', 21: '0.711', 99: '0.657' } },
-  rockLaid: { phase: 'D', seeds: { 7: '1.9 %', 21: '0.6 %', 99: '4.3 %' } },
-  outputNoiseWorld: { phase: 'D', seeds: { 7: '14', 21: '14', 99: '14' } },
+  beltNoiseR2: { phase: 'D.3', seeds: { 7: '0.807', 21: '0.764', 99: '0.700' } },
+  outputNoiseWorld: { phase: 'D.3', seeds: { 7: '14', 21: '14', 99: '14' } },
   outputNoiseRegion: { phase: 'E', seeds: { 7: '18', 21: '18', 99: '18' } },
-  mouthsKept: { phase: 'D', seeds: { 99: '9' } },
-  // no ice sheets yet (D.5), and few young belts in these histories
-  above2000: { phase: 'D', seeds: { 7: '0.4 %', 21: '1.9 %', 99: '0.2 %' } },
-  rainShadow: { phase: 'D', seeds: { 7: '1.052', 21: '0.838' } },
-  // the carving silts up and breaches hollows in three passes at the end (D.2)
-  lakes: { phase: 'D', seeds: { 21: '1.0 %' } },
-  // the carving silts up and breaches hollows in three passes at the end (D.2)
-  endorheic: { phase: 'D', seeds: { 21: '4.2 %' } },
+  // no ice sheets yet (D.3), and few young belts in these histories
+  above2000: { phase: 'D.3', seeds: { 7: '2.1 %', 21: '2.5 %', 99: '0.0 %' } },
+  // (hardly any ground above 1800 m to cast a shadow on 99)
+  rainShadow: { phase: 'D.3', seeds: { 99: '0.537' } },
+  // with no Earth correction to K, the rock the rivers lay back as they go (G) leaves the lowlands less
+  // cut (Yuan et al.'s K / (1 + G)); the climate's own rain on the carved land (D.3) decides how much
+  // (Michel, 2026-11-26: keep K as it is, book these)
+  below200: { phase: 'D.3', seeds: { 7: '17.0 %', 99: '18.0 %' } },
+  concavity: { phase: 'D.3', seeds: { 99: '0.293' } },
+  concavityCarve: { phase: 'D.3', seeds: { 99: '0.307' } },
+  // the climate worked out on the carved land (D.3) decides which hollows hold water
+  lakes: { phase: 'D.3', seeds: { 21: '5.8 %' } },
+  // channels on near-flat ground, routed on the grid's eight directions (D.4)
+  valleysCarve: { phase: 'D.4', seeds: { 21: '0.885' } },
+  // the glaciers still use the carving's seed for the depth of their troughs
+  mouthsKept: { phase: 'D.4', seeds: { 21: '9' } },
 };
 const LABEL = {
   r1Uphill: 'R1 no drawn river runs uphill', r1Carve: 'R1 no carved channel runs uphill', r2Outside: 'R2 lakes fill hollows of the map',
@@ -73,13 +81,18 @@ test('R5 same inputs, same map: twice in a row, and the same as on other machine
   assert.deepEqual(a.bio.flow, b.bio.flow);
   const hash = (arr) => { let x = 2166136261; for (const v of arr) { x ^= Math.round(v) & 0xffffffff; x = Math.imul(x, 16777619) >>> 0; } return x.toString(16); };
   // pinned on Windows and checked on Linux in CI; change it only with a deliberate change to the map
-  assert.equal(hash(a.map.z), '39e1c3bb');
+  assert.equal(hash(a.map.z), 'c11201ef');
 });
 
 test('R7 every random number is in the register', () => {
   assert.deepEqual(scan.unregistered, [], 'random numbers outside the register (list them in RANDOM in js/fidelity.js)');
   assert.deepEqual(scan.stale.map((e) => `${e.file}: ${e.at}`), [], 'register entries that match no code');
   for (const e of F.RANDOM) assert.ok(['source', 'input', 'seed', 'output'].includes(e.kind) && e.what, `${e.file}: ${e.at}`);
+});
+
+test('every assumed material property is in the code where the register says', () => {
+  const src = T.sources();
+  for (const e of F.MATERIAL) assert.ok(e.what && e.value && e.source && (src[e.file] || '').includes(e.at), `${e.file}: ${e.at}`);
 });
 
 test('the measures on made-up cases', () => {

@@ -75,10 +75,20 @@
     const ring = vs.map(proj);
     // a cap round the centroid that holds the whole polygon (cosine of its radius), for quick rejection
     const cosR = Math.min(...vs.map((u) => dot(u, c))) - 1e-9;
-    return { c, proj, cosR, ring: ring.some((q) => !q) ? null : ring };
+    return { c, proj, cosR, ring: ring.some((q) => !q) ? null : ring, vs };
+  }
+  // (a polygon reaching 90° or more from its centroid cannot be projected round it: there the winding
+  // number on the sphere itself decides, the edges' signed angles as seen from u summing to ±2π inside)
+  function windingInside(vs, u) {
+    let sum = 0;
+    for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+      const a = vs[j], b = vs[i], ua = dot(u, a), ub = dot(u, b);
+      sum += Math.atan2(dot(u, cross(a, b)), dot(a, b) - ua * ub);
+    }
+    return Math.abs(sum) > Math.PI;
   }
   function insidePrepared(prep, u) {
-    if (!prep.ring) return false;
+    if (!prep.ring) return windingInside(prep.vs, u);
     const q = prep.proj(u);
     if (!q) return false;
     let inside = false;
@@ -145,7 +155,11 @@
    */
   function splitPolygon(poly, line) {
     if (poly.length < 3 || line.length < 2) return null;
-    const c = centroid(poly), proj = gnomonic(c);
+    // (projected round a centre every point lies well within 90° of: the centroid, or else the mean of
+    // the vertices, or else the cut's middle)
+    const all = [...poly, ...line].map(vec), mean = (vs) => norm(vs.reduce((acc, v) => [acc[0] + v[0], acc[1] + v[1], acc[2] + v[2]], [0, 0, 0]));
+    const c = [centroid(poly), mean(poly.map(vec)), vec(line[Math.floor(line.length / 2)])].find((q) => all.every((v) => dot(v, q) > 0.05)) || centroid(poly);
+    const proj = gnomonic(c);
     const east = norm(Math.abs(c[2]) > 0.999 ? cross([0, 1, 0], c) : cross([0, 0, 1], c)), north = cross(c, east);
     const back = (q) => latLon(norm([c[0] + q[0] * east[0] + q[1] * north[0], c[1] + q[0] * east[1] + q[1] * north[1], c[2] + q[0] * east[2] + q[1] * north[2]]));
     const P = poly.map((p) => proj(vec(p))), L = line.map((p) => proj(vec(p)));

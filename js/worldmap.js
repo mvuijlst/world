@@ -379,6 +379,11 @@
    * stand at), comp (the hollow each cell is in, or -1), comps [{cells, depth, kind: fresh | salt |
    * dry}], order (land cells, downstream first), lakes, saltLakes.
    */
+  /* What a lake loses to the air, per cell of it (mm a year): what the air could take from open water
+     (1.2 × the land's potential evapotranspiration, as for open water) less the rain on it. The one rule,
+     for the carving (does a basin spill?) and for the lakes (does it overflow?). */
+  const lakeLoss = (pet, p) => Math.max(0, 1.2 * pet - p);
+
   function hydrology(gr, z, o = {}) {
     const { W, N } = gr, kmDeg = (Math.PI * (o.radiusKm ?? 6371)) / 180, DEEP = o.deep ?? 2, YEAR_S = 3.156e7;
     const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0)), area = new Float64Array(N);
@@ -452,7 +457,7 @@
       for (let s = 0; s < front.length; s++) neighbours(gr, front[s], (n) => { if (comp[n] === id && !seen.has(n)) { seen.add(n); tree.push([n, front[s]]); front.push(n); } });
       for (const [n, r] of tree) recv[n] = r;
       let loss = 0;
-      if (o.liquid !== false && o.PET) for (const c of cells) loss += toM3s(Math.max(0, 1.2 * o.PET[c] - (o.P ? o.P[c] : 0)), area[c]);
+      if (o.liquid !== false && o.PET) for (const c of cells) loss += toM3s(lakeLoss(o.PET[c], o.P ? o.P[c] : 0), area[c]);
       comps.push({ cells, depth, outlet: out, area: a, loss, kind: 'fresh', tree });
     }
     // (should any of that loop back on itself, the flood's own way is kept)
@@ -570,6 +575,28 @@
     return { ice, cut, area: glaciated, fjords, deepest };
   }
 
+  /* The deposition coefficient G of Yuan et al. 2019 (Davy & Lague 2009's Θ): G = d*·v_s / p, the speed at
+     which the grains a river carries settle (v_s; d*, at least 1, how much more of them ride near the bed
+     than on average) against the rain that feeds its water (p). Earth's rivers: G about 1 (1-2, from how
+     channels steepen where they leave a range: Guerit et al. 2019, as Braun 2021 reports it); here 1. A
+     world's G is Earth's times its grains' settling speed against an Earth river's: it grows with
+     gravity, with the rock's density against the fluid's, and as the fluid runs thinner (warmer water);
+     d* is taken as on Earth. The rain enters cell by cell (p̃ in carve). The fluid is water (the only one
+     the model knows); the grains are of the crust's rock (crust.js RHO_CRUST); their size is assumed
+     (GRAIN_MM, a material property no world gives: registered in fidelity.js MATERIAL). */
+  const G_EARTH = 1, T_EARTH = 15;          // (Earth's rivers, at 15 °C)
+  const GRAIN_MM = 0.25;                    // mm: fine to medium sand, what rivers carry in suspension and lay (assumed)
+  /* Settling speed of a natural grain (m/s): Ferguson & Church 2004 (J. Sed. Res. 74, 933), w = R·g·D² /
+     (C1·ν + √(0.75·C2·R·g·D³)), R = (ρs − ρf) / ρf, C1 = 18 and C2 = 1 for natural sand. */
+  const settlingSpeed = (gMs2, rhoS, rhoF, nu, D) => { const R = (rhoS - rhoF) / rhoF; return (R * gMs2 * D * D) / (18 * nu + Math.sqrt(0.75 * R * gMs2 * D ** 3)); };
+  /* Water's kinematic viscosity (m²/s) at T °C: Vogel's equation μ = 2.414·10⁻⁵ · 10^(247.8 / (T_K − 140)) Pa·s, over 1000 kg/m³. */
+  const waterViscosity = (T) => (2.414e-5 * 10 ** (247.8 / (Math.max(0, T) + 273.15 - 140))) / 1000;
+  /* G for a world of this gravity (× Earth's) whose rivers run at tempC (°C). */
+  function depositG(gravity = 1, tempC = T_EARTH) {
+    const D = GRAIN_MM / 1000, w = (gg, T) => settlingSpeed(9.81 * gg, CR.C.RHO_CRUST, 1000, waterViscosity(T), D);
+    return (G_EARTH * w(Math.max(0.05, gravity), tempC)) / w(1, T_EARTH);
+  }
+
   /*
    * Rivers carving the land, and what they carry away (the stream-power law, solved implicitly as in
    * Braun & Willett 2013, so a few long steps stay stable):
@@ -596,12 +623,34 @@
    */
   function carve(gr, z, opts = {}) {
     const { W, H, N } = gr, R = opts.radiusKm ?? 6371, kmDeg = (Math.PI * R) / 180;
-    const E = Math.max(0, opts.erosion ?? 1), wet = opts.wet || (() => 1), steps = Math.max(1, opts.steps ?? 3);
+    const E = Math.max(0, opts.erosion ?? 1), wet = opts.wet || (() => 1);
+    // the Gauss-Seidel iterations the cutting and laying may take in one pass (see below)
+    const DEPOSIT_ITER = 6;
+    // the history is cut in passes short enough that cutting and laying keep pace: on average the land
+    // moves by at most SETTLE_M (÷ g^scaling) in one pass. A pass that moves it more is taken again,
+    // shorter. At most PASS_MAX passes: what is left is then taken in one, and the result says so.
+    // (opts.steps: that many equal passes instead, unchecked)
+    const SETTLE_M = 2 / (opts.factor ?? 1), PASS_MAX = 120;
+    // the shelf is built up to wave base, some 40 m down (÷ g^scaling; unverified); a mouth's rock spreads
+    // over at most this many cells of sea
+    const SHELF_TOP_M = 40, MARINE_CELLS = 4000;
+    // a deep-sea fan near its river's mouth grows to some 500 m (÷ g^scaling; unverified) before what is
+    // more goes on to the open ocean
+    const FAN_M = 500;
+    const LOWSTAND_RIVER = 2e4;                  // km² of Earth-like runoff: the rivers that cut down in an ice age (unverified)
+    const LOWSTAND_KM = 200;                     // km up from the ice-age shore the cutting reached (drowned valleys: tens to ~200 km; unverified)
     // F = K·(A / 10⁴ km²)^0.6 · (100 km / distance): calibrated by eye and in the tests
     // the water's power to cut grows with gravity (stream power ρ·g·Q·S), but so does the weight of the
     // grains it must lift (the threshold to move them): the net effect grows as √g
     const g = Math.max(0.05, opts.gravity ?? 1);
-    const K = ((opts.k ?? 0.8) * E * Math.sqrt(g)) / steps, mExp = 0.6;
+    const K = (opts.k ?? 0.8) * E * Math.sqrt(g), mExp = 0.6;               // (over the whole history)
+    // (the last ice age's sea, opts.lowstand m below today's: see below)
+    const LOW = Math.max(0, opts.lowstand ?? 0);
+    // the belts rose through the history the passes stand for (opts.uplift: how much in each step after
+    // the first): the cutting starts from them as they stood and lifts them between passes, so what a
+    // range sheds while it rises is cut then, and laid in its foreland and on the plains below it
+    const UP = (opts.uplift || []).filter((u) => u && u.length === N);
+    for (const u of UP) for (let k = 0; k < N; k++) z[k] -= u[k];
     const land = Uint8Array.from(z, (v) => (v > 0 ? 1 : 0));
     const cut = new Float32Array(N), laid = new Float32Array(N);
     const area = new Float32Array(N), wA = new Float32Array(N);
@@ -609,7 +658,12 @@
     // deserts (flash floods), and no more than a very wet land's (1500 mm: what falls on a 55 km cell
     // runs off its slopes, not all down one gorge); and what a lake there could evaporate, likewise
     const wt = opts.water, RUN = 300;
-    const evap = wt ? Float32Array.from(wt.PET, (e, k) => Math.max(0, 1.2 * e - wt.P[k]) / RUN) : null;
+    const evap = wt ? Float32Array.from(wt.PET, (e, k) => lakeLoss(e, wt.P[k]) / RUN) : null;
+    // how readily the rivers lay what they carry (G, below), from how fast its grains settle in this
+    // world's water: at the temperature its rivers run at (the runoff's mean, liquid: 0 °C at least)
+    let tRiver = T_EARTH;
+    if (wt && wt.Ta) { let s = 0, w = 0; for (let k = 0; k < wt.Ta.length; k++) if (wt.runoff[k] > 0) { s += wt.runoff[k] * Math.max(0, wt.Ta[k]); w += wt.runoff[k]; } if (w > 0) tRiver = s / w; }
+    const G = depositG(g, tRiver);
     for (let k = 0; k < N; k++) { const j = Math.floor(k / W); area[k] = (gr.dx * kmDeg) ** 2 * Math.max(0.02, gr.cosl[j]); wA[k] = area[k] * (wt ? clamp(wt.runoff[k], 30, 1500) / RUN : wet(gr.lat[j])); }
     const zr = Float32Array.from(z);
     const nb = (k, f) => {
@@ -649,15 +703,82 @@
       if (land[r]) A[r] += A[k] * out[k];
     }
 
-    // the cutting, downstream first; hollows (a cell whose way out is higher) are left alone
-    const z0 = Float32Array.from(z);
-    for (let s = 0; s < steps; s++) {
-      for (let o = 0; o < no; o++) {
-        const k = order[o], r = recv[k], hr = land[r] ? z[r] : 0;
-        if (hr >= z[k]) continue;
-        const F = (K * Math.pow(A[k] / 1e4, mExp) * 100) / Math.max(1e-3, dist[k]);
-        z[k] = Math.max(hr, (z[k] + F * hr) / (1 + F));
+    // the cutting, and what the rivers lay down as they go (Yuan, Braun, Guerit, Rouby & Cordonnier 2019,
+    // JGR Earth Surface 124, their Eq. 11-20, after Davy & Lague 2009): a cell keeps G / (p̃·Ã) of the rock
+    // cut upstream of it in the same pass (all of it at most), p̃·Ã the water through it (rain gathered,
+    // in cells). A small stream keeps much of what it carries, a big river little; on low ground
+    // (forelands, plains) where the water barely cuts, the rock piles up. Implicit (each cell against its
+    // receiver's new height), downstream first, iterated (Gauss-Seidel) until the rock cut and the rock
+    // laid agree. Hollows (a cell whose way out is higher) are not cut; what reaches a closed basin stays in it.
+    const z0 = Float32Array.from(z), Ac = new Float64Array(N), V = new Float64Array(N);
+    for (let k = 0; k < N; k++) if (land[k]) Ac[k] = 1;
+    for (let o = no - 1; o >= 0; o--) { const k = order[o], r = recv[k]; if (r >= 0 && land[r]) Ac[r] += Ac[k] * (area[k] / area[r]); }
+    // (each cell's cutting and laying coefficients do not change between passes: worked out once)
+    const Fk = new Float64Array(N), Dk = new Float64Array(N);
+    for (let o = 0; o < no; o++) {
+      const k = order[o];
+      // (at a basin's way out, only what overflows crosses the rim: a closed basin's rim is not cut by
+      // water that never leaves it)
+      // (p̃·Ã, their discharge in cells: Ã the cells upstream, p̃ the catchment's runoff against an
+      // Earth-like land's: a dry river lays more, as alluvial fans show; a cell lays at most all it is given)
+      const pc = A[k] / (Ac[k] * area[k]);
+      Fk[k] = (K * Math.pow((A[k] * out[k]) / 1e4, mExp) * 100) / Math.max(1e-3, dist[k]);
+      Dk[k] = inBasin(k) ? 0 : Math.min(1, G / (pc * Ac[k])) / area[k];
+    }
+    // (the belts rise through the history, UP[i] evenly over its i-th share of it; the uncut reference
+    // rises with them, so the rise is not counted as rock laid)
+    const nU = UP.length;
+    const rise = (t0, t1) => {
+      for (let i = 0; i < nU; i++) {
+        const f = (Math.min(t1, (i + 1) / nU) - Math.max(t0, i / nU)) * nU, u = UP[i];
+        if (f > 0) for (let k = 0; k < N; k++) if (u[k] > 0) { z[k] += u[k] * f; z0[k] += u[k] * f; }
       }
+    };
+    // one pass over a share dt of the history: the land's mean change (m)
+    const low = new Float32Array(N);
+    const pass = (dt) => {
+      const zt = Float32Array.from(z);
+      for (let it = 0, moved = Infinity; it < DEPOSIT_ITER && moved > 0.5; it++) {
+        moved = 0;
+        // the rock cut upstream of each cell in this pass (m · km²), not passing out of a closed basin;
+        // and the lowest cell that drains into each
+        V.fill(0); low.fill(Infinity);
+        for (let o = no - 1; o >= 0; o--) {
+          const k = order[o], r = recv[k];
+          if (r >= 0 && land[r] && z[k] < low[r]) low[r] = z[k];
+          if (r < 0 || !land[r] || (inBasin(k) && exitOf[k] === k && out[k] <= 0)) continue;
+          V[r] += V[k] + (zt[k] - z[k]) * area[k];
+        }
+        for (let o = 0; o < no; o++) {
+          const k = order[o], r = recv[k], hr = land[r] ? z[r] : 0;
+          const dep = Math.max(0, Dk[k] * V[k]), F = Fk[k] * dt;
+          let nz = hr >= zt[k] ? zt[k] + dep : Math.max(hr, (zt[k] + F * hr + dep) / (1 + F));
+          // (a river does not lay its bed higher than the ground it comes from: what it would lay above
+          // that goes on downstream, and no laying dams its own course)
+          // (and leaves it falling gently towards its own receiver, as a plain does: 0.1 m a km, ÷ g^scaling)
+          const top = low[k] - (0.1 / (opts.factor ?? 1)) * dist[k];
+          if (nz > zt[k] && nz > top) nz = Math.max(zt[k], top);
+          const ch = Math.abs(nz - z[k]); if (ch > moved) moved = ch;
+          z[k] = nz;
+        }
+      }
+      let d = 0, n = 0;
+      for (let k = 0; k < N; k++) if (land[k]) { d += Math.abs(z[k] - zt[k]); n++; }
+      return n ? d / n : 0;
+    };
+    const fixed = opts.steps != null ? Math.max(1, Math.round(opts.steps)) : 0;
+    const zs = new Float32Array(N), z0s = new Float32Array(N);
+    let t = 0, dt = fixed ? 1 / fixed : 1 / 32, nPass = 0, retaken = 0, worst = 0, ceiling = false;
+    while (t < 1 - 1e-9) {
+      const last = !fixed && nPass >= PASS_MAX - 1;
+      dt = last ? 1 - t : Math.min(dt, 1 - t);
+      zs.set(z); z0s.set(z0);
+      rise(t, t + dt);
+      const d = pass(dt); nPass++;
+      if (!fixed && !last && d > SETTLE_M) { z.set(zs); z0.set(z0s); retaken++; dt *= Math.max(0.1, (0.8 * SETTLE_M) / d); continue; }
+      if (last && d > SETTLE_M) ceiling = true;
+      t += dt; worst = Math.max(worst, d);
+      if (!fixed) dt = Math.min(2 * dt, (dt * 0.8 * SETTLE_M) / Math.max(d, 1e-6));
     }
     // valleys have sides: the ground beside a deep channel slopes down to it (half its depth, a cell
     // either side); land stays land
@@ -669,6 +790,32 @@
       side[k] = n ? (0.5 * s) / n : 0;
     }
     for (let k = 0; k < N; k++) if (land[k] && side[k] > cut[k]) { cut[k] = side[k]; z[k] = Math.max(z0[k] - cut[k], Math.min(z0[k], 1)); cut[k] = z0[k] - z[k]; }
+    // the last ice age: the sea stood LOW below today's, the rivers ran on over the shelf it left dry and
+    // the big ones cut their lower courses down toward it (the coastal plain and the shelf: up to 4 × LOW
+    // above today's sea; in so short a time only rivers carrying an Earth-like 20 000 km² of runoff or
+    // more cut, not the slopes between); the sea has since risen over those valleys, drowning them
+    // (estuaries, rias), a short time ago in a river's life: the rock laid since builds deltas only at
+    // the big mouths. The water each carries is as above, closed basins keeping theirs
+    if (LOW) {
+      const zl = Float32Array.from(z, (v) => v + LOW), land2 = Uint8Array.from(zl, (v) => (v > 0 ? 1 : 0));
+      const st = settle(gr, zl, land2, drain(gr, zl, land2, zl, kmDeg), kmDeg);
+      const A2 = new Float64Array(N);
+      for (let k = 0; k < N; k++) A2[k] = land[k] ? A[k] * out[k] : land2[k] ? wA[k] : 0;
+      for (let o = st.no - 1; o >= 0; o--) { const k = st.order[o], r = st.recv[k]; if (r >= 0 && land2[r] && !land[r]) A2[r] += A2[k]; }
+      // (how far up each river from the ice-age shore: the cutting reached only so far in the time)
+      const up = new Float32Array(N);
+      for (let o = 0; o < st.no; o++) { const k = st.order[o], r = st.recv[k]; up[k] = (r >= 0 && land2[r] ? up[r] : 0) + st.dist[k]; }
+      for (let o = 0; o < st.no; o++) {
+        const k = st.order[o];
+        if (zl[k] > 5 * LOW || A2[k] < LOWSTAND_RIVER || up[k] > LOWSTAND_KM || inBasin(k)) continue;
+        const r = st.recv[k], hr = land2[r] ? zl[r] : 0;
+        if (hr >= zl[k]) continue;
+        const F = ((K / 3) * Math.pow(A2[k] / 1e4, mExp) * 100) / Math.max(1e-3, st.dist[k]);   // (as one of the three passes it was set with)
+        const nz = Math.max(hr, (zl[k] + F * hr) / (1 + F));
+        cut[k] += zl[k] - nz; z[k] = nz - LOW; zl[k] = nz;
+      }
+      for (let k = 0; k < N; k++) land[k] = z[k] > 0 ? 1 : 0;
+    }
 
     // ── from here on one surface: the water's way over the carved heights themselves (hydrology: no
     // unevenness added), which is the drainage the map keeps and the Rivers step draws ──
@@ -682,11 +829,18 @@
     // a basin that never overflows keeps all that reaches it; the rest reaches the sea
     const Qs = new Float64Array(N), mouths = new Map(), load = opts.load, ice = opts.ice, kept = new Float64Array(hy.comps.length);
     const moraineH = 30 / factor, km3 = (k, m) => (m * area[k]) / 1000;
-    let eroded = 0, glacial = 0, basins = 0, moraine = 0, scour = 0, overflow = 0;
-    // (what the ice cut where the sea now is, a fjord, the tide takes out)
-    if (load) for (let k = 0; k < N; k++) if (!land[k] && load[k] > 0) glacial += km3(k, load[k]);
+    let eroded = 0, glacial = 0, basins = 0, moraine = 0, scour = 0, overflow = 0, plains = 0;
+    // (the rock cut, and what the rivers laid on their way, as the cutting left them; a cell cut now
+    // below today's sea is the sea's from here on)
+    for (let k = 0; k < N; k++) { const v = km3(k, cut[k]); if (v > 0) eroded += v; else plains -= v; }
+    // (what was cut where the sea now stands, a drowned valley or a fjord: the sea takes it out from there)
+    const toSea = new Map(), addSea = (m, v) => { if (v > 0 && m >= 0) toSea.set(m, (toSea.get(m) || 0) + v); };
+    for (let k = 0; k < N; k++) if (!land[k]) {
+      if (load && load[k] > 0) { glacial += km3(k, load[k]); addSea(k, km3(k, load[k])); }
+      addSea(k, km3(k, cut[k]));
+    }
     for (const k of up) {
-      eroded += km3(k, cut[k]); Qs[k] += km3(k, cut[k]);
+      Qs[k] += km3(k, cut[k]);
       if (load && load[k] > 0) { glacial += km3(k, load[k]); Qs[k] += km3(k, load[k]); }
       // (a hollow that holds a lake, or never overflows, stays one: half full at most)
       const c = hy.comp[k], hol = hy.fill[k] - z[k], keeps = c >= 0 && (hy.comps[c].depth > basinMin || hy.comps[c].kind !== 'fresh');
@@ -714,7 +868,13 @@
         const d = Math.min(room, (left * 1000) / area[k]);
         z[k] += d; laid[k] += d; left -= km3(k, d); basins += km3(k, d);
       }
-      if (left > 0) overflow += left;
+      if (left > 0) {
+        // (it goes on with the next flood, down the way the basin would spill, to the sea)
+        overflow += left;
+        let k = cp.outlet, n = 0;
+        while (k >= 0 && land[k] && n++ < N) k = hy.recv[k];
+        if (k >= 0) addSea(k, left);
+      }
     });
     // where each mouth's river comes from, and the main stream into each cell (for estuaries)
     const mainIn = new Int32Array(N).fill(-1), mouthFrom = new Map();
@@ -724,27 +884,39 @@
       else if (r >= 0 && !hy.terminal[k] && (!mouthFrom.has(r) || hy.flow[k] > hy.flow[mouthFrom.get(r)])) mouthFrom.set(r, k);
     }
 
-    // the mouths, the biggest first. What the tide does there (its range, m: opts.tides) decides
-    // what the river builds (as Galloway's deltas): where the tide is small (under ~2 m) the load
-    // stays and builds a delta, a fan of new land a few metres above the sea; where it is large it
-    // sweeps the load out over the shelf (tidal bars, under water) and scours the river's lower
-    // course into a funnel-shaped estuary, deeper and longer the larger the tide. Under stronger
-    // gravity the load settles sooner: a delta is smaller and thicker. Small rivers' loads, and what
-    // a delta cannot hold, go out over the shelf and down the slope.
+    // the mouths, the biggest first. What the tide does there (its range, m: opts.tides) decides what
+    // the river builds (as Galloway's deltas): where the tide is small (under ~2 m) the load stays and
+    // builds a delta, new land a few metres above the sea; where it is large it sweeps the load out over
+    // the shelf (tidal bars, under water) and scours the river's lower course into a funnel-shaped
+    // estuary, deeper and longer the larger the tide. Under stronger gravity the load settles sooner: a
+    // delta is smaller and thicker. Beyond the delta the rest builds the shelf out (to wave base), its
+    // front the continental slope, and what the shelf cannot hold spreads over the deep floor below it
+    // (a deep-sea fan): all of it is laid somewhere.
+    for (const [m, v] of mouths) if (m >= 0) addSea(m, v);
+    // (the sea is given exactly what the land did not keep: the rock cut, less what the plains, basins and
+    // moraines hold; the routes above only say how it is shared between the mouths)
+    {
+      let sum = 0; for (const v of toSea.values()) sum += v;
+      const budget = eroded + glacial - plains - basins - moraine;
+      if (sum > 0) for (const [m, v] of toSea) toSea.set(m, (v * Math.max(0, budget)) / sum);
+    }
     const tides = opts.tides, cellKm = gr.dx * kmDeg;
-    let deltaArea = 0, delta = 0, estuaryArea = 0;
-    const shelf = -250 / factor, cellA = cellKm * cellKm, mouthList = [];
-    const big = [...mouths].filter(([m]) => m >= 0).sort((a, b) => b[1] - a[1]), biggest = big.length ? big[0][1] : 0;
+    let deltaArea = 0, delta = 0, estuaryArea = 0, shelfLaid = 0, ocean = 0;
+    const shelfTop = -SHELF_TOP_M / factor, cellA = cellKm * cellKm, mouthList = [];
+    const big = [...toSea].sort((a, b) => b[1] - a[1]), biggest = big.length ? big[0][1] : 0;
+    // (how deep the sea is at a cell, for the shelf: what is already above the shelf's top is passed over)
+    const sea = (k) => !land[k] && z[k] <= 0, seenAt = new Int32Array(N);
+    let mark = 0;
     for (const [m, vol] of big) {
       const kl = mouthFrom.has(m) ? mouthFrom.get(m) : -1, tr = tides ? tides[m] : 1.5;
+      const river = mouths.has(m);
       const info = { cell: m, from: kl, sediment: vol, discharge: kl >= 0 ? hy.flow[kl] : 0, tide: tr, kind: 'river' };
-      if (vol < biggest * 0.08) { if (info.discharge > 1000) mouthList.push(info); continue; }
-      const tideShare = clamp(1 - (tr - 2) / 4, 0.1, 1);                   // what stays at the mouth
+      let extra = 0;
       // an estuary up the river's lower course
-      if (tr > 3 && kl >= 0) {
+      if (river && vol >= biggest * 0.08 && tr > 3 && kl >= 0) {
         // a funnel up the river's lower course: widest at the mouth (wider the larger the tide), narrowing
         // to the river; low ground within it goes under the sea, deeper along the channel; the tide
-        // carries what it scours out to sea
+        // carries what it scours out to sea, and lays it with the rest
         const n = clamp(Math.round(((tr - 2) * 20) / cellKm), 1, 8), mouthW = clamp(20 * (tr - 1), 30, 160);   // km
         let k = kl;
         for (let i = 0; i < n && k >= 0 && land[k]; i++) {
@@ -753,37 +925,70 @@
           stamp(gr, at, Math.max(rad, gr.dx * 0.55), (q, dd) => {
             if (!land[q] || z[q] <= -1 || z[q] > 60 + 12 * tr) return;
             const lower = -1 - (depth - 1) * Math.max(0, 1 - dd / Math.max(rad, gr.dx * 0.55));
-            if (lower < z[q]) { if (z[q] > 0) estuaryArea += area[q]; cut[q] += z[q] - lower; scour += km3(q, z[q] - lower); z[q] = lower; }
+            if (lower < z[q]) { if (z[q] > 0) estuaryArea += area[q]; cut[q] += z[q] - lower; scour += km3(q, z[q] - lower); extra += km3(q, z[q] - lower); z[q] = lower; }
           });
           k = mainIn[k];
         }
         info.kind = 'estuary';
       }
-      const top = tr > 3 ? -2 : 3;                                          // bars under water, or delta land
-      let left = vol * 0.5 * tideShare, cells = clamp(Math.round(Math.sqrt(vol / (cellA * 2)) * tideShare / Math.sqrt(g)), 1, 30);
-      const seen = new Set([m]), front = [m];
-      for (let s = 0; s < front.length && left > 0 && cells > 0; s++) {
-        const k = front[s];
-        if (z[k] > shelf && z[k] < top) {
-          const need = ((top - z[k]) * area[k]) / 1000, d = need <= left ? top - z[k] : (left * 1000) / area[k];
-          const wasSea = z[k] <= 0;
-          z[k] += d; laid[k] += d; left -= (d * area[k]) / 1000; delta += (d * area[k]) / 1000; cells--;
-          if (wasSea && z[k] > 0) deltaArea += area[k];
+      let left = vol + extra;
+      // over the sea from the mouth, nearest first, as far as its rock reaches
+      const front = [m]; mark++; seenAt[m] = mark;
+      let head = 0;
+      const next = () => {
+        if (head >= front.length) return -1;
+        const k = front[head++];
+        if (front.length < MARINE_CELLS) nb(k, (q) => { if (seenAt[q] !== mark && sea(q)) { seenAt[q] = mark; front.push(q); } });
+        return k;
+      };
+      const put = (k, d) => { const wasSea = z[k] <= 0; z[k] += d; laid[k] += d; left -= km3(k, d); if (wasSea && z[k] > 0) deltaArea += area[k]; return km3(k, d); };
+      // the delta, at a big river's mouth: land a few metres up (or bars under water where the tide is large)
+      if (river && vol >= biggest * 0.08) {
+        const top = tr > 3 ? -2 : 3, tideShare = clamp(1 - (tr - 2) / 4, 0.1, 1);
+        let cells = clamp(Math.round((Math.sqrt(vol / (cellA * 2)) * tideShare) / Math.sqrt(g)), 1, 30);
+        for (let k = next(); k >= 0 && left > 0 && cells > 0; k = next()) {
+          if (z[k] >= top) continue;
+          delta += put(k, Math.min(top - z[k], (left * 1000) / area[k])); cells--;
         }
-        if (front.length < 400) nb(k, (q) => { if (!seen.has(q) && !land[q] && z[q] > shelf && z[q] < top) { seen.add(q); front.push(q); } });
+        head = 0;
+        if (info.kind !== 'estuary') info.kind = tr > 2 ? 'tidal delta' : 'delta';
       }
-      if (info.kind !== 'estuary') info.kind = tr > 2 ? 'tidal delta' : 'delta';
-      mouthList.push(info);
+      // the shelf, built out to wave base, nearest first; its front is the slope
+      for (let k = next(); k >= 0 && left > 0; k = next()) {
+        if (z[k] >= shelfTop) continue;
+        shelfLaid += put(k, Math.min(shelfTop - z[k], (left * 1000) / area[k]));
+      }
+      while (left > 0 && next() >= 0);                                   // (the rest of the sea within reach)
+      // what is still left spreads as a fan over the deep floor reached, an even layer up to FAN_M thick;
+      // beyond that (a small sea, filled) it goes on to the open ocean
+      if (left > 0) {
+        const deep = front.filter((k) => z[k] < shelfTop);
+        let a = 0; for (const k of deep) a += area[k];
+        const d = a > 0 ? Math.min((left * 1000) / a, FAN_M / factor) : 0;
+        if (d > 0) for (const k of deep) shelfLaid += put(k, d);
+        if (left > 0) { ocean += left; left = 0; }
+      }
+      if (river && (vol >= biggest * 0.08 || info.discharge > 1000)) mouthList.push(info);
+    }
+    // (what no sea near its mouth could hold: an even layer over the whole deep ocean floor)
+    if (ocean > 0) {
+      let a = 0; for (let k = 0; k < N; k++) if (!land[k] && z[k] < shelfTop) a += area[k];
+      if (a > 0) { const d = (ocean * 1000) / a; for (let k = 0; k < N; k++) if (!land[k] && z[k] < shelfTop) { z[k] += d; laid[k] += d; shelfLaid += km3(k, d); } }
     }
     let deepest = 0; for (let k = 0; k < N; k++) if (cut[k] > deepest) deepest = cut[k];
     // the drainage over the finished heights, for drawing and for closer maps: where each land cell
     // drains, the water through it (m³/s), lakes, and where water ends inland
     const fin = hydrology(gr, z, hydIn);
     for (const m of mouthList) if (m.from >= 0 && z[m.from] > 0) m.discharge = fin.flow[m.from];
-    // (the rock's book: what left the land, against what was laid and what went out past the deltas)
-    const toDeep = eroded + glacial + scour - basins - moraine - delta;
+    // (the rock's book: what was cut, against what was laid: on the plains, in basins, as moraines, deltas
+    // and on the shelf and beyond; nothing is booked to the deep sea without raising its floor)
+    const book = eroded + glacial + scour - plains - basins - moraine - delta - shelfLaid;
+    const toDeep = Math.abs(book) < 1e-6 * (eroded + glacial + scour + 1) ? 0 : book;   // (rounding is not rock)
+    // (how the passes went: how many, how many taken again shorter, the most a kept pass moved the land,
+    // and a note when the ceiling was reached with the land still moving more than SETTLE_M)
+    const carving = { passes: nPass, retaken, worstM: worst, settleM: SETTLE_M, settled: !ceiling, G, tRiver, note: ceiling ? `the carving reached its ceiling of ${PASS_MAX} passes; the last moved the land ${worst.toFixed(1)} m on average (more than ${SETTLE_M.toFixed(1)} m)` : null };
     return {
-      cut, laid, mouths: mouths.size, mouthList, eroded, glacial, scour, basins, moraine, delta, overflow, toDeep, deltaArea, estuaryArea, deepest,
+      cut, laid, mouths: mouths.size, mouthList, eroded, glacial, scour, plains, basins, moraine, delta, shelf: shelfLaid, overflow, toDeep, deltaArea, estuaryArea, deepest, carving,
       ...settled(fin, runoff), hydIn,
     };
   }
@@ -826,18 +1031,43 @@
     // 2. the ocean floor's age, from each opening rift's isochrons, on the plate that carries it
     const oage = new Float32Array(N).fill(-1);
     const ridges = [];
+    // each rifted margin as it lies now, and at each point how squarely its ocean opened: 1 where the
+    // plates drew straight apart across it, 0 where they slid along it (a transform margin), from the
+    // first stretch of floor the rift made (its flowline's first step)
+    const marginPts = [];
     for (const f of P.features.filter((x) => x.kind === 'rift' && x.left && x.right && x.left !== x.right && live(x) && x.coords.length >= 2)) {
       const begin = f.begin ?? start;
       if (begin <= age) continue;
       const sp = Q.spreading(m, f.coords, f.left, f.right, begin, age, P.step || 10);
       if (!sp.isochrons.length) continue;
+      for (const [edge, flank] of [[sp.edgeL, 'left'], [sp.edgeR, 'right']]) {
+        const e = edge.map(S.vec);
+        for (let i = 0; i < e.length; i++) {
+          const fl = sp.flowlines[i] && sp.flowlines[i][flank][0];
+          if (!fl) continue;
+          const a = e[Math.max(0, i - 1)], b = e[Math.min(e.length - 1, i + 1)], o = S.vec(fl);
+          const along = sub3(b, a), open = sub3(o, e[i]), la = Math.hypot(...along), lo = Math.hypot(...open);
+          if (!(la > 1e-9 && lo > 1e-9)) continue;
+          const c = (along[0] * open[0] + along[1] * open[1] + along[2] * open[2]) / (la * lo);
+          marginPts.push({ at: edge[i], square: Math.sqrt(Math.max(0, 1 - c * c)) });
+        }
+      }
       if (sp.isochrons[sp.isochrons.length - 1].age - age <= 15) ridges.push(sp.ridge);
       for (const [edge, flank, pid] of [[sp.edgeL, 'left', f.left], [sp.edgeR, 'right', f.right]]) {
         let prev = edge, prevAge = begin;
         for (const iso of sp.isochrons) {
           if (prevAge - age <= OCEAN_LIFE && prevAge - iso.age <= 2 * (P.step || 10)) {
-            const a = (prevAge + iso.age) / 2 - age;
-            fillPolygon(gr, [...prev, ...iso[flank].slice().reverse()], (k) => { if (!cont[k] && (oage[k] < 0 || a < oage[k])) { oage[k] = a; plate[k] = pid; } });
+            // (the floor's age runs evenly across the strip, from one isochron to the next, by distance:
+            // no terraces of equal age)
+            const a0 = prevAge - age, a1 = iso.age - age;
+            const L0 = S.densify(prev, false, 0.5).map(S.vec), L1 = S.densify(iso[flank], false, 0.5).map(S.vec);
+            const near = (L, x, y, zz) => { let best = -2; for (const v of L) { const d = v[0] * x + v[1] * y + v[2] * zz; if (d > best) best = d; } return Math.acos(Math.min(1, best)); };
+            fillPolygon(gr, [...prev, ...iso[flank].slice().reverse()], (k) => {
+              if (cont[k]) return;
+              const x = gr.xyz[k * 3], y = gr.xyz[k * 3 + 1], zz = gr.xyz[k * 3 + 2], d0 = near(L0, x, y, zz), d1 = near(L1, x, y, zz);
+              const a = d0 + d1 > 0 ? a0 + ((a1 - a0) * d0) / (d0 + d1) : (a0 + a1) / 2;
+              if (oage[k] < 0 || a < oage[k]) { oage[k] = a; plate[k] = pid; }
+            });
           }
           prev = iso[flank]; prevAge = iso.age;
         }
@@ -900,9 +1130,11 @@
     const tanW = Math.tan(CR.C.TAPER_DEG * D2R), kmDeg = (Math.PI * radius) / 180, reliefX = opts.relief ?? 1;
     const orogens = new Map(P.features.filter((x) => x.kind === 'orogen').map((x) => [x.id, x]));
     const belts = [], dyDeg = 180 / gr.H, lam = km(260);
-    for (const b of beltRows) {
+    // (the belts' heights at some age, painted where they stand at the map's age, into oro; record: also
+    // which belt each cell is and what raised it, for the map's own age)
+    const paintBelts = (rows, oro, record) => { for (const b of rows) {
       const o = orogens.get(b.id);
-      if (!b.born || !o || !live(o)) continue;
+      if (!b.born || !o || (record && !live(o))) continue;
       const st = b.stations, idx = belts.length;
       // a station's value at a fraction along the belt
       const val = (q, key) => {
@@ -915,10 +1147,10 @@
       // shapes the belt, Phase D)
       const put = (k, T, dEdgeDeg) => {
         if (!(T > 0)) return;
-        cause[k] |= 1;
+        if (record) cause[k] |= 1;
         const par = 0.5 + 0.5 * Math.cos((2 * Math.PI * (dEdgeDeg + 0.6 * lam * fbm(k, 5, 2))) / lam);
         const h = CR.airy(T) * reliefX * (0.88 + 0.17 * par);
-        if (h > oro[k]) { oro[k] = h; beltOf[k] = idx; }
+        if (h > oro[k]) { oro[k] = h; if (record) beltOf[k] = idx; }
       };
       if (b.ref === 'drawn') {
         // drawn by hand: its outline as drawn, rising from the edge at the wedge's taper to the crest its crust allows
@@ -962,9 +1194,19 @@
           if (dEdge > 0) put(k, Math.min(pt.ct, dEdge * tanW), dEdge / kmDeg);
         }
       }
+      if (!record) continue;
       const top = st.reduce((x, s) => (s.crest > x.crest ? s : x), st[0]);
       belts.push({ id: b.id, name: o.name, type: b.type, path: b.path, fed: b.fed, atCap: b.atCap, rising: b.rising, begin: o.begin ?? start, active: o.active ?? 0, crest: top.crest * reliefX, width: Math.max(...st.map((s) => s.width)) });
-    }
+    } };
+    paintBelts(beltRows, oro, true);
+    // the belts as they stood HISTORY_MYR ago (where they stand now): how much each rose in each step
+    // since, for the carving to cut them as they rose (Phase D.2) rather than all at once at the end
+    const HISTORY_MYR = [20, 10];
+    const beltPast = HISTORY_MYR.map((dt) => {
+      const field = new Float32Array(N);
+      paintBelts(CR.beltsAt(P, { radiusKm: radius, gravity: g, scaling: opts.scaling ?? 2, age: age + dt, erosion: E, rain: (lat) => wetRaw(lat) / wetMean, key: `cells ${nCells}`, model: m }), field, false);
+      return field;
+    });
     // (no smoothing: a belt's wedge already falls to nothing at its edges)
     const oroS = oro;
 
@@ -992,6 +1234,9 @@
     const PROVINCE_KM = [33, 39];                // a province's starting crust (Earth's continental crust: mostly 30-45 km; unverified)
     const PASSIVE = { km: 250, edge: 12 };       // rifted margin: thins over some 250 km to ~12 km at the ocean (unverified)
     const ACTIVE = { km: 80, edge: 25 };         // active margin: never stretched, thin only at its very edge (unverified)
+    // transform margin: the continent sheared off along the opening, its crust cut off within some 50 km
+    // (the Côte d'Ivoire-Ghana margin; unverified), told apart from a rifted one along ~150 km of coast
+    const TRANSFORM = { km: 50, edge: 25, blurKm: 150 };
     const RIFT = { beta: 1.3, km: 75, sagKm: 300 };   // a failed rift: stretched ×1.3 over ~75 km, sagging over ~300 km (unverified)
     // thermal subsidence after stretching by β: some 3.2 km × (1 − 1/β) once cooled (McKenzie 1978, as
     // usually quoted; unverified)
@@ -1024,10 +1269,18 @@
     }
     // how active each margin is (feathered), and so how wide its thinning
     const activeS = blur(gr, Float32Array.from(activeMargin), Math.max(1, Math.round(geo(150) / gr.dx)), 2);
+    // how each rifted margin opened (above), at the crust near it (the nearest margin point); a margin
+    // no recorded rift made (the first supercontinent's own coast) is taken as rifted. A transform
+    // margin was hardly stretched: its crust keeps its thickness nearly to a steep edge, its shelf narrow
+    const square = new Float32Array(N).fill(1), sqD = new Float32Array(N).fill(Infinity);
+    for (const mp of marginPts) stamp(gr, mp.at, geo(2 * PASSIVE.km), (k, dd) => { if (cont[k] && dd < sqD[k]) { sqD[k] = dd; square[k] = mp.square; } });
+    const squareS = blur(gr, square, Math.max(1, Math.round(geo(TRANSFORM.blurKm) / gr.dx)), 2);
     const T = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       if (!cont[k]) continue;
-      const a = clamp(activeS[k], 0, 1), w = geo((PASSIVE.km + (ACTIVE.km - PASSIVE.km) * a) * shelfF), edge = PASSIVE.edge + (ACTIVE.edge - PASSIVE.edge) * a;
+      // (rifted: 250 km; transform: 50 km; and, wherever a trench is near, an active margin's)
+      const sq = smooth(clamp(squareS[k], 0, 1)), wPass = TRANSFORM.km + (PASSIVE.km - TRANSFORM.km) * sq, ePass = TRANSFORM.edge + (PASSIVE.edge - TRANSFORM.edge) * sq;
+      const a = clamp(activeS[k], 0, 1), w = geo((wPass + (ACTIVE.km - wPass) * a) * shelfF), edge = ePass + (ACTIVE.edge - ePass) * a;
       T[k] = edge + (provT[k] - edge) * smooth(dIn[k] / w);
     }
     // the crust is stiff: thickness changes from one province to the next over the flexural wavelength
@@ -1035,12 +1288,16 @@
     for (let k = 0; k < N; k++) if (cont[k] && dIn[k] > geo(PASSIVE.km)) T[k] = Ts[k];
     // failed rifts: a rift basin along each, and the sag after it
     const basin = new Float32Array(N);
+    // (a rift basin fills with what the land around it sheds: at some 0.05-0.1 mm a year its ~2 km take
+    // 20-40 Myr (unverified), so an old one is a filled trough, as the Benue and the Amazon's, not a gulf)
+    const RIFT_FILL_MYR = 30;
     for (const f of P.features.filter((x) => x.kind === 'failed' && live(x) && x.coords.length >= 2)) {
-      const line = S.densify(placed(f), false, 0.5);
+      const line = S.densify(placed(f), false, 0.5), since = Math.max(0, (f.begin ?? start) - age);
+      const fill = Math.max(FILL, 1 - Math.exp(-since / RIFT_FILL_MYR));
       for (const p of line) stamp(gr, p, geo(2 * RIFT.sagKm), (k, dd) => {
         if (!cont[k]) return;
         const dk = dd / geo(1), thin = T[k] * (1 - 1 / (1 + (RIFT.beta - 1) * Math.exp(-((dk / RIFT.km) ** 2))));
-        const dep = (thin * M_PER_KM + SAG_M * Math.exp(-((dk / RIFT.sagKm) ** 2))) * (1 - FILL);
+        const dep = (thin * M_PER_KM + SAG_M * Math.exp(-((dk / RIFT.sagKm) ** 2))) * (1 - fill);
         if (dep > basin[k]) basin[k] = dep;
       });
     }
@@ -1068,17 +1325,23 @@
     // basalt lying in the bowl
     for (const f of P.features.filter((x) => x.kind === 'lip' && x.type !== 'oceanic plateau' && live(x) && x.coords.length >= 3)) {
       const c = S.latLon(S.centroid(placed(f))), since = Math.max(0, (f.begin ?? start) - age);
-      const sag = PLUME_SAG.m * (1 - Math.exp(-since / PLUME_SAG.myr)) * (1 - FILL);
+      // (and the land around fills it, as it does a rift: an old sag is a plain, not a round lake)
+      const sag = PLUME_SAG.m * (1 - Math.exp(-since / PLUME_SAG.myr)) * (1 - Math.max(FILL, 1 - Math.exp(-since / RIFT_FILL_MYR)));
       if (!(sag > 1)) continue;
       stamp(gr, c, geo(2.5 * PLUME_SAG.km), (k, dd) => { if (!cont[k]) return; const v = sag * Math.exp(-(((dd / geo(1)) / PLUME_SAG.km) ** 2)); if (v > basin[k]) basin[k] = v; });
     }
     // foreland basins: the belts' crust (the part standing above an ordinary column) spread over the
-    // flexural wavelength is the root that holds them up; beyond a belt that root pulls the plate down
+    // flexural wavelength is the root that holds them up; beyond a belt that root pulls the plate down.
+    // A range fills its own moat with what it sheds: it sheds about what the plates feed it (Whipple &
+    // Meade 2004's flux balance), on the order of 10⁴ km² of section per km of belt in 20 Myr at 2 cm a
+    // year against 35 km of crust, where its moat holds some 10² (2 km deep, 200 km wide): overfilled
+    // (as the Ganges and Po plains), so it leaves no hollow (FORELAND_FILL)
+    const FORELAND_FILL = 1;
     const beltT = Float32Array.from(oroS, (h) => h / (M_PER_KM * reliefX));
     const beltSpread = blur(gr, beltT, Math.max(1, Math.round(geo(ALPHA_KM) / gr.dx)), 3);
     for (let k = 0; k < N; k++) {
       if (!cont[k]) continue;
-      const moat = Math.max(0, beltSpread[k] - beltT[k]) * (CR.C.RHO_CRUST / CR.C.RHO_MANTLE) * 1000 * (1 - FILL);
+      const moat = Math.max(0, beltSpread[k] - beltT[k]) * (CR.C.RHO_CRUST / CR.C.RHO_MANTLE) * 1000 * (1 - FORELAND_FILL);
       if (moat > basin[k]) basin[k] = moat;
     }
     // hotspot swells, on land and sea, along the stretch of track the plume has lifted lately
@@ -1105,14 +1368,15 @@
     const lipS = blur(gr, lip, Math.max(1, Math.round(geo(60) / gr.dx)), 2);
 
     // the continents' surface, but for the sea level: their crust, its basins, swells, belts, basalts
-    const zc = new Float32Array(N);
+    const zc = new Float32Array(N), crestF = new Float32Array(N);
     for (let k = 0; k < N; k++) {
       if (!cont[k]) continue;
       const ridged = 1 - Math.abs(warped(k, 9, 5, 0.15));        // sharp, branching crests in the belts
+      crestF[k] = 0.4 + 0.8 * ridged * ridged;
       // (a margin thinned below its province's crust is filled from the land like any basin: shelves and
       // coastal plains are mostly the sediment on it)
       const sag = Math.max(0, provT[k] - T[k]) * M_PER_KM * (1 - MARGIN_FILL);
-      zc[k] = H((provT[k] - CR_KM) * M_PER_KM - sag - basin[k] + swell[k]) + oroS[k] * (0.4 + 0.8 * ridged * ridged) + lipS[k] * 0.8;
+      zc[k] = H((provT[k] - CR_KM) * M_PER_KM - sag - basin[k] + swell[k]) + oroS[k] * crestF[k] + lipS[k] * 0.8;
     }
     // 5. sea level: how high an ordinary crust stands above the sea, to leave the share asked for dry
     const crustShare = shareAbove(gr, Float32Array.from(cont, (c) => (c ? 1 : 0)), 0.5);
@@ -1125,25 +1389,44 @@
     for (let it = 0; it < 40; it++) { const mid = (lo + hi) / 2; if (shareAt(mid) > target) hi = mid; else lo = mid; }
     // (nothing lifts a continent's ordinary crust much above the sea: a world with too little crust for
     // the land asked gets less, not continents raised to meet it)
-    const sea = Math.min((lo + hi) / 2, H(FREEBOARD_MAX));
+    // (a province's crust is flat, so the land's share can jump as its whole floor goes dry at once:
+    // the sea then stands on whichever side of the jump comes closer to the share asked)
+    const sLo = shareAt(lo), sHi = shareAt(hi);
+    const sea0 = Math.min(Math.abs(sLo - target) <= Math.abs(sHi - target) ? lo : hi, H(FREEBOARD_MAX));
 
-    // 6. the land, and the continents' flooded margins: their own surface, set to that sea level
-    const z = new Float32Array(N);
-    for (let k = 0; k < N; k++) if (cont[k]) z[k] = zc[k] + sea;
     // the land's relief before the rivers began (Phase D.1): a starting condition, bounded, not something
     // made: rolling ground of every size from a continent's breadth down to a cell, up to some RELIEF0_M
     // (÷ g^scaling) above or below the crust's surface, in the heights themselves, so the water is routed
-    // over what is drawn. Lower toward the sea in proportion, so land stays land and the coast where the
-    // crust put it. It raises nothing high: where no cause has raised the ground, it levels off softly
-    // below 1450 m (÷ g^scaling), high ground being the work of belts, plateaus, plumes and volcanoes
-    const nS = noise3(seed ^ 0x5737), RELIEF0_M = 800, KNEE = H(1100), TOP = H(350);
+    // over what is drawn. Lower toward the sea, but not to nothing: ground near the sea still rolls by
+    // some RELIEF_LOW_M (a province whose crust stands at sea level is a lowland the coast wanders
+    // across, in bays and inlets, not a dead-flat plain), fading out on margins drowned past 100 m. It is
+    // part of the land before the sea is set, so the coast is where crust and relief together put it.
+    const nS = noise3(seed ^ 0x5737), RELIEF0_M = 800, RELIEF_LOW_M = 150, KNEE = H(1100), TOP = H(350);
+    const rel = new Float32Array(N);
     for (let k = 0; k < N; k++) {
-      const h = z[k];
-      if (!(h > 0)) continue;
+      if (!cont[k]) continue;
+      const h = zc[k] + sea0;
       // (where a belt stands, its relief is its own folding, the crests and ridges in it: the plain's fades out)
       const plain = 1 - smooth(oroS[k] / H(1000));
-      let v = h + H(RELIEF0_M) * nS(gr.xyz[k * 3], gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], 3, 6) * (h / Math.max(h, H(700))) * plain;
-      if (!cause[k] && v > KNEE && v > h) v = Math.max(h, KNEE + TOP * Math.tanh((v - KNEE) / TOP));
+      const amp = (Math.max(h, H(RELIEF_LOW_M)) / Math.max(h, H(700))) * (h < 0 ? smooth((h + H(100)) / H(100)) : 1);
+      rel[k] = H(RELIEF0_M) * nS(gr.xyz[k * 3], gr.xyz[k * 3 + 1], gr.xyz[k * 3 + 2], 3, 6) * amp * plain;
+    }
+    // the sea level again, over crust and relief together
+    const shareRel = (s) => { for (let k = 0; k < N; k++) lifted[k] = cont[k] ? zc[k] + rel[k] + s : -1; return shareAbove(gr, lifted, 0); };
+    lo = sea0 - 1000; hi = sea0 + 1000;
+    for (let it = 0; it < 40; it++) { const mid = (lo + hi) / 2; if (shareRel(mid) > target) hi = mid; else lo = mid; }
+    const sea = Math.min((lo + hi) / 2, H(FREEBOARD_MAX));
+
+    // 6. the land, and the continents' flooded margins: their own surface, set to that sea level, with
+    // their relief. It raises nothing high: where no cause has raised the ground, it levels off softly
+    // below 1450 m (÷ g^scaling), high ground being the work of belts, plateaus, plumes and volcanoes;
+    // on ground already above that knee (a whole province standing high) it is softened, not taken away
+    const z = new Float32Array(N);
+    for (let k = 0; k < N; k++) {
+      if (!cont[k]) continue;
+      const h = zc[k] + sea;
+      let v = h + rel[k];
+      if (!cause[k] && v > KNEE && v > h) v = h >= KNEE ? h + TOP * Math.tanh((v - h) / TOP) : Math.max(h, KNEE + TOP * Math.tanh((v - KNEE) / TOP));
       z[k] = v;
     }
 
@@ -1209,11 +1492,14 @@
       }
     }
     const cache = hsCache;
+    // (a volcano rises above the ground it stands on, not above its own earlier eruptions: where a plate
+    // barely moves over a plume, its track's points pile on one place)
+    const ground = Float32Array.from(z);
     for (const h of P.features.filter((x) => x.kind === 'hotspot' && (x.begin ?? start) >= age)) {
       for (const t of G.hotspotTrack(P, m, h, age, { cache, span: 120, step: 4 })) {
         const a = t.age - age, ea = a * rate(t.at[0]), summit = H(4200) - H(5600) * (1 - Math.exp(-a / 14)) - 6 * ea, r = km(60) + km(28) * Math.min(1, a / 20);
         stamp(gr, t.at, r, (k, dd) => {
-          const floor = z[k], top = cont[k] ? floor + H(1600) * Math.exp(-ea / 10) : summit;
+          const floor = ground[k], top = cont[k] ? floor + H(1600) * Math.exp(-ea / 10) : summit;
           if (top <= floor) return;
           cause[k] |= 8;
           z[k] = Math.max(z[k], floor + (top - floor) * Math.max(0, 1 - dd / r) ** 1.6);
@@ -1223,7 +1509,10 @@
 
     // 8. rivers cut valleys into it, and lay what they carry in hollows and in deltas
     const tideX = Math.max(0, opts.tides ?? 1), tides = tidalRange(gr, z, tideX, radius, f);
-    const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, seed, k: opts.carveK, gravity: g, tides, factor: f });
+    // (how much the belts rose in each step of their recent history, as their heights stand on the map:
+    // the carving starts from them as they stood and lifts them as it goes)
+    const uplift = [[beltPast[0], beltPast[1]], [beltPast[1], oroS]].map(([from, to]) => Float32Array.from(to, (v, k) => Math.max(0, (v - from[k]) * crestF[k])));
+    const carved = opts.carve === false || E <= 0 ? null : carve(gr, z, { radiusKm: radius, erosion: E, wet: (lat) => wetRaw(lat) / wetMean, lowstand: lowstandOf(6, f), uplift, seed, k: opts.carveK, gravity: g, tides, factor: f });
 
     // 9. what was drawn on it (and the water's way over the drawing)
     for (const s of opts.strokes || []) stamp(gr, [s.lat, s.lon], s.r, (k, dd) => { z[k] += s.dz * smooth(1 - dd / s.r); cause[k] |= 32; });
@@ -1240,7 +1529,7 @@
     }
 
     const map = {
-      W, H: gr.H, z, plate: pl, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr, cause, belts, beltOf, beltH: oroS, age,
+      W, H: gr.H, z, plate: pl, uplift, planet: { gravity: g, factor: f, radiusKm: radius, ridgeDepth: ridge }, boundary, oceanAge: oage, grid: gr, cause, belts, beltOf, beltH: oroS, age,
       crust: crustShare, target, sea, at, rivers: riversOf(carved, 'latitude'), tides, tideX,
       // what carveMap needs to carve it later, with the climate's water
       carving: { erosion: E, seed, rough: 0, k: opts.carveK, wet: (lat) => wetRaw(lat) / wetMean },
@@ -1248,7 +1537,7 @@
     return measure(map);
   }
   const riversOf = (c, rain) => c && {
-    cut: c.cut, laid: c.laid, eroded: c.eroded, glacial: c.glacial, scour: c.scour, delta: c.delta, basins: c.basins, moraine: c.moraine, overflow: c.overflow, toDeep: c.toDeep,
+    cut: c.cut, laid: c.laid, carving: c.carving, eroded: c.eroded, glacial: c.glacial, scour: c.scour, plains: c.plains, delta: c.delta, shelf: c.shelf, basins: c.basins, moraine: c.moraine, overflow: c.overflow, toDeep: c.toDeep,
     mouths: c.mouths, mouthList: c.mouthList, deltaArea: c.deltaArea, estuaryArea: c.estuaryArea, deepest: c.deepest,
     recv: c.recv, discharge: c.discharge, cellsUp: c.cellsUp, lake: c.lake, terminal: c.terminal, evaporated: c.evaporated, lakes: c.lakes, saltLakes: c.saltLakes, runoff: c.runoff, rain,
   };
@@ -1273,17 +1562,21 @@
     // (the rock the glaciers cut goes with the rivers: their meltwater carries it, and it is laid
     // as moraines where the ice ended, in hollows, in deltas, or out at sea)
     const gl = map.glaciers && map.glaciers.area > 0 ? map.glaciers : null;
-    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides, factor: map.planet.factor, load: gl && gl.cut, ice: gl && gl.ice });
+    const carved = wt && wt.liquid === false ? null : carve(map.grid, map.z, { radiusKm: map.planet.radiusKm, erosion: s.erosion, seed: s.seed, k: s.k, water: wt, wet: s.wet, gravity: map.planet.gravity, tides: map.tides, factor: map.planet.factor, load: gl && gl.cut, ice: gl && gl.ice, lowstand: lowstandOf(opts.iceAge ?? s.iceAge ?? 6, map.planet.factor), uplift: map.uplift });
     for (const st of opts.strokes || []) stamp(map.grid, [st.lat, st.lon], st.r, (k, dd) => { map.z[k] += st.dz * smooth(1 - dd / st.r); if (map.cause) map.cause[k] |= 32; });
     if (carved && (opts.strokes || []).length) Object.assign(carved, settled(hydrology(map.grid, map.z, carved.hydIn), carved.hydIn.runoff));
     map.rivers = riversOf(carved, wt ? 'climate' : 'latitude');
     return measure(map);
   }
 
+  /* How far the sea stood below today's in the last ice age (m): as the ice locked up water, some 20 m
+     for every °C the ice age was colder (Earth's last: about 120 m for 6 °C; unverified), ÷ g^scaling. */
+  const lowstandOf = (iceAge, factor = 1) => (20 * Math.max(0, iceAge)) / factor;
+
   /* Sample a built map at [lat, lon] (nearest cell). */
   const sample = (map, la, lo) => map.z[cellOf(map.grid, la, lo)];
 
-  const api = { build, carve, carveMap, hydrology, upstreamFirst, glaciate, tidalRange, planetTides, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
+  const api = { build, carve, carveMap, depositG, hydrology, upstreamFirst, glaciate, tidalRange, planetTides, fillPolygon, distance, stamp, makeGrid, shareAbove, sample, cellOf, noise3 };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.worldmap = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -72,13 +72,16 @@ test('continuing, then coming together: older poles kept, continents collide and
   }
   assert.ok(run.assembled && run.end >= 450, `one supercontinent by ${run.end} Ma`);
   assert.ok(run.welds.length >= 1, 'continents collided');
-  // once welded, two plates keep their places relative to each other
+  // once welded and done closing (a collision converges until it stops: the weld's own age), two
+  // plates keep their places relative to each other
   const m = R.model(run.plates, 1000);
-  const { a, b, age } = run.welds[0];
+  const { a, b, age, weld } = run.welds[0];
+  const done = weld ?? age;
+  assert.ok(done <= age && done >= run.end, `closing done at ${done} Ma, after meeting at ${age} Ma`);
   const pa = S.latLon(S.centroid(w.features.filter((f) => f.plateId === b && f.kind === 'crust').flatMap((f) => f.coords)));
   const gap = (t) => S.distance(m.reconstruct(a, [pa], t)[0], m.reconstruct(b, [pa], t)[0]);
-  const late = Math.max(run.end, age - 100);
-  assert.ok(Math.abs(gap(Math.floor(age / 25) * 25) - gap(late)) < 0.6, `welded at ${age} Ma: ${gap(Math.floor(age / 25) * 25)} vs ${gap(late)}`);
+  const late = Math.max(run.end, done - 100);
+  assert.ok(Math.abs(gap(done) - gap(late)) < 0.6, `welded at ${done} Ma: ${gap(done)} vs ${gap(late)}`);
 });
 
 test('a Wilson cycle runs to the present: apart, wander, together, and round again', () => {

@@ -92,10 +92,7 @@ test('sea ice: where the sea freezes, with an edge that wanders rather than foll
   assert.ok(spread > 15, `the ice edge spans many parallels (${spread.toFixed(1)}°)`);
 });
 
-// (fails until Phase D.2: the carving judges a basin spilling by all the hollow could evaporate, the
-// biomes by its lake's own balance, so it breaches basins the biomes would keep; in the app's pipeline it
-// keeps about half the land draining inland, here a quarter)
-test('carved with its climate, a map keeps its basins: dry ones stay closed, lakes stay', { todo: 'fails until Phase D.2: the carving breaches basins the biomes keep closed' }, () => {
+test('carved with its climate, a map keeps its basins: dry ones stay closed, lakes stay', () => {
   // as the app does it: the map, its climate, the rivers carve it with that climate's water
   const plain = M.build(world, { res: 360, carve: false }), cp = K.build(plain, EARTH);
   const carved = M.carveMap(M.build(world, { res: 360, carve: false }), { water: B.water(plain, cp, { ...EARTH, seed: 7 }) });

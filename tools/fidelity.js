@@ -112,7 +112,7 @@ const ROWS = [
   ['R4', 'Rock balance error (carving and glaciers)', 'r4Error', pc],
   ['', '  glaciers’ share of the rock cut', 'r4Glacier', pc],
   ['', 'Rock cut that is laid somewhere on the map', 'rockLaid', pc],
-  ['', '  basins / moraines / deltas / deep sea, % of the cut', 'rockParts', (x) => (x == null ? '—' : x.map((v) => (v * 100).toFixed(v < 0.1 ? 1 : 0)).join(' / '))],
+  ['', '  plains / basins / moraines / deltas and shelf / unlaid, % of the cut', 'rockParts', (x) => (x == null ? '—' : x.map((v) => (v * 100).toFixed(v < 0.1 ? 1 : 0)).join(' / '))],
   ['R6', 'High land with no tectonic cause near', 'r6Uncaused', pc],
   ['', 'Young belts: height against the crust the plates fed them (rank, n)', 'beltRank', (x, r) => (x == null ? (r && r.beltsYoung === 0 ? 'no young belts' : '—') : r && r.beltsYoung != null ? `${x.toFixed(2)} (${r.beltsYoung})` : x.toFixed(2))],
   ['', 'Belt height explained by the noise-free build (R²)', 'beltNoiseR2', n2],

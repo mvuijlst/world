@@ -67,6 +67,109 @@
     const t = [[1 / scale, r() * 6.283, amp * (0.5 + 0.5 * r())], [2.7 / scale, r() * 6.283, amp * 0.45 * r()], [7.3 / scale, r() * 6.283, amp * 0.18 * r()]];
     return (s) => t.reduce((acc, [k, p, a]) => acc + a * (Math.sin(k * s + p) - Math.sin(p)), 0);
   }
+  /*
+   * How strong the continents' lithosphere is, place by place (in their own frame): old mobile belts
+   * and sutures weak, old terranes strong (a starting condition: some 60 patches of 5-25°, by the
+   * seed; and some 2000 smaller ones of 1-4°, so the weak ground winds at every scale), and every
+   * craton far stronger. Rifts open along the weak ground and round the cratons (the Atlantic along the
+   * Pan-African belts, East Africa's rifts round the Tanzania craton). Returns f(v) → about −1 (weak)
+   * to 1 (strong), cratons 3.
+   */
+  function strengthField(seed, cratons = []) {
+    const r = rng(((seed >>> 0) ^ 0x57e7) >>> 0);
+    const patch = (w0, w1, a) => { const z = 2 * r() - 1, t = r() * 2 * Math.PI, s = Math.sqrt(1 - z * z), w = (w0 + (w1 - w0) * r()) * D2R; return { c: [s * Math.cos(t), s * Math.sin(t), z], w, a: a * (2 * r() - 1), far: Math.cos(3 * w) }; };
+    // (old terranes and belts of every size: 60 broad ones, and some 2000 small ones, overlapping, so the
+    // weak ground winds everywhere, not only where a patch happens to lie; kept in 10° bins)
+    const patches = [...Array.from({ length: 60 }, () => patch(5, 25, 1)), ...Array.from({ length: 2000 }, () => patch(1, 4, 0.5))];
+    const bins = new Map(), key = (la, lo) => `${la},${((lo % 36) + 36) % 36}`;
+    const binOf = (v) => { const [la, lo] = S.latLon(v); return [Math.floor((la + 90) / 10), Math.floor((lo + 180) / 10)]; };
+    const big = patches.filter((p) => p.w > 4.5 * D2R);
+    for (const p of patches) if (p.w <= 4.5 * D2R) { const [a, b] = binOf(p.c), k = key(a, b); if (!bins.has(k)) bins.set(k, []); bins.get(k).push(p); }
+    const cr = cratons.map((k) => ({ c: S.vec(S.latLon(S.centroid(k.coords ?? k.ring))), inside: S.within(k.coords ?? k.ring) }));
+    const add = (p, v, s) => { const cd = dot(v, p.c); if (cd < p.far) return s; const d = Math.acos(clamp(cd, -1, 1)); return s + p.a * Math.exp(-((d / p.w) ** 2)); };
+    return (v) => {
+      for (const k of cr) if (k.inside(v)) return 3;
+      let s = 0;
+      for (const p of big) s = add(p, v, s);
+      const [a, b] = binOf(v), wide = a <= 1 || a >= 16 ? 18 : 1;
+      for (let da = -1; da <= 1; da++) for (let db = -wide; db <= wide; db++) for (const p of bins.get(key(a + da, b + db)) || []) s = add(p, v, s);
+      return Math.tanh(s);
+    };
+  }
+
+
+  /*
+   * An irregular net over the sphere for the rifts' paths: ~40 000 points evenly spread (a Fibonacci
+   * lattice), each nudged by up to a third of their spacing (by its index), each joined to its nearest
+   * neighbours. A square grid makes shortest paths run along its rows and columns; this net has no
+   * preferred direction. Built once.
+   */
+  let NET = null;
+  function riftNet() {
+    if (NET) return NET;
+    const n = 40000, sp = Math.sqrt((4 * Math.PI) / n), base = S.fibonacci(n);
+    const hash = (i, k) => { let h = Math.imul(i ^ (k * 0x9e3779b9), 0x85ebca6b) >>> 0; h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35) >>> 0; return (h ^ (h >>> 16)) / 4294967296; };
+    const pts = base.map((v, i) => { const a = cross(v, Math.abs(v[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]), e1 = norm(a), e2 = cross(v, e1), t = hash(i, 1) * 2 * Math.PI, d = (sp / 3) * hash(i, 2); return norm(v.map((x, q) => x + d * (Math.cos(t) * e1[q] + Math.sin(t) * e2[q]))); });
+    // buckets of 2° for the neighbour search
+    const B = 2, cols = 180, rows = 90, bucket = new Map(), key = (j, i) => j * cols + ((i % cols) + cols) % cols;
+    const cell = (v) => { const [la, lo] = S.latLon(v); return [clamp(Math.floor((la + 90) / B), 0, rows - 1), Math.floor((lo + 180) / B)]; };
+    pts.forEach((v, i) => { const [j, c] = cell(v), k = key(j, c); if (!bucket.has(k)) bucket.set(k, []); bucket.get(k).push(i); });
+    const reach = Math.cos(1.9 * sp), nbr = pts.map((v, i) => {
+      const [j, c] = cell(v), out = [];
+      for (let dj = -1; dj <= 1; dj++) { const jj = j + dj; if (jj < 0 || jj >= rows) continue; const span = Math.abs(jj + 0.5 - rows / 2) > rows / 2 - 4 ? cols : 1; for (let dc = -span; dc <= span; dc++) for (const q of bucket.get(key(jj, c + dc)) || []) if (q !== i && dot(v, pts[q]) > reach) out.push(q); }
+      return [...new Set(out)];
+    });
+    NET = { pts, nbr, cell, bucket, key };
+    return NET;
+  }
+
+  /*
+   * The path a rift takes from one point to another (unit vectors) through the weak ground: the least
+   * cost over the net above, each step costing its length × e^(1.5 × strength), only through points
+   * allowed(v) says it may cross and not within `margin` steps (2) of one it may not, but near its
+   * ends; lightly smoothed. null if none.
+   */
+  function weakPath(from, to, allowed, strength, margin = 2) {
+    const { pts, nbr } = riftNet(), N = pts.length;
+    const span = Math.acos(clamp(dot(from, to), -1, 1)), mid = norm(from.map((x, q) => x + to[q]));
+    const reachCos = Math.cos(Math.min(Math.PI, span / 2 + 12 * D2R)), nearEnd = Math.cos(4 * D2R);
+    const nearest = (v) => { let best = -2, k = -1; for (let i = 0; i < N; i++) { const d = dot(v, pts[i]); if (d > best) { best = d; k = i; } } return k; };
+    const a = nearest(from), b = nearest(to);
+    // the points it may cross: allowed, in reach, and `margin` steps clear of any it may not (but near its ends)
+    const ok = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (dot(pts[i], mid) >= reachCos && allowed(pts[i])) ok[i] = 1;
+    for (let it = 0; it < margin; it++) {
+      const drop = [];
+      for (let i = 0; i < N; i++) if (ok[i] && nbr[i].some((q) => !ok[q]) && dot(pts[i], from) < nearEnd && dot(pts[i], to) < nearEnd) drop.push(i);
+      for (const i of drop) ok[i] = 0;
+    }
+    ok[a] = 1; ok[b] = 1;
+    const weight = new Float32Array(N), cost = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
+    for (let i = 0; i < N; i++) if (ok[i]) weight[i] = Math.exp(1.5 * strength(pts[i]));
+    const heap = [];
+    const push = (c, k) => { heap.push([c, k]); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, rr = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (rr < heap.length && heap[rr][0] < heap[m][0]) m = rr; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+    cost[a] = 0; push(0, a);
+    while (heap.length) {
+      const [c, k] = pop();
+      if (c > cost[k]) continue;
+      if (k === b) break;
+      for (const q of nbr[k]) {
+        if (!ok[q]) continue;
+        const nc = c + (Math.acos(clamp(dot(pts[k], pts[q]), -1, 1)) * (weight[k] + weight[q])) / 2;
+        if (nc < cost[q]) { cost[q] = nc; prev[q] = k; push(nc, q); }
+      }
+    }
+    if (!Number.isFinite(cost[b])) return null;
+    const path = [];
+    for (let k = b; k >= 0; k = prev[k]) { path.push(pts[k]); if (k === a) break; }
+    path.reverse();
+    let out = [from, ...path.slice(1, -1), to];
+    out = out.map((v, i) => (i === 0 || i === out.length - 1 ? v : norm([0, 1, 2].map((q) => out[i - 1][q] + 2 * v[q] + out[i + 1][q]))));
+    return out;
+  }
+
+
 
   /*
    * opts: seed, plates (3-5), crust (fraction of the surface, 0.15-0.4), firstId (101).
@@ -82,8 +185,23 @@
 
     // the outline: a lobed, ragged disc (big lobes and small jags), scaled until it covers the share
     const C = S.vec([U(-35, 35), U(-180, 180)]);
+    // (and ragged down to a few degrees: a continent's edge is rough at every scale, so the finest
+    // harmonics run to 90 round the disc, a point every degree; their own draws, by the seed)
     const lumps = periodic(r, 0.42, 2, 6), jags = periodic(r, 0.16, 7, 24);
-    const ring = (R) => Array.from({ length: 180 }, (_, k) => dest(C, k * 2, clamp(R * (1 + lumps(k * 2) + jags(k * 2)), 0.42 * R, 84)));
+    // (the finest harmonics falling off as a coastline's do, amplitude ∝ wavelength^1.3: rough, not
+    // toothed; some 1.2° on the ground whatever the continent's size, not a share of its radius)
+    const fine = (() => {
+      const rf = rng((seed ^ 0xf1e) >>> 0), t = [];
+      for (let j = 25; j <= 90; j++) t.push([j, (25 / j) ** 1.3 * (0.35 + 0.65 * rf()), rf() * 2 * Math.PI]);
+      const f = (deg) => t.reduce((acc, [j, a, ph]) => acc + a * Math.cos(j * deg * D2R + ph), 0);
+      let sd = 0; for (let k = 0; k < 360; k++) sd += f(k) ** 2;
+      sd = Math.sqrt(sd / 360) || 1;
+      return (deg) => (1.2 * f(deg)) / sd;
+    })();
+    // (a lobe that would reach past ~70° from the middle is eased back, not cut off: a cut at a fixed
+    // distance is a near great circle, a ruler-straight coast; the finest raggedness goes on top)
+    const ease = (x) => (x > 66 ? 66 + 18 * Math.tanh((x - 66) / 18) : x);
+    const ring = (R) => Array.from({ length: 360 }, (_, k) => dest(C, k, clamp(ease(Math.max(0.42 * R, R * (1 + lumps(k) + jags(k)))) + fine(k), 0.3 * R, 86)));
     // the triple junction lies off-centre, so the pieces differ in size
     const jb = U(0, 360), jf = U(0.08, 0.38);
     const reach = (from, b, inside) => {
@@ -98,18 +216,22 @@
       const blobLL = ring(R).map(S.latLon), inB = S.within(blobLL), J = dest(C, jb, jf * R);
       const inBlob = (v) => inB(v);
       const coast = Array.from({ length: 180 }, (_, k) => ({ b: k * 2, v: dest(J, k * 2, reach(J, k * 2, inBlob)) }));
-      return { J, inBlob, coast };
+      return { J, inBlob, coast, blobLL };
     };
     let R0 = capRadius(target), sh = shape(R0);
     for (let it = 0; it < 4; it++) {
-      const got = S.areaFraction(sh.coast.map((c) => S.latLon(c.v)));
+      const got = S.areaFraction(sh.blobLL);
       R0 = Math.min(82, R0 * capRadius(target) / capRadius(got));
       sh = shape(R0);
     }
-    const { J, inBlob, coast } = sh;
+    const { J, inBlob, coast, blobLL } = sh;
     const scale = R0 / 68;
 
-    // three rift arms from the junction to the coast, at uneven angles (70-170°), wavering
+    // three rift arms from the junction to the coast, at uneven angles (70-170°): each from the junction
+    // to where its bearing meets the coast, through the weak ground, not crossing another arm
+    const weak = strengthField(seed);
+    const c3 = Math.cos(3 * D2R), c4 = Math.cos(4 * D2R);
+    const clear = (v, lines, keep) => keep.some((q) => dot(q, v) > c4) || lines.every((ln) => ln.every((p) => dot(p, v) < c3));
     const arms = [];
     const gaps = [U(0.6, 1.4), U(0.6, 1.4), U(0.6, 1.4)], gsum = gaps[0] + gaps[1] + gaps[2];
     let b = U(0, 360);
@@ -117,13 +239,41 @@
       const w = wander(r, 14, 12 * scale), pts = [J];
       let s = 3;
       for (; s < 170; s += 3) { const bb = b + w(s); if (s >= reach(J, bb, inBlob)) break; pts.push(dest(J, bb, s)); }
-      const be = b + w(s), se = reach(J, be, inBlob);
-      pts.push(dest(J, be, se));
-      arms.push({ pts, end: mod360(be), ext: dest(J, be, se + 2.5) });
+      const be = b + w(s), se = reach(J, be, inBlob), E = dest(J, be, se);
+      pts.push(E);
+      const path = weakPath(J, E, (v) => inBlob(v) && clear(v, arms.map((a) => a.pts), [J]), weak);
+      arms.push({ pts: path && path.length >= 3 ? path : pts, end: mod360(be), ext: dest(J, be, se + 2.5) });
       b += (360 * gaps[i]) / gsum;
     }
-    // the plates between them: arm i, the coast clockwise to arm i+1, arm i+1 back to the junction
-    let pieces = arms.map((a, i) => {
+    // the plates between them: the outline cut along arms 0 and 1 (through the junction), then the part
+    // holding arm 2 cut along it; plate i lies between arm i and arm i+1. (The outline itself, not the
+    // coast as seen from the junction: where a lobe hides the coast from it, that view cut across in
+    // straight lines.)
+    const cutPieces = () => {
+      const ll = (vs) => vs.map(S.latLon);
+      // (any two arms make the first cut; the first pair whose remaining part the third can still cut)
+      for (let k = 0; k < 3; k++) {
+        const A = arms[k], B = arms[(k + 1) % 3], Cn = arms[(k + 2) % 3];
+        const first = S.splitPolygon(blobLL, ll([A.ext, ...A.pts.slice().reverse(), ...B.pts.slice(1), B.ext]));
+        if (!first) continue;
+        const a2 = Cn.pts, mid2 = S.latLon(a2[Math.floor(a2.length / 2)]);
+        const restI = S.contains(first[0], mid2) ? 0 : S.contains(first[1], mid2) ? 1 : -1;
+        if (restI < 0) continue;
+        // (from just across the first cut, past the junction itself, which is a corner of the part)
+        const start = dest(J, bearingTo(J, a2[Math.min(1, a2.length - 1)]) + 180, 1.5);
+        const second = S.splitPolygon(first[restI], ll([start, ...a2.slice(1), Cn.ext]));
+        if (!second) continue;
+        // the part B bounds lies between B and the third arm: its edge runs along B's middle
+        const mB = B.pts[Math.floor(B.pts.length / 2)];
+        const gap = (ring) => Math.min(...ring.map((q) => angle(S.vec(q), mB)));
+        const pB = gap(second[0]) <= gap(second[1]) ? 0 : 1;
+        const out = [];
+        out[k] = first[1 - restI]; out[(k + 1) % 3] = second[pB]; out[(k + 2) % 3] = second[1 - pB];
+        return out.map((ring, i) => ({ id: firstId + i, ring }));
+      }
+      return null;
+    };
+    let pieces = cutPieces() || arms.map((a, i) => {
       const nx = arms[(i + 1) % 3], span = mod360(nx.end - a.end);
       const shore = coast.filter((c) => { const d = mod360(c.b - a.end); return d > 0.5 && d < span - 0.5; }).sort((x, y) => mod360(x.b - a.end) - mod360(y.b - a.end)).map((c) => c.v);
       return { id: firstId + i, ring: [...a.pts, ...shore, ...nx.pts.slice(1).reverse()].map(S.latLon) };
@@ -139,6 +289,17 @@
         const ri = rifts.findIndex((rf) => rf.arm === ai && !rf.split);
         if (ai < 0 || ri < 0) continue;
         const arm = rifts[ri].pts, inPiece = (v) => S.contains(piece.ring, S.latLon(v));
+        let best = null;
+        const take = (cut) => {
+          // the outer part touches the arm beyond the new junction
+          const probe = dest(J, mod360(bearingTo(J, arm[arm.length - 3]) + 2), angle(J, arm[arm.length - 3]));
+          const outer = S.contains(cut.parts[0], S.latLon(probe)) ? 0 : 1;
+          const newId = firstId + pieces.length;
+          pieces = pieces.map((p, i) => (i === pi ? { id: p.id, ring: cut.parts[1 - outer] } : p)).concat([{ id: newId, ring: cut.parts[outer] }]);
+          rifts = rifts.flatMap((rf, i) => (i === ri ? [{ pts: [...arm.slice(0, cut.m + 1), cut.J2], split: true }, { pts: [cut.J2, ...arm.slice(cut.m + 1)], split: true }] : [rf]));
+          rifts.push({ pts: [cut.J2, ...cut.pts, cut.end, cut.ext], split: true });
+          done = true;
+        };
         for (let tries = 0; tries < 30 && !done; tries++) {
           const m = Math.floor(U(0.25, 0.65) * (arm.length - 3)) + 1;
           if (m < 1 || m > arm.length - 4) continue;
@@ -151,20 +312,21 @@
           if (pts.length < 3) continue;
           const be = b2 + w(s), se = reach(J2, be, inPiece) || s - 3;
           const end = dest(J2, be, se), ext = dest(J2, be, se + 2.5);
+          // (through the weak ground, clear of the other arms)
+          const inP = S.within(piece.ring), path = tries >= 15 ? null : weakPath(J2, end, (v) => inP(v) && clear(v, rifts.filter((x) => x !== rifts[ri]).map((x) => x.pts), [J2, end]), weak);
+          // (if the routed cut keeps failing the checks below, the later tries cut as before)
+          if (tries < 15 && path && path.length >= 3) { pts.length = 0; pts.push(...path.slice(1, -1)); }
           const line = [dest(J2, b2 + 180, 1.5), ...pts, end, ext].map(S.latLon);
           const parts = S.splitPolygon(piece.ring, line);
           if (!parts) continue;
           const a0 = S.areaFraction(piece.ring), sizes = parts.map((q) => S.areaFraction(q));
-          if (Math.min(...sizes) < 0.22 * a0 || Math.abs(sizes[0] + sizes[1] - a0) > 0.02 * a0) continue;
-          // the outer part touches the arm beyond the new junction
-          const probe = dest(J, mod360(bearingTo(J, arm[arm.length - 3]) + 2), angle(J, arm[arm.length - 3]));
-          const outer = S.contains(parts[0], S.latLon(probe)) ? 0 : 1;
-          const newId = firstId + pieces.length;
-          pieces = pieces.map((p, i) => (i === pi ? { id: p.id, ring: parts[1 - outer] } : p)).concat([{ id: newId, ring: parts[outer] }]);
-          rifts = rifts.flatMap((rf, i) => (i === ri ? [{ pts: [...arm.slice(0, m + 1), J2], split: true }, { pts: [J2, ...arm.slice(m + 1)], split: true }] : [rf]));
-          rifts.push({ pts: [J2, ...pts, end, ext], split: true });
-          done = true;
+          if (Math.abs(sizes[0] + sizes[1] - a0) > 0.02 * a0) continue;
+          const cut = { parts, m, J2, pts: pts.slice(), end, ext, share: Math.min(...sizes) / a0 };
+          if (cut.share < 0.22) { if (!best || cut.share > best.share) best = cut; continue; }
+          take(cut);
         }
+        // (no cut leaves both parts a fair share: the most even one, if its smaller part is a tenth)
+        if (!done && best && best.share >= 0.1) take(best);
         if (done) break;
       }
     }
@@ -186,9 +348,11 @@
       const count = 1 + (r() < 0.45 ? 1 : 0);
       for (let k = 0; k < count; k++) {
         let rc = U(6, 10.5) * scale;
-        for (let tries = 0; tries < 160; tries++) {
+        // (every plate has its craton: in a narrow piece the first is looked for longer, smaller and
+        // further from the middle)
+        for (let tries = 0, most = k === 0 ? 480 : 160; tries < most; tries++) {
           if (tries && tries % 40 === 0) rc *= 0.8;
-          const p = dest(cen, U(0, 360), U(0, far * 0.75)), pl = S.latLon(p);
+          const p = dest(cen, U(0, 360), U(0, far * (tries < 160 ? 0.75 : 0.95))), pl = S.latLon(p);
           const shape = periodic(r, 0.2, 2, 5), n = 10 + Math.floor(r() * 5);
           const radii = Array.from({ length: n }, (_, j) => rc * (1 + shape((j * 360) / n)));
           const maxR = Math.max(...radii);
@@ -559,9 +723,16 @@
     const out = [];
     for (const f of crusts) {
       const A = m.absolute(f.plateId, age), A0 = m.absolute(f.plateId, a0), A1 = m.absolute(f.plateId, a1);
-      const pts = margins(f).map(({ v, n }) => {
+      // (a trench faces the plate's motion along a stretch of margin, not at each step of it: the
+      // coast's facing is taken over some 600 km (3° either way), so the transform offsets of a stepped margin do not
+      // break it up)
+      const mg = margins(f), nm = mg.length;
+      const pts = mg.map(({ v, n }, i) => {
+        const sum = [...n];
+        for (const sg of [1, -1]) for (let j = 1; j < nm / 2; j++) { const q = mg[(i + sg * j + nm * 2) % nm]; if (angle(v, q.v) > 3) break; sum[0] += q.n[0]; sum[1] += q.n[1]; sum[2] += q.n[2]; }
+        const ns = norm(sum.map((x, q) => x - dot(sum, v) * v[q]));
         const p0 = Q.rotate(A0, v), p1 = Q.rotate(A1, v), d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]], len = Math.hypot(...d);
-        const nn = Q.rotate(A0, n), cm = ((len * radiusKm) / dt) * 0.1;
+        const nn = Q.rotate(A0, ns), cm = ((len * radiusKm) / dt) * 0.1;
         const lead = cm > 0.8 && dot(d, nn) / len > 0.35;
         const cur = Q.rotate(A, v), nc = Q.rotate(A, n);
         const open = lead && !others.some((o) => o.plateId !== f.plateId && o.inside(norm(cur.map((x, q) => x + 0.02 * nc[q]))));
@@ -611,6 +782,9 @@
     let nz = P.features.filter((f) => f.kind === 'subduction').length, na = P.features.filter((f) => f.kind === 'arc').length;
     const tag = `s${((opts.seed ?? 1) >>> 0).toString(36)}-${Math.round(from)}`;
     const toLL = (vs) => vs.map(ll);
+    // (each plate's crust, densified, for keeping trenches off it)
+    const ringCache = new Map();
+    const plateRings = (id) => { if (!ringCache.has(id)) ringCache.set(id, P.features.filter((f) => f.kind === 'crust' && f.plateId === id && f.coords.length >= 3).map((f) => ({ inF: S.within(f.coords), vs: S.densify(f.coords, true, 0.5).map(S.vec) }))); return ringCache.get(id); };
     for (let age = from; age >= to - 1e-9; age -= every) {
       const runs = leadingCoasts(P, m, age, R).filter((rn) => rn.points.length >= (opts.minPoints ?? 5));
       const used = new Set();
@@ -621,6 +795,8 @@
       }
       runs.forEach((rn, i) => {
         if (used.has(i)) return;
+        // (a coast an earlier pass's trench still runs along, active at this age, has its trench)
+        if (opts.existing && opts.existing.some((f) => f.plateId === rn.plateId && (f.begin ?? start) >= age && (f.end ?? -1) < age && rn.points.some(({ v }) => S.distanceToLine(S.latLon(v), f.coords) < 4))) return;
         // an island arc needs a long margin; its trench bows out to sea (arcs are arcs), and the arc is
         // a stretch of it, not the whole coast
         const island = r() < (opts.islandShare ?? 0.35) && rn.points.length >= 8;
@@ -628,6 +804,32 @@
         const out = (t) => offset * (1 - bow + bow * 2 * Math.sin(Math.PI * t));
         const trench = offshore(rn.points, out).filter((_, k, all) => k % 2 === 0 || k === all.length - 1);
         if (trench.length < 2) return;
+        // (a trench lies off every headland of its coast, never across one: pushed out along the coast's
+        // normal until clear of its plate's crust by most of its offset, then smoothed, then again)
+        // (clear of every piece of its plate; where there is no room, a strait too narrow, none is drawn)
+        {
+          const pieces = plateRings(rn.plateId), near = Math.cos(0.6 * offset * D2R);
+          const clearOf = (v) => pieces.every((q) => !q.inF(v) && q.vs.every((u) => dot(u, v) < near));
+          const push = () => trench.forEach((t, k) => {
+            const q = rn.points[Math.min(rn.points.length - 1, k * 2)].n;
+            let v = t;
+            for (let it = 0; it < 16 && !clearOf(v); it++) v = norm(v.map((x, c) => x + 0.25 * D2R * q[c]));
+            trench[k] = v;
+          });
+          push();
+          const sm = trench.map((v, k) => (k === 0 || k === trench.length - 1 ? v : norm(v.map((x, c) => trench[k - 1][c] + 2 * x + trench[k + 1][c]))));
+          sm.forEach((v, k) => { trench[k] = v; });
+          push();
+          // (where part of it cannot clear the land, a bay too narrow, the trench is the longest stretch
+          // that can)
+          if (!trench.every(clearOf)) {
+            let best = [0, 0];
+            for (let i = 0; i < trench.length;) { if (!clearOf(trench[i])) { i++; continue; } let e = i; while (e + 1 < trench.length && clearOf(trench[e + 1])) e++; if (e - i > best[1] - best[0]) best = [i, e]; i = e + 1; }
+            if (best[1] - best[0] < 2) return;
+            const keep = trench.slice(best[0], best[1] + 1);
+            trench.length = 0; trench.push(...keep);
+          }
+        }
         // the teeth point at the plate: from the trench's middle towards the coast it came from
         const tm = trench[Math.max(0, Math.floor((trench.length - 2) / 2))], cm = rn.points[Math.min(rn.points.length - 1, Math.floor((trench.length - 2) / 2) * 2)].v;
         const landward = [cm[0] - tm[0], cm[1] - tm[1], cm[2] - tm[2]];
@@ -755,7 +957,9 @@
       for (let tries = 0; tries < 6; tries++) {
         const take = pts.length > 16 ? pts.slice(Math.floor(r() * (pts.length - 14)), undefined).slice(0, 14) : pts;
         const d = U(3, 7);
-        const inland = offshore(take, -d), out0 = offshore([take[0]], 2.5)[0], out1 = offshore([take[take.length - 1]], 2.5)[0];
+        // (the cut leaves the coast at a slant and comes back to it, deepest in the middle: a sliver tapers
+        // to its ends, as Madagascar and Japan do, not a strip cut square)
+        const inland = offshore(take, (t) => 1 - (d + 1) * Math.sin(Math.PI * t) ** 0.6), out0 = offshore([take[0]], 2.5)[0], out1 = offshore([take[take.length - 1]], 2.5)[0];
         const lineLL = [out0, ...inland, out1].map(S.latLon);
         if (cratons.some((k) => lineLL.some((p) => S.contains(k.coords, p)) || lineLL.some((p) => S.distanceToLine(p, [...k.coords, k.coords[0]]) < 1))) continue;
         const coastMid = take[Math.floor(take.length / 2)].v;
@@ -786,10 +990,23 @@
       const cratons = P.features.filter((c) => c.kind === 'craton' && c.plateId === pid);
       const inside = S.within(f.coords), c = S.centroid(f.coords);
       const far = f.coords.map(S.vec).reduce((a, v) => (angle(c, v) > angle(c, a) ? v : a), S.vec(f.coords[0]));
+      const weak = strengthField((opts.seed ?? 1) + Math.round(age), cratons);
       for (let tries = 0; tries < 30; tries++) {
         const centre = dest(c, U(0, 360), U(0, 6)), b = bearingTo(centre, far) + 90 + U(-25, 25), w = wander(r, 7, 8);
         const arm = (sg) => { const pts = []; for (let s = 2; s < 120; s += 2) { const v = dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s); pts.push(v); if (!inside(v)) { pts.push(dest(centre, b + (sg > 0 ? 0 : 180) + w(sg * s), s + 2.5)); break; } } return pts; };
-        const lineLL = [...arm(-1).reverse(), centre, ...arm(1)].map(S.latLon);
+        let lineLL = [...arm(-1).reverse(), centre, ...arm(1)].map(S.latLon);
+        // across the piece through the weak ground and round its cratons, between the same two coasts
+        // (only a cut that would leave both parts big enough is worth the routing)
+        const parts0 = S.splitPolygon(f.coords, lineLL), sz0 = parts0 && parts0.map((q) => S.areaFraction(q));
+        if (!parts0 || Math.min(...sz0) < 0.25 * (sz0[0] + sz0[1])) continue;
+        {
+          const a = arm(-1), c = arm(1);
+          if (a.length >= 2 && c.length >= 2) {
+            const e1 = a[a.length - 2], e2 = c[c.length - 2];
+            const path = weakPath(e1, e2, inside, weak);
+            if (path && path.length >= 3) lineLL = [a[a.length - 1], ...path, c[c.length - 1]].map(S.latLon);
+          }
+        }
         if (cratons.some((k) => lineLL.some((p) => S.contains(k.coords, p)) || S.distanceToLine(S.latLon(S.centroid(k.coords)), lineLL) < 3)) continue;
         const res = splitWith(P, age, f, lineLL, (parts, sizes) => { const s = sizes[0] < sizes[1] ? 0 : 1; return sizes[s] >= 0.25 * (sizes[0] + sizes[1]) ? s : null; }, opts);
         if (res) return res;
@@ -1248,6 +1465,154 @@
    * opts: seed, plates (3-5), crust, start (Ma), maxSpeed, radiusKm, gravity, scaling. Returns {plates, features,
    * nextPlate, start, step, seed, events}.
    */
+  /*
+   * Rifts are stepped (Log 11 on): a ridge opens in segments square to the plates' motion, offset from
+   * one another by transform faults along it (as the equatorial Atlantic's fracture zones), and the
+   * continents' edges keep that shape: rifted stretches joined by straight transform margins. Once a
+   * history has run, each rift the plates drew apart (not the contacts that later parted) is redrawn
+   * so: segments of some 200-700 km (the spacing a starting condition, by the seed) on great circles
+   * through the pole of its first opening, joined by transforms on small circles round it; and the
+   * edges of every piece of crust that lay along it are redrawn to match, in that piece's own frame,
+   * so the two sides still fit. Rifts already stepped are left alone. Returns the features.
+   */
+  function stepRifts(P, opts = {}) {
+    const start = P.start ?? 1000, m = Q.model(P.plates, start), step = P.step || 10;
+    const R = opts.radiusKm ?? 6371, SPACING_KM = [200, 700], EPS = 0.01 * D2R;
+    const r = rng(((Number.isFinite(opts.seed) ? opts.seed : P.seed ?? 1) ^ 0x57e9) >>> 0), U = (a, b) => a + (b - a) * r();
+    let features = P.features.slice();
+    const lerp3 = (a, b, t) => norm([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+    const arcLen = (a, b) => Math.atan2(Math.hypot(...cross(a, b)), dot(a, b));
+    // how often a ring's edges cross one another (in latitude and longitude, edges across the date line aside)
+    const crossings = (ring) => {
+      const o = (p, q, t) => Math.sign((q[1] - p[1]) * (t[0] - q[0]) - (q[0] - p[0]) * (t[1] - q[1]));
+      let n = 0;
+      for (let i = 0; i < ring.length; i++) for (let j = i + 2; j < ring.length; j++) {
+        if (i === 0 && j === ring.length - 1) continue;
+        const a = ring[i], b = ring[(i + 1) % ring.length], c = ring[j], d = ring[(j + 1) % ring.length];
+        if (Math.abs(a[1] - b[1]) > 180 || Math.abs(c[1] - d[1]) > 180) continue;
+        const p1 = o(a, b, c), p2 = o(a, b, d), p3 = o(c, d, a), p4 = o(c, d, b);
+        if (p1 && p2 && p3 && p4 && p1 !== p2 && p3 !== p4) n++;
+      }
+      return n;
+    };
+    // nearest point of a polyline (unit vectors, cumulative arc cum): its distance and arc position
+    const project = (u, L, cum) => {
+      let best = Infinity, s = 0;
+      for (let i = 0; i < L.length - 1; i++) {
+        const a = L[i], b = L[i + 1], ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l2 = dot(ab, ab);
+        const t = l2 > 0 ? clamp(dot([u[0] - a[0], u[1] - a[1], u[2] - a[2]], ab) / l2, 0, 1) : 0;
+        const d = arcLen(u, lerp3(a, b, t));
+        if (d < best) { best = d; s = cum[i] + t * (cum[i + 1] - cum[i]); }
+      }
+      return { d: best, s };
+    };
+    for (let fi = 0; fi < features.length; fi++) {
+      const f = features[fi];
+      if (f.kind !== 'rift' || f.stepped || !f.left || !f.right || f.left === f.right || String(f.id).startsWith('c') || f.coords.length < 2) continue;
+      if (opts.only && !opts.only.has(f.id)) continue;
+      const begin = f.begin ?? start;
+      // the pole of the first opening: right against left, in left's frame (the rift's), over the first
+      // step in which they draw apart by a little
+      let pole = null;
+      for (let a1 = begin - step; a1 >= Math.max(0, begin - 6 * step) - 1e-9 && !pole; a1 -= step) {
+        const rel = (t) => Q.mul(Q.inverse(m.absolute(f.left, t)), m.absolute(f.right, t));
+        const p = Q.toPole(Q.mul(rel(a1), Q.inverse(rel(begin))));
+        if (Math.abs(p.angle) > 0.05) pole = S.vec([p.lat, p.lon]);
+      }
+      if (!pole) continue;
+      const e1 = norm(cross(pole, Math.abs(pole[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0])), e2 = cross(pole, e1);
+      const at = (c, lam) => norm(pole.map((x, q) => Math.cos(c) * x + Math.sin(c) * (Math.cos(lam) * e1[q] + Math.sin(lam) * e2[q])));
+      // the rift, densified, and where each point lies about the pole (distance c, longitude λ unwrapped)
+      const L = S.densify(f.coords, false, 0.5).map(S.vec), cum = [0];
+      for (let i = 1; i < L.length; i++) cum.push(cum[i - 1] + arcLen(L[i - 1], L[i]));
+      const total = cum[cum.length - 1];
+      if (!(total > 0)) continue;
+      const capC = norm(L.reduce((acc, v) => [acc[0] + v[0], acc[1] + v[1], acc[2] + v[2]], [0, 0, 0]));
+      const capCos = Math.cos(Math.min(Math.PI, Math.max(...L.map((v) => arcLen(v, capC))) + 2 * EPS));
+      const cs = [], lams = [];
+      for (const v of L) {
+        cs.push(Math.acos(clamp(dot(v, pole), -1, 1)));
+        let l = Math.atan2(dot(v, e2), dot(v, e1));
+        if (lams.length) { const p0 = lams[lams.length - 1]; while (l - p0 > Math.PI) l -= 2 * Math.PI; while (l - p0 < -Math.PI) l += 2 * Math.PI; }
+        lams.push(l);
+      }
+      // (a rift that runs mostly with the plates' motion is a transform margin already: stepping it would
+      // swap its own course for one smooth small circle thousands of km long, so it is left as it is)
+      {
+        let across = 0, all = 0;
+        for (let i = 1; i < L.length; i++) { const dc = cs[i] - cs[i - 1], dl = (lams[i] - lams[i - 1]) * Math.sin((cs[i] + cs[i - 1]) / 2); across += Math.abs(dc); all += Math.hypot(dc, dl); }
+        if (!(all > 0) || across / all < 0.35) continue;
+      }
+      const atS = (arr, s) => { let i = 0; while (i < cum.length - 2 && cum[i + 1] < s) i++; const t = cum[i + 1] > cum[i] ? clamp((s - cum[i]) / (cum[i + 1] - cum[i]), 0, 1) : 0; return arr[i] + (arr[i + 1] - arr[i]) * t; };
+      // the segments, and the stepped line with each of its points' place along the old one (s); a try
+      // whose steps would fold a piece's edge over itself is drawn again, and after three the rift is
+      // left as it was
+      for (let tries = 0; tries < 3; tries++) {
+      const bounds = [0];
+      while (bounds[bounds.length - 1] < total) bounds.push(bounds[bounds.length - 1] + U(...SPACING_KM) / R);
+      bounds[bounds.length - 1] = total;
+      if (bounds.length > 2 && total - bounds[bounds.length - 2] < (0.4 * SPACING_KM[0]) / R) bounds.splice(bounds.length - 2, 1);
+      const lamOf = bounds.slice(0, -1).map((b, k) => atS(lams, (b + bounds[k + 1]) / 2));
+      const pts = [], ps = [];
+      for (let k = 0; k < lamOf.length; k++) {
+        const s0 = bounds[k], s1 = bounds[k + 1], c0 = atS(cs, s0), c1 = atS(cs, s1), last = k === lamOf.length - 1;
+        // this segment's path: (from the rift's start) the ridge at its own λ, then the transform over to
+        // the next segment's (or to the rift's end)
+        const path = [k === 0 ? L[0] : at(c0, lamOf[k])];
+        if (k === 0) path.push(at(c0, lamOf[k]));
+        // (along the segment the rift keeps its own wander, about its own longitude: the slant across
+        // the plates' motion is what the transforms take up)
+        const l0s = atS(lams, s0), l1s = atS(lams, s1);
+        // (no more than some 30 % of the segment's own length either way: where the rift runs nearly with
+        // the plates' motion its segments are short, and a wider wander would draw fingers)
+        const room = (0.3 * Math.abs(c1 - c0)) / Math.max(0.1, Math.sin((c0 + c1) / 2));
+        for (let i = 0; i < L.length; i += 4) if (cum[i] > s0 + 1e-9 && cum[i] < s1 - 1e-9) {     // (every 2°)
+          const t = (cum[i] - s0) / (s1 - s0);
+          path.push(at(cs[i], lamOf[k] + clamp(lams[i] - (l0s + (l1s - l0s) * t), -room, room)));
+        }
+        path.push(at(c1, lamOf[k]));
+        if (!last) {
+          const l0 = lamOf[k], l1 = lamOf[k + 1], n = Math.max(1, Math.ceil((Math.abs(l1 - l0) * Math.sin(c1)) / D2R));
+          for (let j = 1; j <= n; j++) path.push(at(c1, l0 + ((l1 - l0) * j) / n));
+        } else path.push(L[L.length - 1]);
+        let len = 0; const pl = [0];
+        for (let j = 1; j < path.length; j++) { len += arcLen(path[j - 1], path[j]); pl.push(len); }
+        for (let j = k === 0 ? 0 : 1; j < path.length; j++) { pts.push(path[j]); ps.push(s0 + (len > 0 ? (pl[j] / len) * (s1 - s0) : 0)); }
+      }
+      const along = (s) => { let i = 0; while (i < ps.length - 2 && ps[i + 1] < s) i++; const t = ps[i + 1] > ps[i] ? clamp((s - ps[i]) / (ps[i + 1] - ps[i]), 0, 1) : 0; return lerp3(pts[i], pts[i + 1], t); };
+      const between = (sa, sb) => { const out = [along(sa)]; const inner = []; for (let i = 0; i < ps.length; i++) if (ps[i] > Math.min(sa, sb) + 1e-9 && ps[i] < Math.max(sa, sb) - 1e-9) inner.push(pts[i]); if (sb < sa) inner.reverse(); out.push(...inner, along(sb)); return out; };
+      // the crust along it: in each piece's own frame, the run of its edge on the rift takes the stepped line
+      const A0 = m.absolute(f.left, begin), redrawn = new Map();
+      for (let gi = 0; gi < features.length; gi++) {
+        const g = features[gi];
+        if (g.kind !== 'crust' || g.coords.length < 3) continue;
+        const toG = Q.mul(Q.inverse(m.absolute(g.plateId, begin)), A0), back = Q.inverse(toG);
+        const ring = g.coords.map((c) => Q.rotate(back, S.vec(c))), n = ring.length;
+        // (a vertex outside the cap round the rift is not on it: most are not even near)
+        const pr = ring.map((u) => (dot(u, capC) < capCos ? { d: Infinity, s: 0 } : project(u, L, cum))), on = pr.map((p) => p.d < EPS);
+        if (on.filter(Boolean).length < 2 || on.every(Boolean)) continue;
+        // runs of the ring on the rift (cyclic), from a vertex off it
+        const s0 = on.findIndex((x) => !x), out = [];
+        let changed = false;
+        for (let j = 0; j < n;) {
+          const i = (s0 + j) % n;
+          if (!on[i]) { out.push(ring[i]); j++; continue; }
+          let e = j; while (e + 1 < n && on[(s0 + e + 1) % n]) e++;
+          const a = (s0 + j) % n, b = (s0 + e) % n;
+          if (e > j) { out.push(...between(pr[a].s, pr[b].s)); changed = true; } else out.push(ring[a]);
+          j = e + 1;
+        }
+        if (changed) redrawn.set(gi, out.map((v) => fix4(S.latLon(Q.rotate(toG, v)))));
+      }
+      if ([...redrawn].some(([gi, c]) => crossings(c) > crossings(features[gi].coords))) continue;
+      for (const [gi, c] of redrawn) features[gi] = { ...features[gi], coords: c };
+      features[fi] = { ...f, coords: pts.map((v) => fix4(S.latLon(v))), stepped: true };
+      break;
+      }
+    }
+    return features;
+  }
+
   function makeWorld(opts = {}) {
     const seed = Number.isFinite(opts.seed) ? opts.seed >>> 0 : (Math.random() * 2 ** 31) | 0;
     const start = clamp(Math.round(opts.start ?? 1000), 300, 4000), R = opts.radiusKm ?? 6371, speed = opts.maxSpeed ?? 4;
@@ -1311,11 +1676,19 @@
         events.push(...indent.map((x) => ({ age: sep, kind: 'indent', a: x.mover, b: x.target })));
       }
     }
+    // the rifts as the plates opened them: stepped, and the continents' edges with them
+    P = { ...P, features: stepRifts(P, { seed, radiusKm: R }) };
     // the marks (Logs 12, 15-18), the hotspot tracks being drawn from the hotspots (Log 19)
     P = { ...P, features: P.features.concat(markSubduction(P, { seed, every: 50, minPoints: 7, radiusKm: R, to: 0 })) };
     const col = markCollisions(P, { every: 10, contacts: events.filter((e) => e.kind === 'weld') });
     P = { ...P, features: col.features };
     events.push(...col.events);
+    // a collision closes the trenches it reaches, all along; where their coast still leads the plate
+    // afterwards, the ocean in front of it is still being consumed: new trenches there
+    {
+      const zs = P.features.filter((f) => f.kind === 'subduction'), closedAt = Math.max(0, ...zs.filter((f) => f.end != null).map((f) => f.end));
+      if (closedAt > 0) P = { ...P, features: P.features.concat(markSubduction(P, { seed: seed + 17, every: 25, minPoints: 7, radiusKm: R, from: closedAt, to: 0, existing: zs })) };
+    }
     P = { ...P, features: withEpisodes(P, R) };
     P = { ...P, features: P.features.concat(markOrogens(P, { seed, radiusKm: R, gravity: opts.gravity, scaling: opts.scaling }), addHotspots(P, { seed })) };
     return { ...P, events: events.sort((a, b) => b.age - a.age) };
@@ -1407,6 +1780,10 @@
     const sim = simulate(Q2, { seed: seed + Q2.start, mode, from: D, duration: D, interval, minSpeed: opts.minSpeed ?? 1.5, maxSpeed: opts.maxSpeed ?? 4, radiusKm: R, ...(keep ? { keep } : {}) });
     Q2 = { ...Q2, plates: sim.plates };
     events.push(...sim.welds.map((w) => ({ ...w, kind: 'weld' })));
+    // new rifts as the plates opened them (stepped), and the continents' edges with them (the earlier
+    // stretch keeps its own)
+    const earlier = new Set(P.features.map((f) => f.id));
+    Q2 = { ...Q2, features: stepRifts(Q2, { seed: seed + Q2.start, radiusKm: R, only: new Set(Q2.features.filter((f) => f.kind === 'rift' && !earlier.has(f.id)).map((f) => f.id)) }) };
 
     // the marks of the new stretch
     const ids = new Set(Q2.features.map((f) => f.id));
@@ -1432,7 +1809,7 @@
     return { ...Q2, events: events.sort((a, b) => b.age - a.age), welds: sim.welds, phases: sim.phases, end: sim.end, duration: D };
   }
 
-  const api = { generate, simulate, leadingCoasts, markSubduction, subductionEpisodes, floorAt, weldOf, withEpisodes, secondRift, divideLines, microcontinent, markCollisions, markOrogens, addHotspots, hotspotTrack, riftContacts, breakup, makeWorld, shiftHistory, advance };
+  const api = { generate, simulate, leadingCoasts, markSubduction, subductionEpisodes, floorAt, weldOf, withEpisodes, secondRift, divideLines, microcontinent, markCollisions, markOrogens, addHotspots, hotspotTrack, riftContacts, breakup, stepRifts, makeWorld, shiftHistory, advance };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.supercontinent = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

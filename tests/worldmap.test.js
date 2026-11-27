@@ -111,7 +111,8 @@ test('rivers carve: big rivers cut deep, divides barely change, land stays land,
   assert.ok(top > 300 && top > 3.5 * median, `valleys ${top} m deep vs ${median} m typical`);
   assert.ok(r.eroded > 0 && r.delta > 0 && r.delta < r.eroded, `${r.delta} of ${r.eroded} km³ in deltas`);
   let coast = 0, built = 0;
-  for (let k = 0; k < gr.N; k++) if (z0[k] === -100) { coast++; if (r.laid[k] > 0) built++; }
+  // (the rock builds the shelf out all round; new land, deltas, only where the big rivers reach it)
+  for (let k = 0; k < gr.N; k++) if (z0[k] === -100) { coast++; if (z[k] > 0) built++; }
   assert.ok(built > 0 && built < coast * 0.3, `deltas on ${built} of ${coast} shelf cells: not the whole coast`);
   // the same input, the same valleys; more erosion, deeper
   const again = Float32Array.from(z0), more = Float32Array.from(z0);
@@ -151,9 +152,11 @@ test('tides: from the moon, star, size and gravity; small tides build deltas, la
   assert.ok(small.r.deltaArea > 0 && large.r.deltaArea === 0 && large.r.estuaryArea > 0);
   const est = large.r.mouthList.find((m) => m.kind === 'estuary');
   assert.ok(large.z[est.from] < 0, 'the river’s last cell is now an arm of the sea');
-  // stronger gravity: the same relief is cut harder; deltas smaller
+  // stronger gravity: the water cuts harder (√g), but its grains settle faster, so its rivers lay more
+  // of what they carry (G); the same relief still loses more rock
   const heavy = run(0.3, 2);
-  assert.ok(heavy.r.eroded > small.r.eroded * 1.2, `${heavy.r.eroded} vs ${small.r.eroded}`);
+  assert.ok(heavy.r.eroded > small.r.eroded, `${heavy.r.eroded} vs ${small.r.eroded}`);
+  assert.ok(heavy.r.carving.G > 1.5 * small.r.carving.G, `G ${heavy.r.carving.G} vs ${small.r.carving.G}`);
   // what a closer map would need: the drainage and the water through it
   const from = small.r.mouthList[0].from;
   assert.ok(small.r.recv[from] >= 0 && small.z[small.r.recv[from]] <= 3, 'the mouth’s land cell drains to the sea');
@@ -192,7 +195,7 @@ test('the land stands on its crust: wide plains on a rifted margin, narrow on an
   const P = { start: 1000, plates: [{ id: 1, rotations: [] }], features: [
     { id: 'c', kind: 'crust', plateId: 1, coords: cap(0, 0, 30) },
     { id: 'z', kind: 'subduction', plateId: 1, coords: trench, side: 'left', begin: 900 },
-    { id: 'f', kind: 'failed', plateId: 1, coords: [[-15, 5], [15, 5]] },
+    { id: 'f', kind: 'failed', plateId: 1, coords: [[-15, 5], [15, 5]], begin: 20 },
   ] };
   const map = M.build(P, { res: 360, land: 0.05, carve: false });
   assert.ok(Math.abs(map.land - 0.05) < 0.003, `land ${map.land}`);
@@ -202,6 +205,6 @@ test('the land stands on its crust: wide plains on a rifted margin, narrow on an
   const plain = (from, step) => { let lon = from; while (zAt(0, lon) <= 0) lon += step; const coast = lon; while (zAt(0, lon) < 0.9 * inland && Math.abs(lon) < 29) lon += step; return Math.abs(lon - coast); };
   const west = plain(-31, 0.5), east = plain(31, -0.5);
   assert.ok(east > 1.5 * west, `plain ${east}° wide on the rifted east coast, ${west}° on the active west`);
-  // the failed rift: a basin along it, below the plain either side
+  // the failed rift, 20 Myr old: a basin along it, below the plain either side (an old one is filled)
   assert.ok(zAt(0, 5) < zAt(0, -10) - 100 && zAt(0, 5) < zAt(0, 18) - 100, `rift ${zAt(0, 5)} m, either side ${zAt(0, -10)} and ${zAt(0, 18)} m`);
 });

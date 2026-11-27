@@ -53,7 +53,7 @@
    * `at: '*'` covers a whole file. NAMES are the noise functions a file calls by its own names.
    */
   const RANDOM = [
-    { file: 'js/supercontinent.js', at: '*', kind: 'input', what: 'The plates’ history: the first supercontinent, plate motions, the timing of rifts, collisions, arcs, hotspots and LIPs.' },
+    { file: 'js/supercontinent.js', at: '*', kind: 'input', what: 'The plates’ history: the first supercontinent, plate motions, the timing of rifts, collisions, arcs, hotspots and LIPs; the spacing of the transform offsets along each rift (200-700 km).' },
     { file: 'js/generator.js', at: '*', kind: 'input', what: 'A random star system to start from.' },
     { file: 'js/orbits.js', at: '*', kind: 'input', what: 'Positions of the neighbouring stars.' },
     { file: 'js/steps/cosmos.js', at: 'Math.random() * 2e9', kind: 'seed', what: 'New galaxy seed.' },
@@ -70,7 +70,7 @@
     { file: 'js/worldmap.js', at: 'nz = noise3(seed ^ 0x6d61)', kind: 'source', what: 'The map’s noise seed.' },
     { file: 'js/worldmap.js', at: 'hashRng(`p${f.id}`)', kind: 'input', what: 'Starting thickness of each piece of continental crust (a province).', bounds: '33-39 km' },
     { file: 'js/worldmap.js', at: 'const nS = noise3(seed ^ 0x5737)', kind: 'source', what: 'Seed of the land’s starting relief.' },
-    { file: 'js/worldmap.js', at: 'H(RELIEF0_M) * nS(', kind: 'input', what: 'The land’s relief before the rivers began (a starting condition).', bounds: '±600 m × fbm (about ±200 m), less toward the sea, ÷ g^scaling' },
+    { file: 'js/worldmap.js', at: 'H(RELIEF0_M) * nS(', kind: 'input', what: 'The land’s relief before the rivers began (a starting condition).', bounds: '±600 m × fbm (about ±200 m), less toward the sea but not below a 150 m scale, set before the sea level, ÷ g^scaling' },
     { file: 'js/worldmap.js', at: 'const fbm = (k, freq, oct) => nz(', kind: 'source', what: 'Fractal noise at a cell.' },
     { file: 'js/worldmap.js', at: 'const nA = noise3(seed ^ 0xa11)', kind: 'source', what: 'Domain warp.' },
     { file: 'js/worldmap.js', at: 'return nz(x + amt * nA(', kind: 'source', what: 'Domain-warped noise.' },
@@ -135,6 +135,12 @@
     { file: 'js/region.js', at: 'const soft = (x, y) =>', kind: 'input', what: 'How readily the banks give way (patches about a bend across): a material property.', bounds: '×0.25-1.75' },
     { file: 'js/region.js', at: 'sCache[i] = soft(X[i], Y[i])', kind: 'input', what: 'How readily the banks give way.' },
     { file: 'js/region.js', at: 'rCache[i] = 0.12 * nz(', kind: 'output', what: 'Push from the banks’ roughness on a migrating channel.', bounds: '±0.12' },
+  ];
+  // Material properties the model needs and no world gives: fixed values, assumed (no random number;
+  // each `at` is the line that sets it). A world unlike Earth may differ in them; nothing yet lets it say so.
+  const MATERIAL = [
+    { file: 'js/worldmap.js', at: 'const GRAIN_MM = 0.25;', what: 'Size of the grains rivers carry and lay (the deposition coefficient G, through their settling speed).', value: '0.25 mm, fine to medium sand', source: 'assumed' },
+    { file: 'js/worldmap.js', at: 'const G_EARTH = 1, T_EARTH = 15;', what: 'Earth rivers’ deposition coefficient G, and the water temperature it holds at; a world’s G is this times its grains’ settling speed against Earth’s. The share of grains riding near the bed (d*) is taken as on Earth.', value: 'G 1 at 15 °C', source: 'Guerit et al. 2019 (1-2), as Braun 2021 reports it' },
   ];
   const NAMES = {
     'js/worldmap.js': ['nz', 'nA', 'nB', 'nC', 'nS', 'fbm', 'warped', 'hashRng', 'r'], 'js/climate.js': ['n', 'wobble', 'wob', 'iceWobble'], 'js/biomes.js': ['noise'],
@@ -288,8 +294,10 @@
     if (!rv || rv.toDeep == null) return { share: null, parts: null, toDeep: null };
     const cut = rv.eroded + (rv.glacial || 0) + (rv.scour || 0);
     if (!(cut > 0)) return { share: null, parts: null, toDeep: rv.toDeep };
-    const parts = [rv.basins, rv.moraine || 0, rv.delta, rv.toDeep].map((v) => v / cut);
-    return { share: (rv.basins + (rv.moraine || 0) + rv.delta) / cut, parts, toDeep: rv.toDeep };
+    // (laid on the plains as the rivers went, in basins, as moraines, in deltas, on the shelf, slope and fans)
+    const laid = (rv.plains || 0) + rv.basins + (rv.moraine || 0) + rv.delta + (rv.shelf || 0);
+    const parts = [rv.plains || 0, rv.basins, rv.moraine || 0, rv.delta + (rv.shelf || 0), Math.max(0, rv.toDeep)].map((v) => v / cut);
+    return { share: laid / cut, parts, toDeep: rv.toDeep };
   }
   /* R6: the share of land above 1500 m ÷ g^scaling that is more than 300 km (÷ g^scaling) from
      anything that raised it (a belt, plateau, igneous province, hotspot, arc, or the brush). */
@@ -537,7 +545,7 @@
     return out;
   }
 
-  const api = { TARGETS, EARTH_ONLY, RANDOM, inRange, scan, filled, uphill, carveUphill, lakesInHollows, waterBalance, rockBalance, rockLaid, uncaused, hypsometry, step, valleys, valleysCarve, riversAgree, network, hack, concavity, rainShadow, landOverlap, heightR2, riversNear, mouthsKept, measure, rules, fit, spearman, beltHeights, beltRank, beltR2, highestAllowed };
+  const api = { TARGETS, EARTH_ONLY, RANDOM, MATERIAL, inRange, scan, filled, uphill, carveUphill, lakesInHollows, waterBalance, rockBalance, rockLaid, uncaused, hypsometry, step, valleys, valleysCarve, riversAgree, network, hack, concavity, rainShadow, landOverlap, heightR2, riversNear, mouthsKept, measure, rules, fit, spearman, beltHeights, beltRank, beltR2, highestAllowed };
   if (node) module.exports = api;
   else { root.WS = root.WS || {}; root.WS.fidelity = api; }
 })(typeof window !== 'undefined' ? window : globalThis);
